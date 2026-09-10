@@ -1,132 +1,17 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The Stub Wall - Watches</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./tickets.css?v=3">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#2257e8"><meta name="description" content="Find your next game. Set your ticket budget, choose seats together, and get a notification when a matching Gametime listing reaches your price.">
+<title>Find events · Ticketline</title>
+<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./tickets.css?v=20260910">
+<script src="./tickets.js?v=20260910" defer></script><script src="./app.js?v=20260910" defer></script>
 </head>
-<body>
-<div id="chrome"></div>
-<main class="wrap">
-  <div class="board" id="board">
-    <div class="cell"><div class="bnum num" id="b-watches">-</div><div class="bcap" id="b-watches-cap">watches on the board</div></div>
-    <div class="cell"><div class="bnum num" id="b-games">-</div><div class="bcap">games being scanned</div></div>
-    <div class="cell"><div class="bnum num" id="b-scan">-</div><div class="bcap" id="b-scan-cap">since last scan</div></div>
-  </div>
-  <div class="sec-h disp"><span>Your watches</span><span class="r" id="count"></span></div>
-  <div id="wall"><div class="empty">Loading...</div></div>
-  <div id="err"></div>
-</main>
-<script src="./tickets.js"></script>
-<script>
-chrome("wall", "Watches");
-
-function describe(w){
-  const bits = [];
-  bits.push(w.qty + (w.qty === 1 ? " seat" : " seats together"));
-  bits.push("texts under " + money(w.threshold_cents) + " a ticket");
-  bits.push(w.alert_style === "repeat" ? "keeps texting while it is under" : "first dip only, then quiet");
-  return bits.join(" - ");
-}
-function kindTag(w){
-  const m = w.match || {};
-  if(w.kind === "team") return (m.home_away === "any" ? "home + away" : (m.home_away || "home")) + " games";
-  if(w.kind === "date") return "one day";
-  return "one game";
-}
-
-async function load(){
-  const wall = document.getElementById("wall");
-  let watches;
-  try{
-    watches = await sbGet("tix_watches?select=*&order=created_at.desc");
-  }catch(e){
-    wall.innerHTML = '<div class="empty">Could not load watches. ' + e.message + "</div>"; return;
-  }
-  document.getElementById("count").textContent = watches.length + (watches.length === 1 ? " watch" : " watches");
-  if(!watches.length){
-    wall.innerHTML = '<div class="empty">No watches yet. <a href="./new.html">Make the first one</a> - pick a game, a team, or a day, check the clubs you want, set your number.</div>';
-  }
-  // latest price per watch+club, and latest scan overall
-  let prices = [];
-  if(watches.length){
-    const ids = watches.map(w => '"' + w.id + '"').join(",");
-    prices = await sbGet("tix_prices?watch_id=in.(" + ids + ")&select=watch_id,club,price_cents,checked_at,event_label,event_id&order=checked_at.desc&limit=900");
-  }
-  const latestBy = {};
-  for(const p of prices){
-    const k = p.watch_id + "|" + p.club;
-    if(!latestBy[k]) latestBy[k] = p;
-  }
-  const lastScan = prices.length ? prices[0].checked_at : null;
-  const gameCount = new Set(prices.map(p => p.event_id).filter(Boolean)).size;
-  document.getElementById("b-watches").textContent = watches.length;
-  document.getElementById("b-watches-cap").textContent = watches.length === 1 ? "watch on the board" : "watches on the board";
-  document.getElementById("b-games").textContent = gameCount;
-  if(lastScan){
-    document.getElementById("b-scan").textContent = ago(lastScan).replace(" ago", "");
-    document.getElementById("b-scan-cap").textContent = "since last scan - every 15 min inside 7 days, hourly beyond";
-  }else{
-    document.getElementById("b-scan").textContent = "--";
-    document.getElementById("b-scan-cap").textContent = "no scans yet - first scan lands within 15 min of a watch";
-  }
-
-  wall.innerHTML = "";
-  for(const w of watches){
-    const clubPrices = (w.clubs && w.clubs.length ? w.clubs : []).map(c => latestBy[w.id + "|" + c]).filter(Boolean);
-    // any-club watches: show the two freshest rows regardless of club
-    const anyRows = prices.filter(p => p.watch_id === w.id).slice(0, 3);
-    const rows = clubPrices.length ? clubPrices : anyRows;
-    const cheapest = rows.length ? Math.min.apply(null, rows.map(r => r.price_cents)) : null;
-    const hit = cheapest != null && cheapest <= w.threshold_cents;
-
-    const clubLines = rows.map(r => {
-      const under = r.price_cents <= w.threshold_cents;
-      return '<div>' + r.club + ": " +
-        '<span class="' + (under ? "hit" : "") + ' num">' + money(r.price_cents) + "</span>" +
-        '<span style="color:var(--muted)"> ' + (under ? " - under your number" : " - " + money(r.price_cents - w.threshold_cents) + " over") +
-        ", " + (r.event_label || "") + ", " + ago(r.checked_at) + "</span></div>";
-    }).join("");
-
-    const el = document.createElement("div");
-    el.className = "fixture";
-    el.innerHTML =
-      '<div class="fx-top"><span class="fx-name">' + (w.active ? "" : "(paused) ") + escapeHtml(w.label) + "</span>" +
-        '<span class="fx-status' + (w.active ? " on" : "") + '">' + (w.active ? "Watching" : "Paused") + "</span></div>" +
-      '<div class="fx-score">' +
-        (cheapest != null
-          ? '<div class="fx-price"><span class="num' + (hit ? " hit" : "") + '">' + money(cheapest) + '</span><span class="cap">cheapest all-in ticket right now</span></div>'
-          : '<div class="fx-price"><span class="num" style="color:var(--muted)">--</span><span class="cap">no qualifying listing seen yet</span></div>') +
-        '<div class="fx-target"><span class="num">' + money(w.threshold_cents) + '</span><span class="cap">your number - text fires at ' + money(w.threshold_cents - 100) + " or under</span></div>" +
-      "</div>" +
-      '<div class="fx-lines">' + (clubLines || "") + "</div>" +
-      '<div class="fx-foot"><span>' + describe(w) + " - " + kindTag(w) + "</span>" +
-        '<span class="acts"><button data-act="toggle">' + (w.active ? "Pause" : "Resume") + '</button>' +
-        '<button data-act="del" class="warn">Delete</button></span></div>';
-    el.querySelector('[data-act="toggle"]').onclick = async (ev) => {
-      const b = ev.target; b.textContent = "Saving..."; b.disabled = true;
-      try{ await sbWrite("PATCH", "tix_watches?id=eq." + w.id, {active: !w.active}); }
-      catch(e){ showErr(e.message); }
-      load();
-    };
-    el.querySelector('[data-act="del"]').onclick = async (ev) => {
-      const b = ev.target;
-      if(b.dataset.arm !== "1"){ b.dataset.arm = "1"; b.textContent = "Delete for good?"; return; }
-      b.textContent = "Deleting..."; b.disabled = true;
-      try{ await sbWrite("DELETE", "tix_watches?id=eq." + w.id); }
-      catch(e){ showErr(e.message); }
-      load();
-    };
-    wall.appendChild(el);
-  }
-}
-function escapeHtml(s){ return (s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
-function showErr(m){ document.getElementById("err").innerHTML = '<div class="err">' + escapeHtml(m) + "</div>"; }
-load();
-</script>
-</body>
-</html>
+<body data-page="explore"><a class="skip-link" href="#main">Skip to content</a><div id="chrome"></div>
+<main id="main" tabindex="-1"><div class="page-loading" role="status">Getting your game plan ready…</div></main>
+<div id="footer"></div><div id="toast" role="status" aria-live="polite"></div><dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+<noscript><p class="notice">Turn on JavaScript to search events and manage ticket alerts.</p></noscript>
+</body></html>

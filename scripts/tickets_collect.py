@@ -91,7 +91,8 @@ def parse_event_page(html):
                 if depth == 0:
                     end = j + 1; break
     if not end: return None, []
-    d = json.loads(html[i:end].replace("undefined", "null"))
+    payload = re.sub(r'("(?:\\.|[^"\\])*"|undefined)', lambda m: "null" if m.group(0) == "undefined" else m.group(0), html[i:end])
+    d = json.loads(payload)
     redux = d.get("redux", {})
     listings = (redux.get("listings") or {}).get("listings") or []
     meta = None
@@ -124,12 +125,20 @@ def club_groups(listings):
             cur["cheapest"] = total
     return groups
 
+def allows_quantity(listing, qty):
+    """The seller must permit exactly the requested lot, not merely have enough seats."""
+    if not isinstance(qty, int) or not 1 <= qty <= 8: return False
+    seats = listing.get("seats") or []
+    lots = listing.get("availableLots")
+    # Unknown allowed quantities are not proof that the requested lot can be bought.
+    return isinstance(lots, list) and qty in lots and len(seats) >= qty
+
 def cheapest_any(listings, qty):
     best = None
     for l in listings:
         seats = l.get("seats") or []
         p = (l.get("price") or {}).get("total")
-        if p is None or len(seats) < qty: continue
+        if p is None or p <= 0 or not allows_quantity(l, qty): continue
         spot = l.get("spot") or {}
         cand = (p, l.get("id"), l.get("seoUrl") or "", spot.get("section") or "?", spot.get("row") or "?", len(seats))
         if best is None or cand[0] < best[0]: best = cand
@@ -142,9 +151,9 @@ def cheapest_for(listings, group, qty):
         spot = l.get("spot") or {}
         if spot.get("sectionGroup") != group: continue
         seats = l.get("seats") or []
-        if len(seats) < qty: continue
+        if not allows_quantity(l, qty): continue
         total = ((l.get("price") or {}).get("total"))
-        if total is None: continue
+        if total is None or total <= 0: continue
         if best is None or total < best[0]:
             best = (total, l.get("id"), l.get("seoUrl"),
                     spot.get("section"), spot.get("row"), len(seats))
@@ -184,9 +193,10 @@ def refresh_catalog():
             r = parse_catalog_url(u)
             if r: rows[r["event_id"]] = r
         print(f"catalog: {sm} -> {len(rows)} cumulative")
-    if not rows: return
+    if not rows: raise RuntimeError("No catalog events could be fetched")
     today = NOW.date().isoformat()
     vals = [r for r in rows.values() if r["event_date"] >= today]
+    if not vals: raise RuntimeError("No future catalog events could be fetched")
     keys = list(vals[0].keys())
     for i in range(0, len(vals), 500):
         chunk = [{k: r[k] for k in keys} for r in vals[i:i+500]]
@@ -215,13 +225,13 @@ def resolve_events(w):
     if kind == "event":
         ids = m.get("event_ids") or []
         if not ids: return []
-        return sb("GET", "tix_catalog?event_id=in.(" + ",".join(f'"{i}"' for i in ids) + f")&select={cols}")
+        return sb("GET", "tix_events_v?event_id=in.(" + ",".join(f'"{i}"' for i in ids) + f")&event_date=gte.{today}&select={cols}")
     if kind == "team":
         slug = (m.get("slug") or "").lower()
         ha = m.get("home_away") or "any"
-        q = f"tix_catalog?slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&select={cols}&limit=400"
+        q = f"tix_events_v?slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&select={cols}&limit=400"
         if m.get("category"):
-            q = f"tix_catalog?category=eq.{urllib.parse.quote(m['category'])}&slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&select={cols}&limit=400"
+            q = f"tix_events_v?category=eq.{urllib.parse.quote(m['category'])}&slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&select={cols}&limit=400"
         rows = sb("GET", q)
         out = []
         for c in rows:
@@ -235,9 +245,10 @@ def resolve_events(w):
         return out
     if kind == "date":
         d = m.get("date")
-        q = f"tix_catalog?event_date=eq.{d}&select={cols}&limit=400"
+        if not d or d < today: return []
+        q = f"tix_events_v?event_date=eq.{d}&select={cols}&order=event_date,event_id&limit=400"
         if m.get("state"): q += f"&state=eq.{urllib.parse.quote(m['state'])}"
-        if m.get("city"): q += f"&city=eq.{urllib.parse.quote(m['city'])}"
+        if m.get("city"): q += f"&city=ilike.{urllib.parse.quote(m['city'])}"
         rows = sb("GET", q)
         vslug = m.get("venue_slug")
         slug = (m.get("slug") or "").lower()
@@ -247,9 +258,12 @@ def resolve_events(w):
     return []
 
 # ---------- alerts ----------
-def send_sms(subject, body):
+def write_state(key, value):
+    sb("POST", "tix_state?on_conflict=k", [{"k": key, "v": value, "updated_at": datetime.now(timezone.utc).isoformat()}], prefer="resolution=merge-duplicates,return=minimal")
+
+def send_sms(subject, body, test=False):
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not SMS_GATEWAY:
-        print("alert: GMAIL_ADDRESS/GMAIL_APP_PASSWORD/SMS_GATEWAY missing, skipping send"); return False
+        print("alert: notification configuration missing"); write_state("notification_health", {"status":"failed", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
     import smtplib, ssl
     from email.message import EmailMessage
     msg = EmailMessage()
@@ -261,9 +275,9 @@ def send_sms(subject, body):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=30) as s:
             s.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD.replace(" ", ""))
             s.send_message(msg)
-        print("alert: gmail smtp sent"); return True
+        print("alert: mail server accepted message (carrier receipt not confirmed)"); write_state("notification_health", {"status":"accepted", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return True
     except Exception as e:
-        print(f"alert: gmail smtp failed: {e}"); return False
+        print(f"alert: gmail smtp failed: {type(e).__name__}"); write_state("notification_health", {"status":"failed", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
 
 def already_alerted(watch_id, event_id, club, repeat_window_min=None):
     q = (f"tix_alerts?watch_id=eq.{watch_id}&event_id=eq.{event_id}&club=eq.{urllib.parse.quote(club)}&status=eq.sent"
@@ -277,7 +291,7 @@ def already_alerted(watch_id, event_id, club, repeat_window_min=None):
     except Exception:
         return True
 
-def fmt_money(cents): return f"${cents/100:,.0f}"
+def fmt_money(cents): return f"${cents/100:,.2f}" if cents % 100 else f"${cents/100:,.0f}"
 
 def fmt_when(c):
     if c.get("datetime_local"):
@@ -292,142 +306,145 @@ def fmt_when(c):
         return c.get("event_date") or ""
 
 # ---------- main ----------
+def valid_watch(w):
+    return (w.get("kind") in ("event", "team", "date")
+            and isinstance(w.get("qty"), int) and 1 <= w["qty"] <= 8
+            and isinstance(w.get("threshold_cents"), int) and 100 <= w["threshold_cents"] <= 5000000
+            and w.get("alert_style") in ("first", "repeat"))
+
+def scan_result(watch_id, event_id, outcome, checked_at):
+    sb("POST", "tix_scans?on_conflict=watch_id,event_id", [{"watch_id": watch_id, "event_id": event_id,
+       "outcome": outcome, "checked_at": checked_at}], prefer="resolution=merge-duplicates,return=minimal")
+
 def main():
-    if catalog_stale():
-        try: refresh_catalog()
-        except Exception as e: print(f"catalog refresh failed: {e}", file=sys.stderr)
+    health = {"checked_at": NOW.isoformat(), "sms_configured": bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD and SMS_GATEWAY),
+              "status": "ok", "checked_events": 0, "failed_events": 0}
+    if os.environ.get("TIX_TEST_SMS") == "true":
+        ok = send_sms("Ticketline test", "Ticketline: your ticket alerts are connected. This is a delivery test, not a ticket offer.", test=True)
+        if not ok: health["status"] = "error"
+        write_state("collector_health", health)
+        if not ok: raise RuntimeError("Test text was not accepted by the mail server")
+        return
+    try:
+        if catalog_stale(): refresh_catalog()
+    except Exception as e:
+        print(f"catalog refresh failed: {type(e).__name__}", file=sys.stderr)
+        health["catalog_refresh_failed"] = True
 
     watches = sb("GET", "tix_watches?active=eq.true&select=*")
-    if not watches:
-        print("no active watches"); return
+    invalid = [w for w in watches if not valid_watch(w)]
+    if invalid:
+        print(f"{len(invalid)} invalid watches skipped", file=sys.stderr)
+        health["status"] = "error"
+    watches = [w for w in watches if valid_watch(w)]
     print(f"{len(watches)} active watches")
-
-    needed_ids = set()
-    resolved = {}   # watch_id -> [catalog rows]
+    if not watches:
+        write_state("collector_health", health)
+        return
+    resolved, events, watchers = {}, {}, {}
     for w in watches:
-        rows = resolve_events(w)
-        resolved[w["id"]] = rows
-        needed_ids.update(r["event_id"] for r in rows)
-    print(f"{len(needed_ids)} unique watched events")
-
-    # due-ness: events within FAST_WINDOW get checked every run; others hourly
-    last_check = {}
-    if needed_ids:
-        ids = ",".join(f'"{i}"' for i in needed_ids)
-        for r in sb("GET", f"tix_prices?event_id=in.({ids})&select=event_id,checked_at&order=checked_at.desc&limit=2000"):
-            last_check.setdefault(r["event_id"], r["checked_at"])
-    due = []
-    for eid in needed_ids:
-        cat = next((c for rows in resolved.values() for c in rows if c["event_id"] == eid), None)
-        if not cat: continue
         try:
-            edate = datetime.fromisoformat(cat["event_date"]).replace(tzinfo=timezone.utc)
-        except Exception:
+            rows = resolve_events(w)
+        except Exception as e:
+            print(f"resolve {w['id']} failed: {type(e).__name__}", file=sys.stderr)
+            health["status"] = "error"
             continue
-        days_out = (edate - NOW).days
-        if days_out <= FAST_WINDOW_DAYS:
-            due.append(cat); continue
-        lc = last_check.get(eid)
-        if not lc:
-            due.append(cat); continue
-        try:
-            ts = datetime.fromisoformat(lc.replace("Z", "+00:00"))
-            if (NOW - ts) >= timedelta(minutes=SLOW_CHECK_MINUTES):
-                due.append(cat)
-        except Exception:
-            due.append(cat)
-    due = due[:MAX_EVENT_FETCHES]
+        resolved[w["id"]] = rows
+        for cat in rows:
+            eid = cat["event_id"]
+            events[eid] = cat
+            watchers.setdefault(eid, []).append(w)
+    print(f"{len(events)} unique watched events")
+    scans = {}
+    for w in watches:
+        for r in sb("GET", f"tix_scans?watch_id=eq.{w['id']}&select=*&limit=1000"):
+            scans[(w["id"], r["event_id"])] = r
+    due = []
+    for eid, cat in events.items():
+        days_out = (datetime.fromisoformat(cat["event_date"]).date() - NOW.date()).days
+        if days_out < 0: continue
+        interval = 12 if days_out <= FAST_WINDOW_DAYS else SLOW_CHECK_MINUTES
+        oldest = NOW
+        needs_check = False
+        for w in watchers[eid]:
+            last = scans.get((w["id"], eid))
+            if not last:
+                oldest = datetime.min.replace(tzinfo=timezone.utc); needs_check = True; continue
+            ts = datetime.fromisoformat(last["checked_at"].replace("Z", "+00:00"))
+            oldest = min(oldest, ts)
+            criteria_ts = datetime.fromisoformat((w.get("criteria_updated_at") or w["created_at"]).replace("Z", "+00:00"))
+            if ts < criteria_ts or (NOW - ts) >= timedelta(minutes=interval) or (last["outcome"] == "failed" and (NOW-ts) >= timedelta(minutes=12)):
+                needs_check = True
+        if needs_check: due.append((oldest, cat))
+    # Oldest checked first: a busy team/date watch cannot starve other events.
+    due.sort(key=lambda item: (item[0], item[1]["event_date"], item[1]["event_id"]))
+    health["queued_events"] = max(0, len(due) - MAX_EVENT_FETCHES)
+    due = [cat for _, cat in due[:MAX_EVENT_FETCHES]]
     print(f"{len(due)} event pages due for a check")
-
     sent = 0
     for cat in due:
         eid = cat["event_id"]
+        checked_at = datetime.now(timezone.utc).isoformat()
         try:
             html = get_text(cat["url"])
-        except Exception as e:
-            print(f"fetch {eid} failed: {e}", file=sys.stderr); continue
-        meta, listings = parse_event_page(html)
-        if meta:
-            sb("PATCH", f"tix_catalog?event_id=eq.{eid}",
-               {k: v for k, v in {"name": meta["name"], "datetime_local": meta["datetime_local"],
-                                  "min_total": meta["min_total"], "last_seen": NOW.isoformat()}.items() if v is not None})
+            meta, listings = parse_event_page(html)
+            if not meta or meta.get("event_id") != eid:
+                raise ValueError("Event page did not contain the requested event")
+            sb("PATCH", f"tix_catalog?event_id=eq.{eid}", {k:v for k,v in {
+                "name":meta["name"], "datetime_local":meta["datetime_local"], "min_total":meta["min_total"],
+                "last_seen":checked_at}.items() if v is not None})
             if meta.get("name"): cat["name"] = meta["name"]
             if meta.get("datetime_local"): cat["datetime_local"] = meta["datetime_local"]
-        groups = club_groups(listings)
-        if groups and cat.get("venue_slug"):
-            vs = cat["venue_slug"]
-            merged = {}
-            try:
-                ex = sb("GET", f"tix_venue_clubs?venue_slug=eq.{urllib.parse.quote(vs)}&select=clubs")
-                if ex:
-                    for g in (ex[0].get("clubs") or []):
-                        merged[g["group"]] = g
-            except Exception:
-                pass
-            for name, g in groups.items():
-                old = merged.get(name)
-                if not old or (g.get("cheapest") is not None and (old.get("cheapest") is None or g["cheapest"] < old["cheapest"])):
-                    merged[name] = g
-            sb("POST", "tix_venue_clubs?on_conflict=venue_slug",
-               [{"venue_slug": vs, "venue": cat.get("venue"),
-                 "clubs": sorted(merged.values(), key=lambda g: (g["cheapest"] is None, g["cheapest"] or 0)),
-                 "sample_event_id": eid, "updated_at": NOW.isoformat()}],
-               prefer="resolution=merge-duplicates,return=minimal")
-        # event-wide price distribution for the picker's reference pricing
-        try:
-            pts = sorted(p["price"]["total"] for l in listings for p in [l] if l.get("price", {}).get("total"))
-            if pts:
-                def q(f):
-                    return pts[min(len(pts) - 1, int(f * (len(pts) - 1)))]
-                sb("POST", "tix_event_stats?on_conflict=event_id",
-                   [{"event_id": eid, "name": cat.get("name"), "event_date": cat.get("event_date"),
-                     "venue_slug": cat.get("venue_slug"), "listings": len(pts),
-                     "low_cents": pts[0], "p25_cents": q(.25), "median_cents": q(.5),
-                     "p75_cents": q(.75), "high_cents": pts[-1], "updated_at": NOW.isoformat()}],
-                   prefer="resolution=merge-duplicates,return=minimal")
-        except Exception as e:
-            print(f"stats upsert failed for {eid}: {e}", file=sys.stderr)
-        # evaluate each watch on this event
-        for w in watches:
-            rows = resolved.get(w["id"], [])
-            if not any(r["event_id"] == eid for r in rows): continue
-            m = w.get("match") or {}
-            club_level = m.get("club_level", bool(w.get("clubs")))
-            if club_level:
-                club_iter = [c for c in (w.get("clubs") or list(groups.keys())) if c in groups]
-            else:
-                club_iter = ["Any section"] if listings else []
-            for club in club_iter:
-                if club == "Any section":
-                    best = cheapest_any(listings, w["qty"])
-                else:
-                    best = cheapest_for(listings, club, w["qty"])
-                if not best: continue
-                price, lid, lurl, sec, row, nseats = best
-                sb("POST", "tix_prices",
-                   [{"watch_id": w["id"], "event_id": eid, "event_label": cat.get("name"),
-                     "club": club, "qty": w["qty"], "price_cents": price,
-                     "listing_id": lid, "listing_url": lurl}],
-                   prefer="return=minimal")
-                if price <= w["threshold_cents"]:
-                    repeat = w.get("alert_style") == "repeat"
-                    if already_alerted(w["id"], eid, club, 55 if repeat else None):
-                        continue
-                    label = cat.get("name") or eid
-                    when = fmt_when(cat)
-                    subject = f"TIX {club} {fmt_money(price)}"
-                    body = (f"{club}: {fmt_money(price)}/ticket, {w['qty']}+ together "
-                            f"(limit {fmt_money(w['threshold_cents'])}). {label} {when}. "
-                            f"Sec {sec} row {row}. {lurl or cat['url']}")
+            groups = club_groups(listings)
+            if cat.get("venue_slug"):
+                sb("POST", "tix_venue_clubs?on_conflict=venue_slug", [{"venue_slug":cat["venue_slug"],
+                   "venue":cat.get("venue"), "clubs":sorted(groups.values(), key=lambda g:g["cheapest"]),
+                   "sample_event_id":eid, "updated_at":checked_at}], prefer="resolution=merge-duplicates,return=minimal")
+            for w in watchers[eid]:
+                # Re-read before delivery: honor pause, delete, or edit made during a long run.
+                current = sb("GET", f"tix_watches?id=eq.{w['id']}&select=*")
+                if not current or not current[0]["active"]: continue
+                fresh = current[0]
+                if any(fresh.get(k) != w.get(k) for k in ("kind", "match", "clubs", "qty", "criteria_updated_at")): continue
+                w = fresh
+                club_level = (w.get("match") or {}).get("club_level", bool(w.get("clubs")))
+                clubs = [g for g in (w.get("clubs") or list(groups)) if g in groups] if club_level else ["Any section"]
+                found = False
+                for club in clubs:
+                    best = cheapest_any(listings, w["qty"]) if club == "Any section" else cheapest_for(listings, club, w["qty"])
+                    if not best: continue
+                    found = True
+                    price,lid,lurl,sec,row,nseats = best
+                    url = lurl or cat["url"]
+                    if not url.startswith("https://gametime.co/"): url = cat["url"]
+                    sb("POST", "tix_prices", [{"watch_id":w["id"], "event_id":eid, "event_label":cat.get("name"),
+                       "club":club, "qty":w["qty"], "price_cents":price, "listing_id":lid,
+                       "listing_url":url, "checked_at":checked_at}], prefer="return=minimal")
+                    if price > w["threshold_cents"]: continue
+                    if already_alerted(w["id"], eid, club, 60 if w["alert_style"] == "repeat" else None): continue
+                    subject = f"Ticketline: {fmt_money(price)} tickets"
+                    body = (f"{cat.get('name') or eid} {fmt_when(cat)}. {w['qty']} tickets together, "
+                            f"{fmt_money(price)}/ticket including fees; {fmt_money(price*w['qty'])} total. "
+                            f"{club}, sec {sec}, row {row}. At or below your {fmt_money(w['threshold_cents'])} target. {url}")
                     ok = send_sms(subject, body)
-                    sb("POST", "tix_alerts",
-                       [{"watch_id": w["id"], "event_id": eid, "club": club, "qty": w["qty"],
-                         "price_cents": price, "listing_id": lid, "listing_url": lurl,
-                         "status": "sent" if ok else "failed"}],
-                       prefer="return=minimal")
-                    sent += 1
+                    sb("POST", "tix_alerts", [{"watch_id":w["id"], "event_id":eid, "club":club, "qty":w["qty"],
+                       "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed"}], prefer="return=minimal")
+                    if ok: sent += 1
+                    else: health["status"] = "error"
+                scan_result(w["id"], eid, "ok" if found else "unavailable", checked_at)
+            health["checked_events"] += 1
+        except Exception as e:
+            health["failed_events"] += 1
+            health["status"] = "error"
+            print(f"check {eid} failed: {type(e).__name__}: {e}", file=sys.stderr)
+            for w in watchers[eid]:
+                try: scan_result(w["id"], eid, "failed", checked_at)
+                except Exception: pass  # watch may have been deleted during the fetch
         time.sleep(1)
-    print(f"done. alerts sent: {sent}")
+    health["checked_at"] = datetime.now(timezone.utc).isoformat()
+    write_state("collector_health", health)
+    print(f"done. events checked: {health['checked_events']}, failed: {health['failed_events']}, alerts accepted: {sent}")
+    if health["status"] == "error": raise RuntimeError("Some ticket checks or deliveries failed; see collector status")
 
 if __name__ == "__main__":
     main()

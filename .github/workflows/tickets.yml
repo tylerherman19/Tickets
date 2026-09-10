@@ -5,6 +5,11 @@ permissions:
   contents: write  # repository_dispatch needs contents:write, not actions:write
 on:
   workflow_dispatch:
+    inputs:
+      test_sms:
+        description: "Send one test to the configured text destination"
+        type: boolean
+        default: false
   repository_dispatch:
     types: [tickets-ping]
   schedule:
@@ -12,6 +17,10 @@ on:
 
 jobs:
   check:
+    concurrency:
+      group: tickets-collector
+      cancel-in-progress: false
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,9 +34,11 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           SMS_GATEWAY: ${{ secrets.SMS_GATEWAY }}
+          TIX_TEST_SMS: ${{ inputs.test_sms }}
         run: python scripts/tickets_collect.py
 
   pacer:
+    if: ${{ !inputs.test_sms }}
     # self-dispatch backstop: if no OTHER tickets run is active when the timer
     # ends, schedule the next one. cron-job.org usually beats it, so this only
     # fires when the external pinger is down.
