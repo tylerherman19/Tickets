@@ -1,0 +1,51 @@
+name: tickets
+
+permissions:
+  actions: write
+  contents: write  # repository_dispatch needs contents:write, not actions:write
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [tickets-ping]
+  schedule:
+    - cron: "*/15 * * * *"   # backstop only; github cron fires late. primary pace: cron-job.org ping + pacer loop below
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: check watched events
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SMS_GATEWAY: ${{ secrets.SMS_GATEWAY }}
+        run: python scripts/tickets_collect.py
+
+  pacer:
+    # self-dispatch backstop: if no OTHER tickets run is active when the timer
+    # ends, schedule the next one. cron-job.org usually beats it, so this only
+    # fires when the external pinger is down.
+    runs-on: ubuntu-latest
+    steps:
+      - name: wait, then re-dispatch if nothing else is running
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          sleep 840
+          active=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tickets.yml/runs?status=in_progress" \
+            --jq "[.workflow_runs[] | select(.id != $RUN_ID)] | length")
+          queued=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tickets.yml/runs?status=queued" \
+            --jq "[.workflow_runs[] | select(.id != $RUN_ID)] | length")
+          if [ "$active" = "0" ] && [ "$queued" = "0" ]; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" -f event_type=tickets-ping
+            echo "no other run active: dispatched next check"
+          else
+            echo "another run is active: standing down"
+          fi

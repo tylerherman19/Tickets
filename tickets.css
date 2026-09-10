@@ -1,0 +1,92 @@
+/* THE STUB WALL - gameday scoreboard. White field, one turf-green accent,
+   Oswald + Plex Sans, box-score watch cards, standings-list pickers.
+   Sharp corners. Every number carries its own caption. */
+:root{
+  --bg:#FFFFFF; --ink:#101820; --muted:#646B73; --faint:#E4E7EA;
+  --accent:#0B7A3C; /* the one accent: field green - live status, hits, armed actions */
+  --warn:#C22F1C;   /* functional only: errors, delete */
+  --m:16px;
+}
+*{margin:0;padding:0;box-sizing:border-box;border-radius:0!important}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",sans-serif;font-size:15px;line-height:21px}
+.disp{font-family:"Oswald",sans-serif;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.num{font-variant-numeric:tabular-nums}
+
+/* broadcast bug masthead: small, flat, left-anchored */
+.mast{display:flex;align-items:baseline;gap:8px;padding:12px var(--m) 10px;border-bottom:3px solid var(--ink)}
+.mast .lamp{flex:0 0 auto;width:9px;height:9px;background:var(--accent);align-self:center}
+.mast .wordmark{font-family:"Oswald";font-size:14px;font-weight:600;letter-spacing:.16em;text-transform:uppercase}
+.mast .pagelabel{margin-left:auto;font-size:13px;color:var(--muted)}
+
+/* nav strip */
+.pagenav{display:flex;border-bottom:1px solid var(--ink);overflow-x:auto;background:var(--bg);position:sticky;top:0;z-index:9}
+.pagenav a{flex:0 0 auto;padding:9px 14px;font-family:"Oswald";font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-decoration:none;border-right:1px solid var(--faint)}
+.pagenav a.on{color:var(--ink);box-shadow:inset 0 -3px 0 var(--accent)}
+
+.wrap{padding:0 var(--m) 64px}
+.lede{padding:14px 0 12px;font-size:15px;line-height:22px;border-bottom:1px solid var(--faint)}
+
+/* the scoreboard: three real stats, each captioned */
+.board{display:flex;border-bottom:2px solid var(--ink);margin:0 -16px;padding:0 var(--m)}
+.board .cell{flex:1 1 0;padding:12px 10px 12px 0;min-width:0}
+.board .cell + .cell{border-left:1px solid var(--faint);padding-left:12px}
+.board .bnum{font-family:"Oswald";font-size:26px;line-height:28px;font-weight:600}
+.board .bcap{font-size:11px;color:var(--muted);line-height:15px;margin-top:2px}
+
+.sec-h{font-size:13px;border-bottom:2px solid var(--ink);padding:14px 0 6px;display:flex;justify-content:space-between;align-items:baseline}
+.sec-h .r{font-family:"IBM Plex Sans";font-size:11px;font-weight:400;color:var(--muted);letter-spacing:0;text-transform:none}
+
+/* fixture card: one watch as a box score */
+.fixture{border:2px solid var(--ink);margin:14px 0;padding:12px 12px 8px;background:var(--bg)}
+.fx-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.fx-name{font-family:"Oswald";font-size:18px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;line-height:21px}
+.fx-status{flex:0 0 auto;font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.fx-status.on{color:var(--accent)}
+.fx-score{display:flex;align-items:flex-end;gap:26px;padding:10px 0 8px;border-bottom:1px solid var(--faint)}
+.fx-price .num{display:block;font-family:"Oswald";font-size:34px;line-height:34px;font-weight:600}
+.fx-price .num.hit{color:var(--accent)}
+.fx-target .num{display:block;font-family:"Oswald";font-size:20px;line-height:22px;font-weight:500}
+.fx-price .cap,.fx-target .cap{display:block;font-size:11px;color:var(--muted);line-height:14px;margin-top:3px;max-width:150px}
+.fx-lines{padding:8px 0;font-size:13px;line-height:20px}
+.fx-lines .hit{color:var(--accent);font-weight:600}
+.fx-foot{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-top:1px solid var(--faint);padding-top:8px;font-size:11px;color:var(--muted)}
+.fx-foot .acts button{font:inherit;font-size:12px;font-weight:600;background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 0 2px 12px;text-decoration:underline}
+.fx-foot .acts button.warn{color:var(--warn)}
+
+/* forms */
+.field{padding:14px 0;border-bottom:1px solid var(--faint)}
+.field label{display:block;font-family:"Oswald";font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+.field .hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:16px}
+
+/* standings-list pickers: one choice per row, count right */
+.pick{display:flex;flex-direction:column;align-items:stretch;border:1px solid var(--ink)}
+.pick button{font:inherit;font-size:14px;font-weight:500;padding:11px 12px;border:none;border-bottom:1px solid var(--faint);background:var(--bg);color:var(--ink);cursor:pointer;display:flex;justify-content:space-between;align-items:baseline;gap:10px;text-align:left}
+.pick button:last-child{border-bottom:none}
+.pick button.on{background:var(--ink);color:#fff}
+.pick button .n{color:var(--muted);font-size:11px;margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pick button.on .n{color:#bbb}
+
+select,input[type=text],input[type=number],input[type=date]{font:inherit;font-size:15px;padding:9px 10px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);width:100%;max-width:340px}
+select{max-width:100%}
+.clubrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--faint);font-size:14px}
+.clubrow input{width:18px;height:18px;accent-color:var(--accent)}
+.clubrow .cpx{margin-left:auto;font-size:12px;color:var(--muted)}
+.qtyrow{display:flex;gap:6px;align-items:center}
+.qtyrow button{font:inherit;font-size:16px;width:40px;height:40px;border:1px solid var(--ink);background:var(--bg);cursor:pointer}
+.qtyrow .v{font-family:"Oswald";font-size:20px;min-width:44px;text-align:center}
+.go{display:block;width:100%;font-family:"Oswald";font-size:17px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;padding:14px;border:2px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer;margin:20px 0 8px}
+.go[disabled]{background:var(--bg);color:var(--muted);border-color:var(--faint);cursor:default}
+.go.armed{background:var(--accent);border-color:var(--accent)}
+.linklike{font:inherit;font-size:13px;background:none;border:none;color:var(--muted);text-decoration:underline;cursor:pointer;padding:6px 0}
+
+/* ledger rows */
+.lrow{border-bottom:1px solid var(--faint);padding:9px 0;font-size:13px;line-height:18px;display:flex;gap:10px}
+.lrow .d{flex:0 0 92px;color:var(--muted);font-size:11px;padding-top:2px}
+.lrow .p{font-weight:600}
+.lrow .hit{color:var(--accent);font-weight:600}
+
+.note{padding:12px 0;font-size:12px;color:var(--muted);line-height:17px}
+.empty{padding:28px 0;font-size:14px;color:var(--muted);line-height:20px}
+.err{padding:12px;border:1px solid var(--warn);color:var(--warn);font-size:13px;margin:12px 0}
+@media (min-width:760px){ .wrap{max-width:720px} }

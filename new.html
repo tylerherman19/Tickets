@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Stub Wall - New Watch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./tickets.css?v=3">
+</head>
+<body>
+<div id="chrome"></div>
+<main class="wrap">
+  <p class="lede">Point at a team, one game, or a day. The clubs list fills itself from whatever
+  the stadium actually has - you never type a club name. Set your seats and your number, and the
+  texts take over from there.</p>
+  <div id="flow"></div>
+  <div id="err"></div>
+</main>
+<script src="./tickets.js"></script>
+<script>
+chrome("new", "New Watch");
+const flow = document.getElementById("flow");
+const S = {kind:null, category:null, team:null, home_away:"home", event:null, date:null, venue_slug:null, place:null, club_level:false,
+           clubs:[], allClubs:true, qty:2, threshold:null, alert_style:"first", label:""};
+
+function esc(s){ return (s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function err(m){ document.getElementById("err").innerHTML = m ? '<div class="err">'+esc(m)+"</div>" : ""; }
+
+/* ---------- step renderers ---------- */
+function stepKind(){
+  flow.innerHTML = '<div class="field"><label>What are you watching?</label><div class="pick">' +
+    '<button data-k="team">A team</button><button data-k="event">One game</button><button data-k="date">A day out</button>' +
+    "</div></div>";
+  flow.querySelectorAll("button").forEach(b => b.onclick = () => { S.kind = b.dataset.k; stepCategory(); });
+}
+
+async function stepCategory(){
+  flow.innerHTML = '<div class="field"><label>Loading categories...</label></div>';
+  let cats;
+  try{ cats = await sbGet("tix_categories_v?select=category,events"); }
+  catch(e){ flow.innerHTML = '<div class="field"><label>Could not load. ' + esc(e.message) + "</label></div>"; return; }
+  if(S.kind === "date"){ stepDate(); return; }
+  flow.innerHTML = '<div class="field"><label>Which league or category?</label><div class="pick" id="cats"></div></div>';
+  const box = flow.querySelector("#cats");
+  for(const c of cats){
+    if(c.events < 3) continue;
+    const b = document.createElement("button");
+    b.innerHTML = esc(cap(c.category)) + '<span class="n">' + c.events + "</span>";
+    b.onclick = () => { S.category = c.category; S.kind === "team" ? stepTeam() : stepPlace(stepTeam); };
+    box.appendChild(b);
+  }
+}
+
+async function stepTeam(){
+  flow.innerHTML = '<div class="field"><label>Loading teams...</label></div>';
+  let teams = await sbGet("tix_teams_v?category=eq." + encodeURIComponent(S.category) + "&select=team,events");
+  teams = teams.filter(t => !/(^|-)vs(-|$)|hall-of-fame|super-bowl|all-star|pro-bowl/i.test(t.team));
+  const homeState = {};
+  try{
+    const hs = await sbGet("tix_catalog?category=eq." + encodeURIComponent(S.category) + "&event_date=gte." + todayISO() + "&select=slug,state&limit=2500");
+    for(const r of hs){
+      const m2 = (r.slug || "").match(/-at-([a-z0-9-]+)$/);
+      if(m2 && r.state){ const o = homeState[m2[1]] = homeState[m2[1]] || {}; o[r.state] = (o[r.state] || 0) + 1; }
+    }
+  }catch(_){}
+  const teamState = t => { const o = homeState[t.team]; return o ? Object.keys(o).sort((a,b) => o[b]-o[a])[0] : null; };
+  const PIN = ["MN", "WI"];
+  const rankT = t => { const s = teamState(t); if(S.place && S.place.state && s === S.place.state) return 0; const i = PIN.indexOf(s); return i >= 0 ? 1 + i : 5; };
+  teams.sort((a,b) => rankT(a) - rankT(b) || b.events - a.events);
+  flow.innerHTML = '<div class="field"><label>' +
+    (S.kind === "team" ? "Which team?" : "Which team or performer?") +
+    '</label><input type="text" id="tf" placeholder="Type to filter the list" style="margin-bottom:10px">' +
+    '<div class="pick" id="teams"></div></div>';
+  const box = flow.querySelector("#teams");
+  const render = (f) => {
+    box.innerHTML = "";
+    let shown = 0;
+    for(const t of teams){
+      const name = cap(t.team);
+      if(f && !name.toLowerCase().includes(f)) continue;
+      if(++shown > 40) break;
+      const b = document.createElement("button");
+      b.innerHTML = esc(name) + '<span class="n">' + (teamState(t) ? esc(teamState(t)) + " - " : "") + t.events + "</span>";
+      b.onclick = () => { S.team = t.team; S.kind === "team" ? stepHomeAway() : stepGame(); };
+      box.appendChild(b);
+    }
+    if(!shown) box.innerHTML = '<span class="hint">No match - try fewer letters.</span>';
+  };
+  render("");
+  flow.querySelector("#tf").oninput = (e) => render(e.target.value.trim().toLowerCase());
+}
+
+async function stepPlace(next){
+  flow.innerHTML = '<div class="field"><label>Loading places...</label></div>';
+  const q = S.kind === "date"
+    ? "tix_catalog?event_date=eq." + S.date + "&select=city,state&limit=2000"
+    : "tix_catalog?category=eq." + encodeURIComponent(S.category) + "&event_date=gte." + todayISO() + "&select=city,state&limit=2000";
+  const rows = await sbGet(q);
+  const byC = {}, byS = {};
+  for(const r of rows){
+    if(!r.state) continue;
+    byS[r.state] = (byS[r.state] || 0) + 1;
+    if(r.city){ const k = r.city + ", " + r.state; byC[k] = (byC[k] || 0) + 1; }
+  }
+  const pinCity = ["Minneapolis, MN", "Milwaukee, WI"], pinState = ["MN", "WI"];
+  const rankP = c => (c.city && pinCity.includes(c.label)) ? 0 : (!c.city && pinState.includes(c.state)) ? 1 : 2;
+  const seen = new Set();
+  const cands = [...Object.entries(byC).map(([k,n]) => { const [c,s] = k.split(", "); return {label:k, state:s, city:c, n}; }),
+                 ...Object.entries(byS).map(([s,n]) => ({label:s, state:s, city:null, n}))]
+    .filter(c => !seen.has(c.label) && seen.add(c.label))
+    .sort((a,b) => rankP(a) - rankP(b) || b.n - a.n).slice(0, 16);
+  flow.innerHTML = '<div class="field"><label>Narrow to a state or city? (optional)</label>' +
+    '<input type="text" id="pf" placeholder="Type a state or city" style="margin-bottom:10px">' +
+    '<div class="pick" id="places"><button data-skip="1">Everywhere</button></div></div>';
+  const box = flow.querySelector("#places");
+  const render = (f) => {
+    box.querySelectorAll("button:not([data-skip])").forEach(x => x.remove());
+    let shown = 0;
+    for(const c of cands){
+      if(f && !c.label.toLowerCase().includes(f)) continue;
+      if(++shown > 12) break;
+      const b = document.createElement("button");
+      b.innerHTML = esc(c.label) + '<span class="n">' + c.n + "</span>";
+      b.onclick = () => { S.place = c.city ? {city: c.city, state: c.state} : {state: c.state}; next(); };
+      box.appendChild(b);
+    }
+    if(!shown && f){
+      const b = document.createElement("button");
+      b.innerHTML = "No match - try a state name instead.";
+      b.disabled = true;
+      box.appendChild(b);
+    }
+  };
+  box.querySelector("[data-skip]").onclick = () => { S.place = null; next(); };
+  render("");
+  flow.querySelector("#pf").oninput = (e) => render(e.target.value.trim().toLowerCase());
+}
+
+function stepHomeAway(){
+  flow.innerHTML = '<div class="field"><label>' + esc(cap(S.team)) + ' - which games?</label><div class="pick">' +
+    '<button data-h="home">Home only</button><button data-h="away">Away only</button><button data-h="any">Home and away</button>' +
+    "</div>" + '<div class="hint">Away games: the watch counts every club we find at whatever stadium they visit. Home games: you pick the clubs next.</div></div>';
+  flow.querySelectorAll("button").forEach(b => b.onclick = () => { S.home_away = b.dataset.h; resolveVenueThenClubs(); });
+}
+
+async function stepGame(){
+  flow.innerHTML = '<div class="field"><label>Loading games...</label></div>';
+  let gq = "tix_catalog?slug=ilike.*" + encodeURIComponent(S.team) + "*&event_date=gte." + todayISO() +
+    (S.category ? "&category=eq." + encodeURIComponent(S.category) : "") +
+    "&select=event_id,slug,name,event_date,venue_slug,city,state,url&order=event_date&limit=120";
+  if(S.place && S.place.state) gq += "&state=eq." + encodeURIComponent(S.place.state);
+  if(S.place && S.place.city) gq += "&city=eq." + encodeURIComponent(S.place.city);
+  const rows = await sbGet(gq);
+  const boost = (() => {
+    if(S.place && S.place.state) return S.place.state;
+    const o = {};
+    for(const r of rows){ if((r.slug || "").endsWith("-at-" + S.team) && r.state) o[r.state] = (o[r.state] || 0) + 1; }
+    const ks = Object.keys(o);
+    return ks.sort((a,b) => o[b]-o[a])[0] || null;
+  })();
+  if(boost) rows.sort((a,b) => ((b.state === boost) - (a.state === boost)));
+  const pretty = n => (n && !/[A-Z]/.test(n)) ? n.split(" ").map(w => w === "at" ? w : w.charAt(0).toUpperCase() + w.slice(1)).join(" ") : n;
+  flow.innerHTML = '<div class="field"><label>Which game?</label><div id="games"></div></div>';
+  const box = flow.querySelector("#games");
+  if(!rows.length){ box.innerHTML = '<div class="hint">No upcoming games found for ' + esc(cap(S.team)) + ".</div>"; return; }
+  for(const r of rows){
+    const b = document.createElement("button");
+    b.className = "linklike"; b.style.display = "block"; b.style.textAlign = "left"; b.style.textDecoration = "none";
+    b.style.borderBottom = "1px solid var(--faint)"; b.style.width = "100%"; b.style.padding = "10px 0";
+    b.innerHTML = '<span style="font-weight:600">' + esc(pretty(r.name)) + '</span><br><span style="color:var(--muted);font-size:12px">' +
+      whenShort(r.event_date) + " - " + esc(r.city) + ", " + esc(r.state) + " - " + esc(cap(r.venue_slug || "")) + "</span>";
+    b.onclick = () => { S.event = r; S.venue_slug = r.venue_slug; stepClubs(); };
+    box.appendChild(b);
+  }
+}
+
+async function stepDate(){
+  flow.innerHTML = '<div class="field"><label>Which day?</label>' +
+    '<input type="date" id="d" min="' + todayISO() + '">' +
+    '<div class="hint">Watches every event in the catalog that day, or just one venue if you pick one next.</div></div>';
+  flow.querySelector("#d").onchange = async (e) => {
+    S.date = e.target.value; if(!S.date) return;
+    stepPlace(async () => {
+    flow.innerHTML = '<div class="field"><label>Loading venues for ' + esc(whenShort(S.date)) + "...</label></div>";
+    const rows = (await sbGet("tix_catalog?event_date=eq." + S.date + "&select=venue_slug,city,state&limit=2000"))
+      .filter(r => !S.place || (r.state === S.place.state && (!S.place.city || r.city === S.place.city)));
+    const byV = {};
+    for(const r of rows){ if(!r.venue_slug) continue; byV[r.venue_slug] = byV[r.venue_slug] || {v: r, n: 0}; byV[r.venue_slug].n++; }
+    const vs = Object.values(byV).sort((a,b) => b.n - a.n).slice(0, 30);
+    flow.innerHTML = '<div class="field"><label>Narrow to one venue? (optional)</label><div class="pick" id="vs">' +
+      '<button data-v="">Whole day, anywhere</button></div></div>';
+    const box = flow.querySelector("#vs");
+    box.firstElementChild.onclick = () => { S.venue_slug = null; stepClubs(); };
+    for(const x of vs){
+      const b = document.createElement("button");
+      b.innerHTML = esc(cap(x.v.venue_slug)) + '<span class="n">' + esc(x.v.city) + " - " + x.n + "</span>";
+      b.onclick = () => { S.venue_slug = x.v.venue_slug; stepClubs(); };
+      box.appendChild(b);
+    }
+    if(!vs.length){ box.insertAdjacentHTML("beforeend", '<span class="hint">No venues found for that place - go back and pick Everywhere.</span>'); }
+    });
+  };
+}
+
+async function resolveVenueThenClubs(){
+  if(S.kind === "team" && S.home_away !== "home"){ S.venue_slug = null; stepClubs(); return; }
+  // home team watch: home venue = the most common venue across its future home games
+  const rows = await sbGet("tix_catalog?slug=ilike.*-at-" + encodeURIComponent(S.team) + "*&event_date=gte." + todayISO() +
+    (S.category ? "&category=eq." + encodeURIComponent(S.category) : "") +
+    "&select=slug,venue_slug&limit=300");
+  const byV = {};
+  for(const r of rows.filter(r => (r.slug||"").endsWith("-at-" + S.team))){
+    if(r.venue_slug){ byV[r.venue_slug] = (byV[r.venue_slug] || 0) + 1; }
+  }
+  S.venue_slug = Object.keys(byV).sort((a,b) => byV[b] - byV[a])[0] || null;
+  stepClubs();
+}
+
+async function stepClubs(){
+  S.clubs = []; S.club_level = false;
+  if(!S.venue_slug){ stepNumbers(); return; }
+  flow.innerHTML = '<div class="field"><label>Loading club options at ' + esc(cap(S.venue_slug)) + "...</label></div>";
+  const rows = await sbGet("tix_venue_clubs?venue_slug=eq." + encodeURIComponent(S.venue_slug) + "&select=*");
+  const clubs = rows.length ? (rows[0].clubs || []) : [];
+  let html = '<div class="field"><label>Club level? (optional)</label><div class="pick">' +
+    '<button id="any">Any seat in the building</button><button id="clubonly">Club level only</button></div>' +
+    '<div class="hint"><button class="linklike" id="skip">Skip this step - watch every seat in the building</button></div>';
+  if(!clubs.length){
+    html += '<div class="hint">This venue has not been scanned yet - the first scan (within 15 minutes) finds its clubs automatically. Picking club level now counts every club it finds; you can edit the watch later to narrow.</div>';
+  }
+  html += "</div>";
+  flow.innerHTML = html;
+  flow.querySelector("#any").onclick = () => { S.club_level = false; S.clubs = []; stepNumbers(); };
+  flow.querySelector("#skip").onclick = () => { S.club_level = false; S.clubs = []; stepNumbers(); };
+  flow.querySelector("#clubonly").onclick = () => {
+    S.club_level = true;
+    if(!clubs.length){ S.clubs = []; stepNumbers(); return; }
+    let h2 = '<div class="field"><label>Which club at ' + esc(cap(S.venue_slug)) + '?</label>' +
+      '<select id="clubsel"><option value="">Any club in the building</option>';
+    for(const c of clubs){
+      h2 += '<option value="' + esc(c.group) + '">' + esc(c.group) + (c.cheapest ? " - from " + money(c.cheapest) : "") + "</option>";
+    }
+    h2 += '</select><div class="hint">Prices are the cheapest all-in per ticket from the last scan.</div>' +
+      '<button class="linklike" id="cont">Continue</button></div>';
+    flow.innerHTML = h2;
+    flow.querySelector("#cont").onclick = () => {
+      const v = flow.querySelector("#clubsel").value;
+      S.clubs = v ? [v] : [];
+      stepNumbers();
+    };
+  };
+}
+
+async function stepNumbers(){
+  flow.innerHTML =
+    '<div class="field"><label>How many seats together?</label><div class="qtyrow">' +
+      '<button id="qm">-</button><div class="v num" id="qv">' + S.qty + '</div><button id="qp">+</button>' +
+    "</div><div class=\"hint\">Only listings with this many seats together count.</div></div>" +
+    '<div class="field"><label>Most you will pay, per ticket</label>' +
+      '<input type="number" id="th" min="1" step="1" placeholder="900" style="max-width:160px">' +
+      '<div class="hint">All-in, fees included - the number on the checkout screen, not the sticker.</div></div>' +
+    '<div class="field"><label>How should it text you?</label><div class="pick">' +
+      '<button data-a="first">First dip only</button><button data-a="repeat">Every scan while under</button>' +
+    "</div><div class=\"hint\" id=\"ahint\">First dip: one text when a listing first lands under your number, then quiet. Every scan: keeps texting (about hourly) as long as it stays under.</div></div>" +
+    '<div class="field"><label>Name this watch</label><input type="text" id="lb" style="max-width:100%"></div>' +
+    '<button class="go" id="save">Save watch</button>';
+  const qv = flow.querySelector("#qv");
+  flow.querySelector("#qm").onclick = () => { S.qty = Math.max(1, S.qty - 1); qv.textContent = S.qty; };
+  flow.querySelector("#qp").onclick = () => { S.qty = Math.min(8, S.qty + 1); qv.textContent = S.qty; };
+  flow.querySelectorAll("[data-a]").forEach(b => b.onclick = () => {
+    S.alert_style = b.dataset.a;
+    flow.querySelectorAll("[data-a]").forEach(x => x.classList.toggle("on", x === b));
+  });
+  flow.querySelector('[data-a="first"]').classList.add("on");
+  flow.querySelector("#lb").value = autoLabel();
+  flow.querySelector("#save").onclick = save;
+  if(S.kind === "event" && S.event){
+    try{
+      const st = await sbGet("tix_event_stats?event_id=eq." + encodeURIComponent(S.event.event_id) + "&select=*");
+      if(st.length){
+        const s = st[0];
+        const line = document.createElement("div");
+        line.className = "hint";
+        line.textContent = "Right now across " + s.listings + " listings, all-in per ticket: " +
+          money(s.low_cents) + " low, " + money(s.median_cents) + " typical, " + money(s.high_cents) +
+          " high. Half of listings sit between " + money(s.p25_cents) + " and " + money(s.p75_cents) + ".";
+        const th = flow.querySelector("#th");
+        th.parentElement.appendChild(line);
+      }
+    }catch(_){}
+  }
+}
+
+function autoLabel(){
+  const clubBit = !S.club_level ? "any seats" : (S.clubs.length ? S.clubs.join(" + ") : "any club");
+  if(S.kind === "team") return cap(S.team) + " " + (S.home_away === "any" ? "home + away" : S.home_away) + " - " + clubBit;
+  if(S.kind === "event" && S.event) return S.event.name + " " + whenShort(S.event.event_date) + " - " + clubBit;
+  if(S.kind === "date") return whenShort(S.date) + (S.venue_slug ? " at " + cap(S.venue_slug) : S.place ? " in " + S.place.label || (S.place.city || S.place.state) : " anywhere") + " - " + clubBit;
+  return "New watch";
+}
+
+async function save(){
+  err("");
+  const th = parseInt(flow.querySelector("#th").value, 10);
+  if(!th || th < 1){ err("Set your max per-ticket price first."); return; }
+  S.threshold = th;
+  S.label = flow.querySelector("#lb").value.trim() || autoLabel();
+  const match = {};
+  if(S.kind === "team"){ match.slug = S.team; match.category = S.category; match.home_away = S.home_away; match.club_level = S.club_level; }
+  if(S.kind === "event"){ match.event_ids = [S.event.event_id]; match.club_level = S.club_level; }
+  if(S.kind === "date"){ match.date = S.date; if(S.venue_slug) match.venue_slug = S.venue_slug;
+    if(!S.venue_slug && S.place){ match.state = S.place.state; if(S.place.city) match.city = S.place.city; }
+    if(S.venue_slug) match.club_level = S.club_level; }
+  const b = flow.querySelector("#save");
+  b.disabled = true; b.textContent = "Saving...";
+  try{
+    await sbWrite("POST", "tix_watches", [{
+      label: S.label, kind: S.kind, match, clubs: S.clubs, qty: S.qty,
+      threshold_cents: S.threshold * 100, alert_style: S.alert_style, active: true
+    }]);
+    b.textContent = "Saved - watching.";
+    b.classList.add("armed");
+    flow.insertAdjacentHTML("beforeend",
+      '<p class="note">First scan within 15 minutes. <a href="./index.html"><u>See it on the wall</u></a> or <a href="./new.html"><u>make another</u></a>.</p>');
+  }catch(e){
+    b.disabled = false; b.textContent = "Save watch";
+    err("Save failed: " + e.message);
+  }
+}
+
+stepKind();
+</script>
+</body>
+</html>

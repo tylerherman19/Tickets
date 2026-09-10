@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Stub Wall - Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./tickets.css?v=3">
+</head>
+<body>
+<div id="chrome"></div>
+<main class="wrap">
+  <p class="lede">Every price the checker has recorded, newest first. This is the price history
+  the ticket sites keep to themselves - after a few weeks the trend lines are yours.</p>
+  <div class="sec-h disp"><span>Texts sent</span><span class="r" id="acount"></span></div>
+  <div id="alerts"><div class="empty">Loading...</div></div>
+  <div class="sec-h disp"><span>Price checks</span><span class="r" id="pcount"></span></div>
+  <div id="prices"><div class="empty">Loading...</div></div>
+</main>
+<script src="./tickets.js"></script>
+<script>
+chrome("ledger", "Ledger");
+function esc(s){ return (s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function dayTime(ts){
+  const d = new Date(ts);
+  return d.toLocaleDateString("en-US",{month:"short",day:"numeric"}) + " " +
+         d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}).toLowerCase();
+}
+async function load(){
+  const watches = await sbGet("tix_watches?select=id,label,threshold_cents");
+  const wById = {}; for(const w of watches) wById[w.id] = w;
+
+  const alerts = await sbGet("tix_alerts?select=*&order=sent_at.desc&limit=40");
+  document.getElementById("acount").textContent = alerts.length + " recent";
+  const ab = document.getElementById("alerts");
+  ab.innerHTML = alerts.length ? "" : '<div class="empty">No texts sent yet. When a listing lands under one of your numbers, it shows up here.</div>';
+  for(const a of alerts){
+    const w = wById[a.watch_id];
+    const div = document.createElement("div");
+    div.className = "lrow";
+    div.innerHTML = '<div class="d">' + dayTime(a.sent_at) + "</div>" +
+      "<div>" + esc(a.club) + ' <span class="p num">' + money(a.price_cents) + "</span> for " + a.qty + "+ together" +
+      (a.listing_url ? ' - <a href="' + esc(a.listing_url) + '" style="color:var(--accent)">listing</a>' : "") +
+      '<br><span style="color:var(--muted)">' + esc(w ? w.label : "") + (a.status === "failed" ? " - TEXT FAILED" : "") + "</span></div>";
+    ab.appendChild(div);
+  }
+
+  const prices = await sbGet("tix_prices?select=*&order=checked_at.desc&limit=80");
+  document.getElementById("pcount").textContent = prices.length + " recent";
+  const pb = document.getElementById("prices");
+  pb.innerHTML = prices.length ? "" : '<div class="empty">Nothing recorded yet.</div>';
+  for(const p of prices){
+    const w = wById[p.watch_id];
+    const under = w && p.price_cents <= w.threshold_cents;
+    const div = document.createElement("div");
+    div.className = "lrow";
+    div.innerHTML = '<div class="d">' + dayTime(p.checked_at) + "</div>" +
+      "<div>" + esc(p.club) + ' <span class="' + (under ? "hit" : "p") + ' num">' + money(p.price_cents) + "</span>" +
+      " for " + p.qty + "+ together - " + esc(p.event_label || "") +
+      (w ? '<br><span style="color:var(--muted)">' + esc(w.label) + (under ? " - under your number" : "") + "</span>" : "") +
+      "</div>";
+    pb.appendChild(div);
+  }
+}
+load().catch(e => { document.getElementById("prices").innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; });
+</script>
+</body>
+</html>
