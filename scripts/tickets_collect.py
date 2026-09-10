@@ -9,7 +9,7 @@ per-ticket threshold.
 Env: SUPABASE_URL, SUPABASE_SERVICE_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, SMS_GATEWAY
 Runs in GitHub Actions; free, no auth needed for any Gametime read.
 """
-import json, os, re, sys, time, urllib.request, urllib.error, urllib.parse
+import html as html_lib, json, os, re, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone, timedelta
 
 SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
@@ -77,14 +77,55 @@ def get_text(url, tries=3):
             time.sleep(3)
 
 # ---------- gametime parsing ----------
-def parse_event_page(html):
-    """Extract redux state; returns (event_meta, listings)."""
-    i = html.find("window.__data=")
-    if i < 0: return None, []
+def _decode_astro(value):
+    """Decode Astro's compact serialized props format."""
+    if isinstance(value, dict):
+        return {key: _decode_astro(item) for key, item in value.items()}
+    if isinstance(value, list):
+        if len(value) == 1 and isinstance(value[0], int):
+            return None
+        if len(value) == 2 and isinstance(value[0], int):
+            tag, payload = value
+            if tag == 1:
+                return [_decode_astro(item) for item in payload]
+            return _decode_astro(payload)
+        return [_decode_astro(item) for item in value]
+    return value
+
+
+def _parse_astro_event_page(page):
+    """Extract the EventListings island used by Gametime's current Astro site."""
+    match = re.search(
+        r'<astro-island\b(?=[^>]*\bcomponent-export="EventListings")'
+        r'[^>]*\bprops="([^"]*)"', page)
+    if not match:
+        return None, []
+    props = _decode_astro(json.loads(html_lib.unescape(match.group(1))))
+    full_event = props.get("fullEvent") or {}
+    event = full_event.get("event") or {}
+    response = props.get("listingsResponse") or {}
+    listings = response.get("listings") or []
+    if not event:
+        return None, listings
+    return {
+        "event_id": event.get("id") or props.get("eventId"),
+        "name": event.get("name"),
+        "category": event.get("category"),
+        "datetime_local": event.get("datetimeLocal"),
+        "min_total": (event.get("minPrice") or {}).get("total"),
+        "url": event.get("seoUrl") or props.get("eventPath"),
+    }, listings
+
+
+def parse_event_page(page):
+    """Extract event metadata and listings from current or legacy pages."""
+    i = page.find("window.__data=")
+    if i < 0:
+        return _parse_astro_event_page(page)
     i += len("window.__data=")
     depth = 0; in_str = False; esc = False; end = None
-    for j in range(i, len(html)):
-        c = html[j]
+    for j in range(i, len(page)):
+        c = page[j]
         if in_str:
             if esc: esc = False
             elif c == "\\": esc = True
@@ -97,21 +138,21 @@ def parse_event_page(html):
                 if depth == 0:
                     end = j + 1; break
     if not end: return None, []
-    payload = re.sub(r'("(?:\\.|[^"\\])*"|undefined)', lambda m: "null" if m.group(0) == "undefined" else m.group(0), html[i:end])
-    d = json.loads(payload)
-    redux = d.get("redux", {})
+    payload = re.sub(r'("(?:\\.|[^"\\])*"|undefined)', lambda m: "null" if m.group(0) == "undefined" else m.group(0), page[i:end])
+    data = json.loads(payload)
+    redux = data.get("redux", {})
     listings = (redux.get("listings") or {}).get("listings") or []
     meta = None
-    fe = (((redux.get("data") or {}).get("fullEvents") or {}).get("events")) or {}
-    for _id, wrap in fe.items():
-        ev = wrap.get("event") or {}
+    full_events = (((redux.get("data") or {}).get("fullEvents") or {}).get("events")) or {}
+    for event_id, wrap in full_events.items():
+        event = wrap.get("event") or {}
         meta = {
-            "event_id": ev.get("id") or _id,
-            "name": ev.get("name"),
-            "category": ev.get("category"),
-            "datetime_local": ev.get("datetimeLocal"),
-            "min_total": ((ev.get("minPrice") or {}).get("total")),
-            "url": ev.get("seoUrl"),
+            "event_id": event.get("id") or event_id,
+            "name": event.get("name"),
+            "category": event.get("category"),
+            "datetime_local": event.get("datetimeLocal"),
+            "min_total": ((event.get("minPrice") or {}).get("total")),
+            "url": event.get("seoUrl"),
         }
         break
     return meta, listings
