@@ -14,6 +14,9 @@ const cap = s => String(s||'').replace(/-/g,' ').replace(/\b\w/g, c=>c.toUpperCa
 const ageMinutes = ts => ts ? Math.max(0,(Date.now()-new Date(ts).getTime())/60000) : Infinity;
 const ago = ts => { const m=ageMinutes(ts); return !Number.isFinite(m) ? 'Not checked yet' : m<1 ? 'Just now' : m<60 ? `${Math.floor(m)} min ago` : m<1440 ? `${Math.floor(m/60)} hr ago` : `${Math.floor(m/1440)} days ago`; };
 const safeUrl = raw => { if(typeof raw!=='string'||!raw.trim())return ''; try { const u=new URL(raw,'https://gametime.co'); return u.protocol==='https:' && (u.hostname==='gametime.co'||u.hostname.endsWith('.gametime.co')) ? u.href : ''; } catch {return '';} };
+const normalizeUSPhone = raw => { let digits=String(raw||'').replace(/\D/g,'');if(digits.length===11&&digits[0]==='1')digits=digits.slice(1);return /^[2-9]\d{2}[2-9]\d{6}$/.test(digits)?digits:''; };
+const formatPhone = raw => {const d=normalizeUSPhone(raw);return d?`(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`:String(raw||'');};
+const carrierName = carrier => ({tmobile:'T-Mobile or Metro',verizon:'Verizon or Visible',uscellular:'UScellular'}[carrier]||'Your carrier');
 const leagueName = c => ({'nfl-football':'NFL','mlb-baseball':'MLB','nba-basketball':'NBA','nhl-hockey':'NHL','college-football':'College football','mls-soccer':'MLS','concert':'Concerts','comedy':'Comedy','theater':'Theater','sports':'More sports'}[c] || cap(c));
 const iconPaths = {
  ticket:'<path d="M4 5h16v5a2 2 0 0 0 0 4v5H4v-5a2 2 0 0 0 0-4z"/><path d="M15 7v2m0 2v2m0 2v2"/>',
@@ -44,6 +47,11 @@ async function sbWrite(method,path,body,prefer='return=representation') {
  const r=await fetch(SB_URL+'/rest/v1/'+path,{method,headers:{...H,Prefer:prefer},body:body==null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
  if(!r.ok) throw new Error(r.status===401||r.status===403 ? 'This alert could not be saved. Access to the alert board is unavailable.' : 'Your changes were not saved. Please try again.');
  return r.status===204 ? [] : r.json();
+}
+async function sbRpc(name,body) {
+ const r=await fetch(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:H,body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
+ if(!r.ok){let detail='';try{detail=(await r.json()).message||'';}catch{}throw new Error(detail||'Your text destination was not saved. Please try again.');}
+ return r.status===204?null:r.json();
 }
 function toast(message) { $('#toast').textContent=message; $('#toast').classList.add('show'); clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),5000); }
 function errorBox(message,retryId='retry') {return `<div class="notice error" role="alert">${icon('info')}<div><strong>Something interrupted that.</strong><p>${esc(message)}</p>${retryId?`<button class="text-button" id="${retryId}">Try again</button>`:''}</div></div>`;}

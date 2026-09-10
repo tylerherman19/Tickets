@@ -2,8 +2,8 @@
 """Ticket watch checker. Reads tix_watches from Supabase, resolves watched
 events from tix_catalog, fetches those Gametime event pages (anonymous SEO
 gate: window.__data.redux.listings.listings), records cheapest all-in price
-per club group per watch, and texts alerts through Gmail SMTP -> carrier SMS gateway
-gateway when a listing with qty+ seats together lands under the watch's
+per club group per watch, and texts alerts through Gmail SMTP -> carrier gateway
+when a listing with qty+ seats together lands under the watch's
 per-ticket threshold.
 
 Env: SUPABASE_URL, SUPABASE_SERVICE_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, SMS_GATEWAY
@@ -26,6 +26,11 @@ MAX_EVENT_FETCHES = 60
 CLUB_RE = re.compile(r"club", re.I)
 SITEMAPS = ["sport-events", "music-events", "comedy-events", "theater-events"]
 CATALOG_TTL_HOURS = 6
+PROVIDER_GATEWAYS = {
+    "tmobile": "tmomail.net",
+    "verizon": "vzwpix.com",
+    "uscellular": "email.uscc.net",
+}
 
 # ---------- supabase rest ----------
 def sb(method, path, body=None, prefer=None):
@@ -261,14 +266,21 @@ def resolve_events(w):
 def write_state(key, value):
     sb("POST", "tix_state?on_conflict=k", [{"k": key, "v": value, "updated_at": datetime.now(timezone.utc).isoformat()}], prefer="resolution=merge-duplicates,return=minimal")
 
-def send_sms(subject, body, test=False):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not SMS_GATEWAY:
+def destination_address(destination):
+    if not destination: return ""
+    phone = str(destination.get("phone_digits") or "")
+    domain = PROVIDER_GATEWAYS.get(destination.get("provider"))
+    return f"{phone}@{domain}" if re.fullmatch(r"[2-9][0-9]{2}[2-9][0-9]{6}", phone) and domain else ""
+
+def send_sms(subject, body, recipient=None, test=False):
+    recipient = recipient or SMS_GATEWAY
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not recipient:
         print("alert: notification configuration missing"); write_state("notification_health", {"status":"failed", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
     import smtplib, ssl
     from email.message import EmailMessage
     msg = EmailMessage()
     msg["From"] = GMAIL_ADDRESS
-    msg["To"] = SMS_GATEWAY
+    msg["To"] = recipient
     msg["Subject"] = subject
     msg.set_content(body)
     try:
@@ -278,6 +290,29 @@ def send_sms(subject, body, test=False):
         print("alert: mail server accepted message (carrier receipt not confirmed)"); write_state("notification_health", {"status":"accepted", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return True
     except Exception as e:
         print(f"alert: gmail smtp failed: {type(e).__name__}"); write_state("notification_health", {"status":"failed", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
+
+def send_pending_confirmations():
+    rows = sb("GET", "tix_confirmation_queue?sent_at=is.null&attempts=lt.3&select=*&order=requested_at.asc&limit=25")
+    accepted = 0
+    for queued in rows:
+        watch_id = queued["watch_id"]
+        destinations = sb("GET", f"tix_destinations?watch_id=eq.{watch_id}&select=phone_digits,provider&limit=1")
+        watches = sb("GET", f"tix_watches?id=eq.{watch_id}&select=threshold_cents&limit=1")
+        recipient = destination_address(destinations[0]) if destinations else ""
+        if not recipient or not watches:
+            sb("PATCH", f"tix_confirmation_queue?watch_id=eq.{watch_id}", {"attempts": queued["attempts"] + 1, "last_error": "delivery configuration missing"})
+            continue
+        label = re.sub(r"\s+", " ", queued.get("event_label") or "your event").strip()[:70]
+        target = fmt_money(watches[0]["threshold_cents"])
+        body = f"We're on the lookout for tickets to {label} at {target} or less. We'll text you when the price hits."
+        ok = send_sms("Ticketline is on it", body, recipient=recipient)
+        update = {"attempts": queued["attempts"] + 1, "last_error": None if ok else "send failed"}
+        if ok:
+            update["sent_at"] = datetime.now(timezone.utc).isoformat()
+            accepted += 1
+        sb("PATCH", f"tix_confirmation_queue?watch_id=eq.{watch_id}", update)
+    if rows: print(f"confirmations accepted: {accepted}/{len(rows)}")
+    return len(rows) - accepted
 
 def already_alerted(watch_id, event_id, club, repeat_window_min=None):
     q = (f"tix_alerts?watch_id=eq.{watch_id}&event_id=eq.{event_id}&club=eq.{urllib.parse.quote(club)}&status=eq.sent"
@@ -317,7 +352,8 @@ def scan_result(watch_id, event_id, outcome, checked_at):
        "outcome": outcome, "checked_at": checked_at}], prefer="resolution=merge-duplicates,return=minimal")
 
 def main():
-    health = {"checked_at": NOW.isoformat(), "sms_configured": bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD and SMS_GATEWAY),
+    has_saved_destination = bool(sb("GET", "tix_destinations?select=watch_id&limit=1"))
+    health = {"checked_at": NOW.isoformat(), "sms_configured": bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD and (SMS_GATEWAY or has_saved_destination)),
               "status": "ok", "checked_events": 0, "failed_events": 0}
     if os.environ.get("TIX_TEST_SMS") == "true":
         ok = send_sms("Ticketline test", "Ticketline: your ticket alerts are connected. This is a delivery test, not a ticket offer.", test=True)
@@ -331,6 +367,9 @@ def main():
         print(f"catalog refresh failed: {type(e).__name__}", file=sys.stderr)
         health["catalog_refresh_failed"] = True
 
+    if send_pending_confirmations():
+        health["status"] = "error"
+
     watches = sb("GET", "tix_watches?active=eq.true&select=*")
     invalid = [w for w in watches if not valid_watch(w)]
     if invalid:
@@ -340,6 +379,7 @@ def main():
     print(f"{len(watches)} active watches")
     if not watches:
         write_state("collector_health", health)
+        if health["status"] == "error": raise RuntimeError("Some ticket confirmations failed; see collector status")
         return
     resolved, events, watchers = {}, {}, {}
     for w in watches:
@@ -426,7 +466,9 @@ def main():
                     body = (f"{cat.get('name') or eid} {fmt_when(cat)}. {w['qty']} tickets together, "
                             f"{fmt_money(price)}/ticket including fees; {fmt_money(price*w['qty'])} total. "
                             f"{club}, sec {sec}, row {row}. At or below your {fmt_money(w['threshold_cents'])} target. {url}")
-                    ok = send_sms(subject, body)
+                    destinations = sb("GET", f"tix_destinations?watch_id=eq.{w['id']}&select=phone_digits,provider&limit=1")
+                    recipient = destination_address(destinations[0]) if destinations else SMS_GATEWAY
+                    ok = send_sms(subject, body, recipient=recipient)
                     sb("POST", "tix_alerts", [{"watch_id":w["id"], "event_id":eid, "club":club, "qty":w["qty"],
                        "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed"}], prefer="return=minimal")
                     if ok: sent += 1

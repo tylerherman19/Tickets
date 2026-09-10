@@ -38,6 +38,24 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(c.parse_event_page('<html>No event data</html>'),(None,[]))
     def test_cents_not_rounded(self):
         self.assertEqual(c.fmt_money(10050),'$100.50');self.assertEqual(c.fmt_money(10000),'$100')
+    def test_private_destination_builds_supported_gateway_address(self):
+        self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'tmobile'}),'6125550148@tmomail.net')
+        self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'verizon'}),'6125550148@vzwpix.com')
+        self.assertEqual(c.destination_address({'phone_digits':'1123456789','provider':'tmobile'}),'')
+        self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'unknown'}),'')
+    def test_new_destination_queues_the_requested_confirmation_copy(self):
+        queue={'watch_id':'w','event_label':'Minnesota Vikings at Green Bay Packers','attempts':0}
+        writes=[]
+        def db(method,path,body=None,prefer=None):
+            if path.startswith('tix_confirmation_queue?sent_at='): return [queue]
+            if path.startswith('tix_destinations?'): return [{'phone_digits':'6125550148','provider':'tmobile'}]
+            if path.startswith('tix_watches?'): return [{'threshold_cents':15000}]
+            writes.append((path,body)); return []
+        with patch.object(c,'sb',side_effect=db),patch.object(c,'send_sms',return_value=True) as send:
+            self.assertEqual(c.send_pending_confirmations(),0)
+        self.assertIn("We're on the lookout for tickets to Minnesota Vikings at Green Bay Packers at $150 or less.",send.call_args.args[1])
+        self.assertEqual(send.call_args.kwargs['recipient'],'6125550148@tmomail.net')
+        self.assertTrue(any(body.get('sent_at') for _,body in writes))
     def test_repeat_is_limited_to_one_hour(self):
         with patch.object(c,'sb',return_value=[{'sent_at':(c.NOW-timedelta(minutes=59)).isoformat()}]):
             self.assertTrue(c.already_alerted('w','e','Club',60))

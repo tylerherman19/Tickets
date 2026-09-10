@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       test_sms:
-        description: "Send one test to the configured text destination"
+        description: "Send one test to the legacy fallback destination"
         type: boolean
         default: false
   repository_dispatch:
