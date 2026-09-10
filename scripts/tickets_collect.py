@@ -29,6 +29,7 @@ CATALOG_TTL_HOURS = 6
 PROVIDER_GATEWAYS = {
     "tmobile": "tmomail.net",
     "verizon": "vzwpix.com",
+    "xfinity": "mypixmessages.com",
     "uscellular": "email.uscc.net",
 }
 

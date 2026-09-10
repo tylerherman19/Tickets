@@ -16,7 +16,7 @@ const ago = ts => { const m=ageMinutes(ts); return !Number.isFinite(m) ? 'Not ch
 const safeUrl = raw => { if(typeof raw!=='string'||!raw.trim())return ''; try { const u=new URL(raw,'https://gametime.co'); return u.protocol==='https:' && (u.hostname==='gametime.co'||u.hostname.endsWith('.gametime.co')) ? u.href : ''; } catch {return '';} };
 const normalizeUSPhone = raw => { let digits=String(raw||'').replace(/\D/g,'');if(digits.length===11&&digits[0]==='1')digits=digits.slice(1);return /^[2-9]\d{2}[2-9]\d{6}$/.test(digits)?digits:''; };
 const formatPhone = raw => {const d=normalizeUSPhone(raw);return d?`(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`:String(raw||'');};
-const carrierName = carrier => ({tmobile:'T-Mobile or Metro',verizon:'Verizon or Visible',uscellular:'UScellular'}[carrier]||'Your carrier');
+const carrierName = carrier => ({tmobile:'T-Mobile or Metro',verizon:'Verizon or Visible',xfinity:'Xfinity Mobile',uscellular:'UScellular'}[carrier]||'Your carrier');
 const leagueName = c => ({'nfl-football':'NFL','mlb-baseball':'MLB','nba-basketball':'NBA','nhl-hockey':'NHL','college-football':'College football','mls-soccer':'MLS','concert':'Concerts','comedy':'Comedy','theater':'Theater','sports':'More sports'}[c] || cap(c));
 const iconPaths = {
  ticket:'<path d="M4 5h16v5a2 2 0 0 0 0 4v5H4v-5a2 2 0 0 0 0-4z"/><path d="M15 7v2m0 2v2m0 2v2"/>',

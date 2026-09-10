@@ -5,9 +5,13 @@ begin;
 create table if not exists public.tix_destinations (
   watch_id uuid primary key references public.tix_watches(id) on delete cascade,
   phone_digits text not null check (phone_digits ~ '^[2-9][0-9]{2}[2-9][0-9]{6}$'),
-  provider text not null check (provider in ('tmobile','verizon','uscellular')),
+  provider text not null,
   updated_at timestamptz not null default now()
 );
+
+alter table public.tix_destinations drop constraint if exists tix_destinations_provider_check;
+alter table public.tix_destinations add constraint tix_destinations_provider_check
+  check (provider in ('tmobile','verizon','xfinity','uscellular'));
 
 create table if not exists public.tix_confirmation_queue (
   watch_id uuid primary key references public.tix_watches(id) on delete cascade,
@@ -40,7 +44,7 @@ begin
   if not exists (select 1 from public.tix_watches where id = p_watch_id) then
     raise exception 'This alert no longer exists.';
   end if;
-  if p_provider not in ('tmobile','verizon','uscellular') then
+  if p_provider not in ('tmobile','verizon','xfinity','uscellular') then
     raise exception 'Choose a supported cell provider.';
   end if;
 

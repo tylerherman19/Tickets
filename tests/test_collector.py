@@ -41,6 +41,7 @@ class CollectorTests(unittest.TestCase):
     def test_private_destination_builds_supported_gateway_address(self):
         self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'tmobile'}),'6125550148@tmomail.net')
         self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'verizon'}),'6125550148@vzwpix.com')
+        self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'xfinity'}),'6125550148@mypixmessages.com')
         self.assertEqual(c.destination_address({'phone_digits':'1123456789','provider':'tmobile'}),'')
         self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'unknown'}),'')
     def test_new_destination_queues_the_requested_confirmation_copy(self):
