@@ -36,6 +36,23 @@ class CollectorTests(unittest.TestCase):
         payload={'redux':{'data':{'fullEvents':{'events':{'abc':{'event':{'id':'abc','name':'A } "quoted" event'}}}}}}}
         self.assertEqual(c.parse_event_page('window.__data='+json.dumps(payload))[0]['event_id'],'abc')
         self.assertEqual(c.parse_event_page('<html>No event data</html>'),(None,[]))
+    def test_parser_reads_current_astro_event_listings(self):
+        encoded = {
+            'eventId':[0,'abc'],
+            'eventPath':[0,'/events/abc'],
+            'fullEvent':[0,{'event':[0,{'id':[0,'abc'],'name':[0,'A game'],
+                'category':[0,'nfl'],'datetimeLocal':[0,'2026-09-13T15:25:00'],
+                'minPrice':[0,{'total':[0,17300]}],'seoUrl':[0,'/events/abc']}]}],
+            'listingsResponse':[0,{'listings':[1,[[0,listing(17300)]]]}]
+        }
+        attrs=json.dumps(encoded).replace('&','&amp;').replace('"','&quot;')
+        page='<astro-island component-export="EventListings" props="'+attrs+'">'
+        meta,ls=c.parse_event_page(page)
+        self.assertEqual(meta['event_id'],'abc')
+        self.assertEqual(meta['min_total'],17300)
+        self.assertEqual(len(ls),1)
+        self.assertEqual(ls[0]['price']['total'],17300)
+
     def test_cents_not_rounded(self):
         self.assertEqual(c.fmt_money(10050),'$100.50');self.assertEqual(c.fmt_money(10000),'$100')
     def test_private_destination_builds_supported_gateway_address(self):
