@@ -14,6 +14,30 @@ const cap = s => String(s||'').replace(/-/g,' ').replace(/\b\w/g, c=>c.toUpperCa
 const ageMinutes = ts => ts ? Math.max(0,(Date.now()-new Date(ts).getTime())/60000) : Infinity;
 const ago = ts => { const m=ageMinutes(ts); return !Number.isFinite(m) ? 'Not checked yet' : m<1 ? 'Just now' : m<60 ? `${Math.floor(m)} min ago` : m<1440 ? `${Math.floor(m/60)} hr ago` : `${Math.floor(m/1440)} days ago`; };
 const safeUrl = raw => { if(typeof raw!=='string'||!raw.trim())return ''; try { const u=new URL(raw,'https://gametime.co'); return u.protocol==='https:' && (u.hostname==='gametime.co'||u.hostname.endsWith('.gametime.co')) ? u.href : ''; } catch {return '';} };
+const eventSearchUrl = (market,label) => {
+ const q=encodeURIComponent(String(label||'').trim());
+ const bases={tickpick:'https://www.tickpick.com/search?q=',seatgeek:'https://seatgeek.com/search?search=',vivid:'https://www.vividseats.com/search?searchTerm='};
+ return bases[market]+q;
+};
+const marketLinks = label => `<div class="market-links" aria-label="Compare ticket marketplaces"><span>Compare</span><a href="${eventSearchUrl('tickpick',label)}" target="_blank" rel="noopener">TickPick</a><a href="${eventSearchUrl('seatgeek',label)}" target="_blank" rel="noopener">SeatGeek</a><a href="${eventSearchUrl('vivid',label)}" target="_blank" rel="noopener">Vivid Seats</a></div>`;
+const watchHistory = (prices,watchId) => prices.filter(p=>p.watch_id===watchId).sort((a,b)=>new Date(a.checked_at)-new Date(b.checked_at));
+function sparkline(rows,wide=false){
+ if(!rows.length)return '';
+ const sample=rows.length>60?rows.filter((_,i)=>i%Math.ceil(rows.length/60)===0||i===rows.length-1):rows;
+ const vals=sample.map(r=>Number(r.price_cents)),lo=Math.min(...vals),hi=Math.max(...vals),w=wide?680:240,h=wide?180:58,pad=wide?18:3,span=hi-lo||1;
+ const pts=vals.map((v,i)=>`${pad+(i*(w-pad*2)/Math.max(1,vals.length-1)).toFixed(1)},${(h-pad-(v-lo)*(h-pad*2)/span).toFixed(1)}`).join(' ');
+ return `<svg class="price-chart ${wide?'full-chart':'sparkline'}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Price history from ${money(vals[0])} to ${money(vals.at(-1))}"><polyline points="${pts}"/></svg>`;
+}
+function priceContext(rows){
+ if(!rows.length)return '';
+ const latest=rows.at(-1),cut=Date.now()-86400000,prior=[...rows].reverse().find(r=>new Date(r.checked_at).getTime()<=cut),min=Math.min(...rows.map(r=>r.price_cents));
+ const bits=[];
+ if(prior){const d=latest.price_cents-prior.price_cents;bits.push(d===0?'unchanged since yesterday':`${d<0?'down':'up'} ${money(Math.abs(d))} since yesterday`);}
+ const days=Math.max(1,Math.ceil((new Date(latest.checked_at)-new Date(rows[0].checked_at))/86400000));
+ if(latest.price_cents===min)bits.push(`lowest in ${days} ${days===1?'day':'days'}`);
+ return bits.join(' · ');
+}
+
 const normalizeUSPhone = raw => { let digits=String(raw||'').replace(/\D/g,'');if(digits.length===11&&digits[0]==='1')digits=digits.slice(1);return /^[2-9]\d{2}[2-9]\d{6}$/.test(digits)?digits:''; };
 const formatPhone = raw => {const d=normalizeUSPhone(raw);return d?`(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`:String(raw||'');};
 const carrierName = carrier => ({tmobile:'T-Mobile or Metro',verizon:'Verizon or Visible',xfinity:'Xfinity Mobile',uscellular:'UScellular'}[carrier]||'Your carrier');
