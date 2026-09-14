@@ -172,6 +172,16 @@ def club_groups(listings):
             cur["cheapest"] = total
     return groups
 
+def market_spreads(listings):
+    """Low, median, and high current listing prices by permitted ticket lot."""
+    out = {}
+    for qty in range(1, 9):
+        values = sorted((l.get("price") or {}).get("total") for l in listings
+                        if (l.get("price") or {}).get("total") and allows_quantity(l, qty))
+        if values:
+            out[str(qty)] = {"low": values[0], "typical": values[len(values)//2], "high": values[-1], "listings": len(values)}
+    return out
+
 def allows_quantity(listing, qty):
     """The seller must permit exactly the requested lot, not merely have enough seats."""
     if not isinstance(qty, int) or not 1 <= qty <= 8: return False
@@ -480,7 +490,7 @@ def main():
             groups = club_groups(listings)
             if cat.get("venue_slug"):
                 sb("POST", "tix_venue_clubs?on_conflict=venue_slug", [{"venue_slug":cat["venue_slug"],
-                   "venue":cat.get("venue"), "clubs":sorted(groups.values(), key=lambda g:g["cheapest"]),
+                   "venue":cat.get("venue"), "clubs":[{"group":"__market__", "by_qty":market_spreads(listings)}] + sorted(groups.values(), key=lambda g:g["cheapest"]),
                    "sample_event_id":eid, "updated_at":checked_at}], prefer="resolution=merge-duplicates,return=minimal")
             for w in watchers[eid]:
                 # Re-read before delivery: honor pause, delete, or edit made during a long run.
