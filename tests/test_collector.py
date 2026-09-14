@@ -53,6 +53,15 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len(ls),1)
         self.assertEqual(ls[0]['price']['total'],17300)
 
+    def test_market_spread_respects_available_lots(self):
+        listings = [
+            {"price":{"total":10000},"seats":[1,2],"availableLots":[2]},
+            {"price":{"total":14000},"seats":[1,2,3],"availableLots":[2,3]},
+            {"price":{"total":20000},"seats":[1,2],"availableLots":[2]},
+        ]
+        spread = c.market_spreads(listings)["2"]
+        self.assertEqual(spread, {"low":10000,"typical":14000,"high":20000,"listings":3})
+
     def test_cents_not_rounded(self):
         self.assertEqual(c.fmt_money(10050),'$100.50');self.assertEqual(c.fmt_money(10000),'$100')
     def test_private_destination_builds_supported_gateway_address(self):
