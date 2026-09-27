@@ -1,0 +1,11 @@
+{
+  "name": "Ticketline",
+  "short_name": "Ticketline",
+  "description": "Ticket buying intelligence for your events",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2257e8",
+  "icons": [{"src":"./assets/favicon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]
+}

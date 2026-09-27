@@ -525,7 +525,7 @@ def main():
             sb("PATCH", f"tix_catalog?event_id=eq.{eid}", {k:v for k,v in {
                 "name":meta["name"], "datetime_local":meta["datetime_local"], "event_date":new_date or None,
                 "venue":meta.get('venue'), "min_total":meta["min_total"],
-                "last_seen":checked_at}.items() if v is not None})
+                "last_seen":checked_at, "price_checked_at":checked_at}.items() if v is not None})
             if meta.get("name"): cat["name"] = meta["name"]
             if meta.get("datetime_local"): cat["datetime_local"] = meta["datetime_local"]
             groups = club_groups(listings)

@@ -1,8 +1,8 @@
 /* Read-only snapshot of real catalog rows for local UI work. No production API calls. */
 const DEV_EVENTS = [
-  {event_id:'695d92b61f2335daaac0feb9',name:'Dolphins at Vikings',slug:'dolphins-at-vikings',category:'nfl-football',event_date:'2026-10-04',venue:'U.S. Bank Stadium',venue_slug:'u-s-bank-stadium',city:'Minneapolis',state:'MN',url:'https://gametime.co/',min_total:null,last_seen:null},
-  {event_id:'695cb020fa6aa653081fe5d6',name:'Bears at Packers',slug:'bears-at-packers',category:'nfl-football',event_date:'2026-10-11',venue:'Lambeau Field',venue_slug:'lambeau-field',city:'Green Bay',state:'WI',url:'https://gametime.co/',min_total:null,last_seen:null},
-  {event_id:'695d92b61b3cc022614f5d22',name:'Colts at Vikings',slug:'colts-at-vikings',category:'nfl-football',event_date:'2026-10-25',venue:'U.S. Bank Stadium',venue_slug:'u-s-bank-stadium',city:'Minneapolis',state:'MN',url:'https://gametime.co/',min_total:null,last_seen:null}
+  {event_id:'695d92b61f2335daaac0feb9',name:'Dolphins at Vikings',slug:'dolphins-at-vikings',category:'nfl-football',event_date:'2026-10-04',venue:'U.S. Bank Stadium',venue_slug:'u-s-bank-stadium',city:'Minneapolis',state:'MN',url:'https://gametime.co/',min_total:null,price_checked_at:null,last_seen:null},
+  {event_id:'695cb020fa6aa653081fe5d6',name:'Bears at Packers',slug:'bears-at-packers',category:'nfl-football',event_date:'2026-10-11',venue:'Lambeau Field',venue_slug:'lambeau-field',city:'Green Bay',state:'WI',url:'https://gametime.co/',min_total:null,price_checked_at:null,last_seen:null},
+  {event_id:'695d92b61b3cc022614f5d22',name:'Colts at Vikings',slug:'colts-at-vikings',category:'nfl-football',event_date:'2026-10-25',venue:'U.S. Bank Stadium',venue_slug:'u-s-bank-stadium',city:'Minneapolis',state:'MN',url:'https://gametime.co/',min_total:null,price_checked_at:null,last_seen:null}
 ];
 function devGet(path){
   const u=new URL(path,'http://ticketline.local/'),q=u.searchParams;

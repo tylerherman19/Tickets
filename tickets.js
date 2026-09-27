@@ -7,6 +7,10 @@ const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = c => Number.isFinite(Number(c)) && c !== null ? new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:Number(c)%100 ? 2 : 0}).format(c/100) : '—';
+const perTicketTargetCents = (amount,qty,mode='per') => {
+ const cents=Math.round(Number(amount)*100);
+ return Number.isInteger(qty)&&qty>0&&Number.isFinite(cents)?(mode==='total'?Math.floor(cents/qty):cents):NaN;
+};
 const todayISO = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 const dateObj = iso => new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso||'') ? iso+'T12:00:00' : iso);
 const whenShort = iso => iso ? dateObj(iso).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : 'Date to be confirmed';
@@ -21,12 +25,18 @@ const eventSearchUrl = (market,label) => {
 };
 const marketLinks = label => `<div class="market-links" aria-label="Compare ticket marketplaces"><span>Compare</span><a href="${eventSearchUrl('tickpick',label)}" target="_blank" rel="noopener">TickPick</a><a href="${eventSearchUrl('seatgeek',label)}" target="_blank" rel="noopener">SeatGeek</a><a href="${eventSearchUrl('vivid',label)}" target="_blank" rel="noopener">Vivid Seats</a></div>`;
 const watchHistory = (prices,watchId) => prices.filter(p=>p.watch_id===watchId).sort((a,b)=>new Date(a.checked_at)-new Date(b.checked_at));
-function sparkline(rows,wide=false){
+function sparkline(rows,wide=false,target=null,alerts=[]){
  if(!rows.length)return '';
- const sample=rows.length>60?rows.filter((_,i)=>i%Math.ceil(rows.length/60)===0||i===rows.length-1):rows;
- const vals=sample.map(r=>Number(r.price_cents)),lo=Math.min(...vals),hi=Math.max(...vals),w=wide?680:240,h=wide?180:58,pad=wide?18:3,span=hi-lo||1;
- const pts=vals.map((v,i)=>`${pad+(i*(w-pad*2)/Math.max(1,vals.length-1)).toFixed(1)},${(h-pad-(v-lo)*(h-pad*2)/span).toFixed(1)}`).join(' ');
- return `<svg class="price-chart ${wide?'full-chart':'sparkline'}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Price history from ${money(vals[0])} to ${money(vals.at(-1))}"><polyline points="${pts}"/></svg>`;
+ const sample=rows.length>180?rows.filter((_,i)=>i%Math.ceil(rows.length/180)===0||i===rows.length-1):rows;
+ const vals=sample.map(r=>Number(r.price_cents)),lo=Math.min(...vals,target??Infinity),hi=Math.max(...vals,target??-Infinity),w=wide?680:240,h=wide?180:58,pad=wide?22:3,span=hi-lo||1;
+ const times=sample.map(r=>new Date(r.checked_at).getTime()),first=times[0],duration=Math.max(1,times.at(-1)-first);
+ const x=i=>pad+(times[i]-first)*(w-pad*2)/duration;
+ const y=v=>h-pad-(v-lo)*(h-pad*2)/span;
+ const pts=vals.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+ const targetLine=wide&&target!=null?`<line class="chart-target" x1="${pad}" x2="${w-pad}" y1="${y(target)}" y2="${y(target)}"/><text x="${pad+3}" y="${Math.max(12,y(target)-5)}">Target ${money(target)}</text>`:'';
+ const dots=wide?sample.map((r,i)=>`<circle class="chart-point" cx="${x(i)}" cy="${y(vals[i])}" r="3" tabindex="0"><title>${esc(new Date(r.checked_at).toLocaleString('en-US'))}: ${money(vals[i])}</title></circle>`).join(''):'';
+ const markers=wide?alerts.map(a=>{const t=new Date(a.sent_at).getTime();if(t<first||t>times.at(-1))return '';const mx=pad+(t-first)*(w-pad*2)/duration;return `<circle class="chart-alert" cx="${mx}" cy="${h-pad}" r="5"><title>Notification ${esc(new Date(a.sent_at).toLocaleString('en-US'))}</title></circle>`;}).join(''):'';
+ return `<svg class="price-chart ${wide?'full-chart':'sparkline'}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Price history from ${money(vals[0])} to ${money(vals.at(-1))}">${targetLine}<polyline points="${pts}"/>${dots}${markers}</svg>`;
 }
 function priceContext(rows){
  if(!rows.length)return '';
