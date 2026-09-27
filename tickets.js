@@ -63,17 +63,23 @@ const iconPaths = {
 };
 const icon = (name, cls='') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name]||iconPaths.ticket}</svg>`;
 async function sbGet(path, {signal}={}) {
- const r=await fetch(SB_URL+'/rest/v1/'+path,{headers:H,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(20000)]):AbortSignal.timeout(20000)});
+ if(IS_DEV) return devGet(path);
+ const token=await accessToken();
+ const r=await fetch(SB_URL+'/rest/v1/'+path,{headers:{...H,Authorization:'Bearer '+(token||SB_KEY)},signal:signal?AbortSignal.any([signal,AbortSignal.timeout(20000)]):AbortSignal.timeout(20000)});
  if(!r.ok) throw new Error(r.status===401||r.status===403 ? 'Your session could not access this data. Please reload and try again.' : 'Could not load ticket data. Check your connection and try again.');
  return r.json();
 }
 async function sbWrite(method,path,body,prefer='return=representation') {
- const r=await fetch(SB_URL+'/rest/v1/'+path,{method,headers:{...H,Prefer:prefer},body:body==null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
+ if(IS_DEV) throw new Error('Local preview is read-only. Sign in on the live site to save an alert.');
+ const token=await accessToken();if(!token)throw new Error('Sign in again to change your alert.');
+ const r=await fetch(SB_URL+'/rest/v1/'+path,{method,headers:{...H,Authorization:'Bearer '+token,Prefer:prefer},body:body==null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
  if(!r.ok) throw new Error(r.status===401||r.status===403 ? 'This alert could not be saved. Access to the alert board is unavailable.' : 'Your changes were not saved. Please try again.');
  return r.status===204 ? [] : r.json();
 }
 async function sbRpc(name,body) {
- const r=await fetch(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:H,body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
+ if(IS_DEV) throw new Error('Local preview is read-only.');
+ const token=await accessToken();if(!token)throw new Error('Sign in again to change your alert.');
+ const r=await fetch(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:{...H,Authorization:'Bearer '+token},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
  if(!r.ok){let detail='';try{detail=(await r.json()).message||'';}catch{}throw new Error(detail||'Your text destination was not saved. Please try again.');}
  return r.status===204?null:r.json();
 }
@@ -81,9 +87,10 @@ function toast(message) { $('#toast').textContent=message; $('#toast').classList
 function errorBox(message,retryId='retry') {return `<div class="notice error" role="alert">${icon('info')}<div><strong>Something interrupted that.</strong><p>${esc(message)}</p>${retryId?`<button class="text-button" id="${retryId}">Try again</button>`:''}</div></div>`;}
 function loadingRows(n=4) {return `<div aria-label="Loading events" role="status">${Array.from({length:n},()=>'<div class="skeleton-row"><i></i><div><b></b><span></span></div></div>').join('')}</div>`;}
 function chrome(page) {
-  $('#chrome').innerHTML=`<header class="header"><div class="header-inner"><a class="brand" href="./index.html" aria-label="Ticketline home"><span class="brand-mark">${icon('ticket')}</span><span>Ticketline<span class="brand-period">.</span></span></a><nav aria-label="Main navigation"><a ${page==='explore'?'aria-current="page"':''} href="./index.html">Find events</a><a ${page==='watches'||page==='new'?'aria-current="page"':''} href="./watches.html">My alerts</a><a ${page==='activity'?'aria-current="page"':''} href="./ledger.html">Activity</a></nav><a class="notification-link" aria-label="Notification status" ${page==='notifications'?'aria-current="page"':''} href="./notifications.html">${icon('bell')}<span>Notifications</span></a></div></header>`;
+  $('#chrome').innerHTML=`<header class="header"><div class="header-inner"><a class="brand" href="./index.html" aria-label="Ticketline home"><span class="brand-mark">${icon('ticket')}</span><span>Ticketline<span class="brand-period">.</span></span></a><nav aria-label="Main navigation"><a ${page==='explore'?'aria-current="page"':''} href="./index.html">Find events</a><a ${page==='watches'||page==='new'?'aria-current="page"':''} href="./watches.html">My alerts</a><a ${page==='activity'?'aria-current="page"':''} href="./ledger.html">Activity</a></nav>${session?'<button id="sign-out" class="text-button">Sign out</button>':''}<a class="notification-link" aria-label="Notification status" ${page==='notifications'?'aria-current="page"':''} href="./notifications.html">${icon('bell')}<span>Notifications</span></a></div></header>`;
  $('#footer').innerHTML=`<footer class="footer"><div><a class="brand small" href="./index.html">${icon('ticket')}Ticketline.</a><p>A little patience. A better ticket.</p></div><div><span>Prices from Gametime. All prices in USD.</span><p>Availability and checkout prices can change.</p></div><div class="footer-links"><a href="./notifications.html">Notification settings</a><button class="text-button" id="how-link">How it works</button></div></footer>`;
- $('#how-link').onclick=()=>showDialog('Your game. Your budget.',`<div class="help-steps"><p><strong>1. Pick what you want to see.</strong><br>Track one event, a team’s schedule, or a day out.</p><p><strong>2. Set your limit.</strong><br>Choose the exact number of tickets and your maximum price per ticket, fees included.</p><p><strong>3. Get the heads-up.</strong><br>When a checked listing is at or below your limit, we send an alert with a link to Gametime. You choose whether to buy.</p></div><p class="muted">Checks target every 15 minutes in the week before an event and hourly further out. Scheduling can be delayed. This is a shared personal alert board; saved watches are visible to people with access to this site.</p><a class="button primary" href="./new.html">Create an alert ${icon('arrow')}</a>`);
+ if($('#sign-out'))$('#sign-out').onclick=signOut;
+ $('#how-link').onclick=()=>showDialog('Your game. Your budget.',`<div class="help-steps"><p><strong>1. Pick what you want to see.</strong><br>Track one event, a team’s schedule, or a day out.</p><p><strong>2. Set your limit.</strong><br>Choose the exact number of tickets and your maximum price per ticket, fees included.</p><p><strong>3. Get the heads-up.</strong><br>When a checked listing is at or below your limit, we send an alert with a link to Gametime. You choose whether to buy.</p></div><p class="muted">Checks target every 15 minutes in the week before an event and hourly further out. Scheduling can be delayed. Sign in to keep your alerts and history private.</p><a class="button primary" href="./new.html">Create an alert ${icon('arrow')}</a>`);
 }
 let dialogReturnFocus;
 function showDialog(title,body) { const d=$('#dialog'); dialogReturnFocus=document.activeElement; d.innerHTML=`<div class="dialog-head"><h2 id="dialog-title">${title}</h2><button class="icon-button" id="dialog-close" aria-label="Close dialog">${icon('close')}</button></div><div class="dialog-body">${body}</div>`;d.showModal();$('#dialog-close').onclick=()=>d.close();d.onclose=()=>dialogReturnFocus?.focus();d.onclick=e=>{if(e.target===d&&e.clientX&&(e.clientX<d.getBoundingClientRect().left||e.clientX>d.getBoundingClientRect().right||e.clientY<d.getBoundingClientRect().top||e.clientY>d.getBoundingClientRect().bottom))d.close();}; }

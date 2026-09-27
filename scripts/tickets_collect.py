@@ -107,6 +107,7 @@ def _parse_astro_event_page(page):
     listings = response.get("listings") or []
     if not event:
         return None, listings
+    venue = event.get('venue') or {}
     return {
         "event_id": event.get("id") or props.get("eventId"),
         "name": event.get("name"),
@@ -114,6 +115,7 @@ def _parse_astro_event_page(page):
         "datetime_local": event.get("datetimeLocal"),
         "min_total": (event.get("minPrice") or {}).get("total"),
         "url": event.get("seoUrl") or props.get("eventPath"),
+        "venue": venue.get('name') if isinstance(venue,dict) else venue,
     }, listings
 
 
@@ -153,6 +155,7 @@ def parse_event_page(page):
             "datetime_local": event.get("datetimeLocal"),
             "min_total": ((event.get("minPrice") or {}).get("total")),
             "url": event.get("seoUrl"),
+            "venue": (event.get('venue') or {}).get('name') if isinstance(event.get('venue'),dict) else event.get('venue'),
         }
         break
     return meta, listings
@@ -189,6 +192,25 @@ def allows_quantity(listing, qty):
     lots = listing.get("availableLots")
     # Unknown allowed quantities are not proof that the requested lot can be bought.
     return isinstance(lots, list) and qty in lots and len(seats) >= qty
+
+def check_interval_minutes(days_out, price_cents=None, threshold_cents=None):
+    """A 15-minute workflow can only realize 15-minute or slower intervals."""
+    if days_out <= 2: return 15
+    if days_out <= FAST_WINDOW_DAYS: return 15
+    if price_cents and threshold_cents and price_cents <= threshold_cents * 1.1: return 15
+    if days_out <= 30: return 60
+    return 180
+
+def page_outcome(page, meta):
+    """Never confuse changed provider markup with an empty inventory."""
+    if not meta: return 'parser_failure'
+    if 'window.__data=' not in page and 'component-export="EventListings"' not in page:
+        return 'parser_failure'
+    if 'window.__data=' in page and '"listings"' not in page:
+        return 'parser_failure'
+    if 'component-export="EventListings"' in page and 'listingsResponse' not in page:
+        return 'parser_failure'
+    return 'ok'
 
 def cheapest_any(listings, qty):
     best = None
@@ -366,9 +388,9 @@ def send_pending_confirmations():
     if rows: print(f"confirmations accepted: {accepted}/{len(rows)}")
     return len(rows) - accepted
 
-def already_alerted(watch_id, event_id, club, repeat_window_min=None):
+def already_alerted(watch_id, event_id, club, repeat_window_min=None, criteria_version=1):
     q = (f"tix_alerts?watch_id=eq.{watch_id}&event_id=eq.{event_id}&club=eq.{urllib.parse.quote(club)}&status=eq.sent"
-         f"&select=sent_at&order=sent_at.desc&limit=1")
+         f"&criteria_version=eq.{criteria_version}&select=sent_at&order=sent_at.desc&limit=1")
     rows = sb("GET", q)
     if not rows: return False
     if repeat_window_min is None: return True
@@ -399,9 +421,10 @@ def valid_watch(w):
             and isinstance(w.get("threshold_cents"), int) and 100 <= w["threshold_cents"] <= 5000000
             and w.get("alert_style") in ("first", "repeat"))
 
-def scan_result(watch_id, event_id, outcome, checked_at):
+def scan_result(watch_id, event_id, outcome, checked_at, criteria_version=1, detail=None):
     sb("POST", "tix_scans?on_conflict=watch_id,event_id", [{"watch_id": watch_id, "event_id": event_id,
-       "outcome": outcome, "checked_at": checked_at}], prefer="resolution=merge-duplicates,return=minimal")
+       "outcome": outcome, "checked_at": checked_at, "criteria_version":criteria_version,
+       "detail":detail or {}}], prefer="resolution=merge-duplicates,return=minimal")
 
 def main():
     has_saved_destination = bool(sb("GET", "tix_destinations?select=watch_id&limit=1"))
@@ -455,7 +478,6 @@ def main():
     for eid, cat in events.items():
         days_out = (datetime.fromisoformat(cat["event_date"]).date() - NOW.date()).days
         if days_out < 0: continue
-        interval = 12 if days_out <= FAST_WINDOW_DAYS else SLOW_CHECK_MINUTES
         oldest = NOW
         needs_check = False
         for w in watchers[eid]:
@@ -465,7 +487,12 @@ def main():
             ts = datetime.fromisoformat(last["checked_at"].replace("Z", "+00:00"))
             oldest = min(oldest, ts)
             criteria_ts = datetime.fromisoformat((w.get("criteria_updated_at") or w["created_at"]).replace("Z", "+00:00"))
-            if ts < criteria_ts or (NOW - ts) >= timedelta(minutes=interval) or (last["outcome"] == "failed" and (NOW-ts) >= timedelta(minutes=12)):
+            last_price = sb("GET", f"tix_prices?watch_id=eq.{w['id']}&event_id=eq.{eid}&criteria_version=eq.{w.get('criteria_version',1)}&select=price_cents&order=checked_at.desc&limit=1")
+            price = last_price[0]['price_cents'] if last_price else None
+            interval = check_interval_minutes(days_out, price, w['threshold_cents'])
+            if (last.get('criteria_version',1) != w.get('criteria_version',1) or ts < criteria_ts
+                or (NOW - ts) >= timedelta(minutes=interval)
+                or (last["outcome"] in ("failed","parser_failure","http_failure") and (NOW-ts) >= timedelta(minutes=15))):
                 needs_check = True
         if needs_check: due.append((oldest, cat))
     # Oldest checked first: a busy team/date watch cannot starve other events.
@@ -480,10 +507,24 @@ def main():
         try:
             html = get_text(cat["url"])
             meta, listings = parse_event_page(html)
+            if page_outcome(html, meta) != 'ok':
+                raise ValueError('parser_failure: provider event/listing data missing')
             if not meta or meta.get("event_id") != eid:
-                raise ValueError("Event page did not contain the requested event")
+                raise ValueError("event_unavailable: event ID changed or removed")
+            new_date = (meta.get('datetime_local') or '')[:10]
+            changes = []
+            for field, new_value in [('datetime_local',meta.get('datetime_local')),
+                                     ('event_date',new_date),('venue',meta.get('venue'))]:
+                old_value = cat.get(field)
+                if new_value and old_value and new_value != old_value and (field != 'event_date' or cat.get('datetime_local')):
+                    changes.append({'event_id':eid,'field':field,'old_value':old_value,
+                                    'new_value':new_value,'detected_at':checked_at})
+            if changes:
+                sb('POST','tix_event_changes',changes,prefer='return=minimal')
+                health['event_changes'] = health.get('event_changes',0)+len(changes)
             sb("PATCH", f"tix_catalog?event_id=eq.{eid}", {k:v for k,v in {
-                "name":meta["name"], "datetime_local":meta["datetime_local"], "min_total":meta["min_total"],
+                "name":meta["name"], "datetime_local":meta["datetime_local"], "event_date":new_date or None,
+                "venue":meta.get('venue'), "min_total":meta["min_total"],
                 "last_seen":checked_at}.items() if v is not None})
             if meta.get("name"): cat["name"] = meta["name"]
             if meta.get("datetime_local"): cat["datetime_local"] = meta["datetime_local"]
@@ -497,7 +538,7 @@ def main():
                 current = sb("GET", f"tix_watches?id=eq.{w['id']}&select=*")
                 if not current or not current[0]["active"]: continue
                 fresh = current[0]
-                if any(fresh.get(k) != w.get(k) for k in ("kind", "match", "clubs", "qty", "criteria_updated_at")): continue
+                if any(fresh.get(k) != w.get(k) for k in ("kind", "match", "clubs", "qty", "threshold_cents", "alert_style", "criteria_version")): continue
                 w = fresh
                 club_level = (w.get("match") or {}).get("club_level", bool(w.get("clubs")))
                 clubs = [g for g in (w.get("clubs") or list(groups)) if g in groups] if club_level else ["Any section"]
@@ -511,9 +552,11 @@ def main():
                     if not url.startswith("https://gametime.co/"): url = cat["url"]
                     sb("POST", "tix_prices", [{"watch_id":w["id"], "event_id":eid, "event_label":cat.get("name"),
                        "club":club, "qty":w["qty"], "price_cents":price, "listing_id":lid,
-                       "listing_url":url, "checked_at":checked_at}], prefer="return=minimal")
+                       "listing_url":url, "checked_at":checked_at,
+                       "criteria_version":w.get('criteria_version',1)}], prefer="return=minimal")
                     if price > w["threshold_cents"]: continue
-                    if already_alerted(w["id"], eid, club, 60 if w["alert_style"] == "repeat" else None): continue
+                    if already_alerted(w["id"], eid, club, 60 if w["alert_style"] == "repeat" else None,
+                                       w.get('criteria_version',1)): continue
                     subject = f"Ticketline: {fmt_money(price)} tickets"
                     body = (f"{cat.get('name') or eid} {fmt_when(cat)}. {w['qty']} tickets together, "
                             f"{fmt_money(price)}/ticket including fees; {fmt_money(price*w['qty'])} total. "
@@ -522,17 +565,25 @@ def main():
                     recipient = destination_address(destinations[0]) if destinations else SMS_GATEWAY
                     ok = send_sms(subject, body, recipient=recipient)
                     sb("POST", "tix_alerts", [{"watch_id":w["id"], "event_id":eid, "club":club, "qty":w["qty"],
-                       "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed"}], prefer="return=minimal")
+                       "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed",
+                       "criteria_version":w.get('criteria_version',1)}], prefer="return=minimal")
                     if ok: sent += 1
                     else: health["status"] = "error"
-                scan_result(w["id"], eid, "ok" if found else "unavailable", checked_at)
+                scan_result(w["id"], eid, "ok" if found else "unavailable", checked_at,
+                            w.get('criteria_version',1), {'listings_checked':len(listings),
+                            'available_lots':sorted({n for l in listings for n in (l.get('availableLots') or []) if isinstance(n,int)}),
+                            'matching_listings':sum(allows_quantity(l,w['qty']) for l in listings)})
             health["checked_events"] += 1
         except Exception as e:
             health["failed_events"] += 1
             health["status"] = "error"
             print(f"check {eid} failed: {type(e).__name__}: {e}", file=sys.stderr)
+            outcome = ('parser_failure' if 'parser_failure' in str(e) else
+                       'event_unavailable' if 'event_unavailable' in str(e) or
+                       isinstance(e, urllib.error.HTTPError) and e.code in (404,410) else 'http_failure')
+            health.setdefault('outcomes',{})[outcome] = health.setdefault('outcomes',{}).get(outcome,0)+1
             for w in watchers[eid]:
-                try: scan_result(w["id"], eid, "failed", checked_at)
+                try: scan_result(w["id"], eid, outcome, checked_at, w.get('criteria_version',1))
                 except Exception: pass  # watch may have been deleted during the fetch
         time.sleep(1)
     health["checked_at"] = datetime.now(timezone.utc).isoformat()

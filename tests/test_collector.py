@@ -89,6 +89,32 @@ class CollectorTests(unittest.TestCase):
         with patch.object(c,'sb',return_value=[{'sent_at':(c.NOW-timedelta(minutes=61)).isoformat()}]):
             self.assertFalse(c.already_alerted('w','e','Club',60))
             self.assertTrue(c.already_alerted('w','e','Club'))
+    def test_first_match_deduplication_uses_current_criteria_version(self):
+        with patch.object(c,'sb',return_value=[{'sent_at':c.NOW.isoformat()}]) as db:
+            self.assertTrue(c.already_alerted('w','e','Club',criteria_version=3))
+            self.assertIn('criteria_version=eq.3',db.call_args.args[1])
+    def test_adaptive_intervals_respect_workflow_cadence(self):
+        self.assertEqual(c.check_interval_minutes(2),15)
+        self.assertEqual(c.check_interval_minutes(20),60)
+        self.assertEqual(c.check_interval_minutes(60),180)
+        self.assertEqual(c.check_interval_minutes(60,10500,10000),15)
+    def test_parser_failure_is_distinct_from_zero_inventory(self):
+        self.assertEqual(c.page_outcome('<html>changed markup</html>',None),'parser_failure')
+        self.assertEqual(c.page_outcome('<astro-island component-export="EventListings" props="listingsResponse"></astro-island>',{'event_id':'e'}),'ok')
+    def test_event_time_change_is_recorded(self):
+        watch={'id':'w','kind':'event','match':{'event_ids':['abc']},'clubs':[], 'qty':2,
+               'threshold_cents':10000,'alert_style':'first','active':True,'created_at':c.NOW.isoformat()}
+        event={'event_id':'abc','event_date':c.NOW.date().isoformat(),'name':'A game','url':'https://gametime.co/event',
+               'datetime_local':'2026-09-27T15:00:00'}
+        writes=[]
+        def db(method,path,body=None,prefer=None):
+            if path.startswith('tix_watches?'):return [watch]
+            if method=='GET':return []
+            writes.append((path,body));return []
+        meta={'event_id':'abc','name':'A game','datetime_local':'2026-09-27T18:00:00','min_total':None}
+        with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[])),patch.object(c.time,'sleep'):
+            c.main()
+        self.assertTrue(any(path=='tix_event_changes' and body[0]['field']=='datetime_local' for path,body in writes))
     def test_event_watch_excludes_past_events(self):
         with patch.object(c,'sb',return_value=[]) as db:
             c.resolve_events({'kind':'event','match':{'event_ids':['abc']}})
@@ -107,7 +133,7 @@ class CollectorTests(unittest.TestCase):
                 if method=='GET': return []
                 writes.append((path,body)); return []
             meta={'event_id':'abc','name':'A game','datetime_local':None,'min_total':price}
-            with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'parse_event_page',return_value=(meta,[listing(price)])),patch.object(c,'send_sms',return_value=True) as send,patch.object(c.time,'sleep'):
+            with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[listing(price)])),patch.object(c,'send_sms',return_value=True) as send,patch.object(c.time,'sleep'):
                 c.main();self.assertEqual(send.called,expect_send)
                 self.assertTrue(any(path.startswith('tix_scans') and body[0]['outcome']=='ok' for path,body in writes))
     def test_no_matching_lots_records_unavailable(self):
@@ -115,7 +141,7 @@ class CollectorTests(unittest.TestCase):
         event={'event_id':'abc','event_date':c.NOW.date().isoformat(),'name':'A game','url':'https://gametime.co/event'}
         def db(method,path,body=None,prefer=None): return [watch] if path.startswith('tix_watches?') else []
         meta={'event_id':'abc','name':'A game','datetime_local':None,'min_total':1000}
-        with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'parse_event_page',return_value=(meta,[listing(1000,lots=[1,3,4])])),patch.object(c,'send_sms') as send,patch.object(c,'scan_result') as scan,patch.object(c.time,'sleep'):
+        with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[listing(1000,lots=[1,3,4])])),patch.object(c,'send_sms') as send,patch.object(c,'scan_result') as scan,patch.object(c.time,'sleep'):
             c.main();send.assert_not_called();self.assertEqual(scan.call_args[0][2],'unavailable')
 
 if __name__=='__main__':unittest.main()
