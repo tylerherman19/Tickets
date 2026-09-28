@@ -41,3 +41,5 @@
 @media(max-width:720px){.event-detail,.detail-prices{grid-template-columns:1fr}}
 .hero-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.hero-actions .button{white-space:nowrap}
 @media(max-width:640px){.hero-actions{align-items:stretch;flex-direction:column}.hero-actions .button{text-align:center}}
+
+.price-request-status{margin:0 0 10px;color:var(--muted);font-size:12px}
