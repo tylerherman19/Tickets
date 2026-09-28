@@ -209,10 +209,24 @@ def page_outcome(page, meta):
     if 'window.__data=' not in page and 'component-export="EventListings"' not in page:
         return 'parser_failure'
     if 'window.__data=' in page and '"listings"' not in page:
-        return 'parser_failure'
+        return 'metadata_only'
     if 'component-export="EventListings"' in page and 'listingsResponse' not in page:
-        return 'parser_failure'
+        return 'metadata_only'
     return 'ok'
+
+def fetch_provider_page(url):
+    """Retry an incomplete provider render once before recording its state."""
+    for attempt in range(2):
+        page = get_text(url)
+        try:
+            meta,listings = parse_event_page(page)
+            outcome = page_outcome(page,meta)
+        except (ValueError,TypeError,KeyError) as error:
+            if attempt == 0: continue
+            raise ValueError(f'parser_failure: {type(error).__name__}') from error
+        if outcome == 'ok' or attempt == 1:
+            return outcome,meta,listings
+    raise ValueError('parser_failure: no event data')
 
 def cheapest_any(listings, qty):
     best = None
@@ -428,7 +442,7 @@ def scan_result(watch_id, event_id, outcome, checked_at, criteria_version=1, det
        "outcome": outcome, "checked_at": checked_at, "criteria_version":criteria_version,
        "detail":detail or {}}], prefer="resolution=merge-duplicates,return=minimal")
 
-def record_event_market(cat, meta, listings, checked_at):
+def record_event_market(cat, meta, listings, checked_at, status='ok'):
     """Persist a successful provider parse, including a genuine empty market."""
     eid = cat['event_id']
     new_date = (meta.get('datetime_local') or '')[:10]
@@ -445,7 +459,7 @@ def record_event_market(cat, meta, listings, checked_at):
     provider_min = meta.get('min_total')
     minimum = provider_min if isinstance(provider_min,int) and provider_min > 0 else min(real_prices,default=None)
     patch = {'price_checked_at':checked_at,'discovery_attempt_at':checked_at,
-             'discovery_status':'ok','min_total':minimum,'last_seen':checked_at}
+             'discovery_status':status,'min_total':minimum,'last_seen':checked_at}
     for key, value in [('name',meta.get('name')),('datetime_local',meta.get('datetime_local')),
                        ('event_date',new_date or None),('venue',meta.get('venue'))]:
         if value is not None: patch[key] = value
@@ -545,14 +559,20 @@ def main():
         eid = cat["event_id"]
         checked_at = datetime.now(timezone.utc).isoformat()
         try:
-            html = get_text(cat["url"])
-            meta, listings = parse_event_page(html)
-            if page_outcome(html, meta) != 'ok':
+            provider_status,meta,listings = fetch_provider_page(cat["url"])
+            if provider_status == 'parser_failure':
                 raise ValueError('parser_failure: provider event/listing data missing')
             if not meta or meta.get("event_id") != eid:
                 raise ValueError("event_unavailable: event ID changed or removed")
-            groups,change_count = record_event_market(cat,meta,listings,checked_at)
+            groups,change_count = record_event_market(cat,meta,listings,checked_at,provider_status)
             health['event_changes'] = health.get('event_changes',0)+change_count
+            if provider_status == 'metadata_only':
+                for w in watchers[eid]:
+                    scan_result(w['id'],eid,'provider_incomplete',checked_at,w.get('criteria_version',1),
+                                {'reason':'Provider supplied a get-in price without listing quantities'})
+                health['provider_incomplete'] = health.get('provider_incomplete',0)+1
+                health['checked_events'] += 1
+                continue
             for w in watchers[eid]:
                 # Re-read before delivery: honor pause, delete, or edit made during a long run.
                 current = sb("GET", f"tix_watches?id=eq.{w['id']}&select=*")
@@ -617,15 +637,16 @@ def main():
         if eid in events: continue
         checked_at = datetime.now(timezone.utc).isoformat()
         try:
-            html = get_text(cat['url'])
-            meta,listings = parse_event_page(html)
-            if page_outcome(html,meta) != 'ok':
+            provider_status,meta,listings = fetch_provider_page(cat['url'])
+            if provider_status == 'parser_failure':
                 raise ValueError('parser_failure: provider event/listing data missing')
             if not meta or meta.get('event_id') != eid:
                 raise ValueError('event_unavailable: event ID changed or removed')
-            _,change_count = record_event_market(cat,meta,listings,checked_at)
+            _,change_count = record_event_market(cat,meta,listings,checked_at,provider_status)
             health['event_changes'] = health.get('event_changes',0)+change_count
             health['discovery_checked'] += 1
+            if provider_status == 'metadata_only':
+                health['discovery_metadata_only'] = health.get('discovery_metadata_only',0)+1
         except Exception as e:
             outcome = ('parser_failure' if 'parser_failure' in str(e) else
                        'event_unavailable' if 'event_unavailable' in str(e) or

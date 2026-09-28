@@ -122,6 +122,28 @@ class CollectorTests(unittest.TestCase):
     def test_parser_failure_is_distinct_from_zero_inventory(self):
         self.assertEqual(c.page_outcome('<html>changed markup</html>',None),'parser_failure')
         self.assertEqual(c.page_outcome('<astro-island component-export="EventListings" props="listingsResponse"></astro-island>',{'event_id':'e'}),'ok')
+        self.assertEqual(c.page_outcome('window.__data={"fullEvents":{}}',{'event_id':'e'}),'metadata_only')
+    def test_provider_metadata_without_lots_is_retried_once(self):
+        meta={'event_id':'e','min_total':3300}
+        with patch.object(c,'get_text',side_effect=['metadata','complete']) as fetch, \
+             patch.object(c,'parse_event_page',side_effect=[(meta,[]),(meta,[listing()])]), \
+             patch.object(c,'page_outcome',side_effect=['metadata_only','ok']):
+            status,_,listings=c.fetch_provider_page('https://gametime.co/events/e')
+        self.assertEqual(status,'ok');self.assertEqual(len(listings),1)
+        self.assertEqual(fetch.call_count,2)
+    def test_persistent_metadata_only_keeps_provider_get_in_without_exact_lots(self):
+        meta={'event_id':'e','min_total':3300}
+        with patch.object(c,'get_text',return_value='metadata'), \
+             patch.object(c,'parse_event_page',return_value=(meta,[])), \
+             patch.object(c,'page_outcome',return_value='metadata_only'):
+            status,_,listings=c.fetch_provider_page('https://gametime.co/events/e')
+        self.assertEqual(status,'metadata_only');self.assertEqual(listings,[])
+        writes=[]
+        with patch.object(c,'sb',side_effect=lambda method,path,body=None,prefer=None:writes.append((path,body)) or []):
+            c.record_event_market({'event_id':'e','url':'https://gametime.co/events/e'},meta,[],c.NOW.isoformat(),status)
+        catalog=next(body for path,body in writes if path.startswith('tix_catalog?'))
+        self.assertEqual(catalog['min_total'],3300)
+        self.assertEqual(catalog['discovery_status'],'metadata_only')
     def test_event_time_change_is_recorded(self):
         watch={'id':'w','kind':'event','match':{'event_ids':['abc']},'clubs':[], 'qty':2,
                'threshold_cents':10000,'alert_style':'first','active':True,'created_at':c.NOW.isoformat()}
