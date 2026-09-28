@@ -25,6 +25,7 @@ SLOW_CHECK_MINUTES = 60       # farther out: at most one check per hour
 MAX_EVENT_FETCHES = 60
 DISCOVERY_NEAR_FETCHES = 24
 DISCOVERY_LATER_FETCHES = 8
+DISCOVERY_SEED_CITIES = (('Minneapolis','MN'),('Milwaukee','WI'))
 CLUB_RE = re.compile(r"club", re.I)
 SITEMAPS = ["sport-events", "music-events", "comedy-events", "theater-events"]
 CATALOG_TTL_HOURS = 6
@@ -68,11 +69,11 @@ def get_json(url, headers=None, tries=3):
             if i == tries - 1: raise
             time.sleep(3)
 
-def get_text(url, tries=3):
+def get_text(url, tries=3, timeout=120):
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers=UA)
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read().decode("utf-8", "replace")
         except Exception:
             if i == tries - 1: raise
@@ -214,10 +215,10 @@ def page_outcome(page, meta):
         return 'metadata_only'
     return 'ok'
 
-def fetch_provider_page(url):
+def fetch_provider_page(url, discovery=False):
     """Retry an incomplete provider render once before recording its state."""
     for attempt in range(2):
-        page = get_text(url)
+        page = get_text(url,tries=1,timeout=25) if discovery else get_text(url)
         try:
             meta,listings = parse_event_page(page)
             outcome = page_outcome(page,meta)
@@ -479,10 +480,16 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
 
 def discovery_due():
     out = []
+    today = NOW.date().isoformat()
+    end = (NOW.date()+timedelta(days=7)).isoformat()
+    for city,state in DISCOVERY_SEED_CITIES:
+        out.extend(sb('GET',f'tix_events_v?city=eq.{urllib.parse.quote(city)}&state=eq.{state}'
+                      f'&event_date=gte.{today}&event_date=lte.{end}'
+                      '&discovery_attempt_at=is.null&order=event_date,event_id&select=*&limit=4'))
     for start,end,limit in [(0,7,DISCOVERY_NEAR_FETCHES),(8,30,DISCOVERY_LATER_FETCHES)]:
         out.extend(sb('POST','rpc/tix_discovery_due',
                       {'p_from_days':start,'p_to_days':end,'p_limit':limit}))
-    return out
+    return list({row['event_id']:row for row in out}.values())
 
 def main():
     has_saved_destination = bool(sb("GET", "tix_destinations?select=watch_id&limit=1"))
@@ -637,7 +644,7 @@ def main():
         if eid in events: continue
         checked_at = datetime.now(timezone.utc).isoformat()
         try:
-            provider_status,meta,listings = fetch_provider_page(cat['url'])
+            provider_status,meta,listings = fetch_provider_page(cat['url'],discovery=True)
             if provider_status == 'parser_failure':
                 raise ValueError('parser_failure: provider event/listing data missing')
             if not meta or meta.get('event_id') != eid:

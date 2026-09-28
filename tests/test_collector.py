@@ -28,13 +28,15 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(sample[0]['event_id'],'abc')
         self.assertEqual(sample[0]['listing_count'],0)
 
-    def test_discovery_queries_near_and_later_events_with_capped_limits(self):
+    def test_discovery_seeds_local_cities_then_queries_other_markets(self):
         with patch.object(c,'sb',return_value=[]) as db:
             c.discovery_due()
-        self.assertEqual(db.call_count,2)
-        self.assertEqual(db.call_args_list[0].args[1],'rpc/tix_discovery_due')
-        self.assertEqual(db.call_args_list[0].args[2]['p_limit'],c.DISCOVERY_NEAR_FETCHES)
-        self.assertEqual(db.call_args_list[1].args[2]['p_from_days'],8)
+        self.assertEqual(db.call_count,4)
+        self.assertIn('city=eq.Minneapolis',db.call_args_list[0].args[1])
+        self.assertIn('city=eq.Milwaukee',db.call_args_list[1].args[1])
+        self.assertEqual(db.call_args_list[2].args[1],'rpc/tix_discovery_due')
+        self.assertEqual(db.call_args_list[2].args[2]['p_limit'],c.DISCOVERY_NEAR_FETCHES)
+        self.assertEqual(db.call_args_list[3].args[2]['p_from_days'],8)
 
     def test_exact_quantity_respects_allowed_lots(self):
         self.assertIsNone(c.cheapest_any([listing(lots=[1,3,4])],2))
