@@ -7,10 +7,10 @@ on:
         description: "Send one test to the legacy fallback destination"
         type: boolean
         default: false
-  schedule:
-    # Sole automatic trigger. GitHub can delay scheduled starts; the collector
-    # decides which watched events are due on each run.
-    - cron: "*/15 * * * *"
+  # The existing cron-job.org job sends tickets-ping every 15 minutes.
+  # It is the sole automatic scheduler. There is no GitHub cron or pacer.
+  repository_dispatch:
+    types: [tickets-ping]
 
 concurrency:
   group: tickets-collector
