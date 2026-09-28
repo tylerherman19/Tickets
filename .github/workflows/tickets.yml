@@ -11,8 +11,10 @@ on:
         description: "Run the health watchdog; collect only if the last check is stale"
         type: boolean
         default: false
-  # The existing cron-job.org job sends tickets-ping every 15 minutes.
-  # It is the sole automatic scheduler. There is no GitHub cron or pacer.
+  # The existing external dispatcher sends tickets-ping every 15 minutes.
+  # This GitHub schedule is a backup health check, never an unconditional scan.
+  schedule:
+    - cron: '8,23,38,53 * * * *'
   repository_dispatch:
     types: [tickets-ping, tickets-watchdog]
 
@@ -39,7 +41,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           SMS_GATEWAY: ${{ secrets.SMS_GATEWAY }}
           TIX_TEST_SMS: ${{ inputs.test_sms }}
-          TIX_WATCHDOG: ${{ github.event.action == 'tickets-watchdog' || inputs.watchdog == true }}
+          TIX_WATCHDOG: ${{ github.event_name == 'schedule' || github.event.action == 'tickets-watchdog' || inputs.watchdog == true }}
         run: |
           if [ "$TIX_WATCHDOG" = "true" ]; then
             python scripts/tickets_watchdog.py

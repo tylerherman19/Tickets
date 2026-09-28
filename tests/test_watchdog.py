@@ -8,6 +8,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import tickets_watchdog as watchdog
 
 class WatchdogTests(unittest.TestCase):
+    def test_backup_schedule_uses_freshness_gate_and_shared_concurrency(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/tickets.yml').read_text()
+        self.assertIn("cron: '8,23,38,53 * * * *'", workflow)
+        self.assertIn("github.event_name == 'schedule'", workflow)
+        self.assertIn('group: tickets-collector', workflow)
+        self.assertIn('cancel-in-progress: false', workflow)
+
     def test_only_stale_checks_need_recovery(self):
         now = datetime(2026, 9, 28, 18, 0, tzinfo=timezone.utc)
         fresh = {'checked_at': (now-timedelta(minutes=24)).isoformat()}
