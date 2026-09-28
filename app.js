@@ -3,7 +3,7 @@ const page=document.body.dataset.page;
 chrome(page);
 const main=$('#main');
 const query=new URLSearchParams(location.search);
-const state={events:[],category:query.get('cheap')==='1'?'':query.get('category')||'nfl-football',search:query.get('q')||'',place:'',date:'',within:'',cheapOnly:query.get('cheap')==='1',maxPrice:'',offset:0,controller:null,kind:'event',selected:null,teams:[],step:1,qty:2,threshold:'',budgetMode:'per',clubLevel:false,clubs:[],clubOptions:[],homeAway:'home',alertStyle:'first',phone:'',provider:'',destinationConfigured:false,existingProvider:'',watches:[],prices:[],scans:[],intelligence:[],filter:'all',activityKind:'alerts',activityWatch:'all',activitySort:'newest',spread:null};
+const state={events:[],category:query.get('cheap')==='1'?'':query.get('category')||'nfl-football',search:query.get('q')||'',place:'',date:'',within:'',cheapOnly:query.get('cheap')==='1',catalogFallback:false,maxPrice:'',offset:0,controller:null,kind:'event',selected:null,teams:[],step:1,qty:2,threshold:'',budgetMode:'per',clubLevel:false,clubs:[],clubOptions:[],homeAway:'home',alertStyle:'first',phone:'',provider:'',destinationConfigured:false,existingProvider:'',watches:[],prices:[],scans:[],intelligence:[],filter:'all',activityKind:'alerts',activityWatch:'all',activitySort:'newest',spread:null};
 const matchSummary=w=>w.kind==='team'?`${cap(w.match.slug)} · ${w.match.home_away==='any'?'Home & away':cap(w.match.home_away||'home')+' games'}`:w.kind==='date'?whenShort(w.match.date)+(w.match.city?` in ${w.match.city}`:w.match.state?` in ${w.match.state}`:''):w.label;
 function layout(title,sub,body,action='') {main.innerHTML=`<div class="container page"><div class="page-heading"><div><h1>${title}</h1><p>${sub}</p></div>${action}</div>${body}</div>`;}
 function stadiumArt(){return `<div class="hero-art" aria-hidden="true"><div class="ticket-art"><div class="ticket-art-top"><span>Good times ahead</span>${icon('ticket')}</div><div class="stadium"><div class="stadium-ring ring-one"></div><div class="stadium-ring ring-two"></div><div class="stadium-ring ring-three"></div><div class="field"><div class="field-center"></div><div class="endzone first">GAME</div><div class="endzone last">DAY</div><i></i><b></b></div><span class="stadium-light light-one"></span><span class="stadium-light light-two"></span></div><div class="ticket-art-bottom"><span>Your seat is out there.</span><div class="barcode"></div></div></div><div class="floating-tag">${icon('bell')} The right price. You’re in.</div></div>`;}
@@ -22,12 +22,13 @@ function bindSearch(load){
  $('#clear-filters').onclick=()=>{clearTimeout(state.placeTimer);state.search='';state.place='';state.date='';state.maxPrice='';state.within='';state.cheapOnly=false;state.category='';state.offset=0;$('#event-search').value='';$('#place').value='';$('#event-date').value='';$('#max-price').value='';$('#within').value='';$('#category').value='';$$('[data-category]').forEach(b=>b.setAttribute('aria-pressed','false'));load();};
  $$('[data-category]').forEach(b=>b.onclick=()=>{state.category=b.dataset.category;$('#category').value=state.category;$$('[data-category]').forEach(x=>x.setAttribute('aria-pressed',x===b));state.offset=0;load();});
 }
-function catalogQuery(limit=13){
- let q=`tix_events_v?select=*&event_date=${state.date?'eq.'+state.date:'gte.'+todayISO()}&order=${state.cheapOnly?'min_total,event_date,event_id':'event_date,event_id'}&limit=${limit}&offset=${state.offset}`;
+function catalogQuery(limit=13,includeUnpriced=state.catalogFallback){
+ const priceOnly=(state.cheapOnly||Number(state.maxPrice)>0)&&!includeUnpriced;
+ let q=`tix_events_v?select=*&event_date=${state.date?'eq.'+state.date:'gte.'+todayISO()}&order=${state.cheapOnly&&!includeUnpriced?'min_total,event_date,event_id':'event_date,event_id'}&limit=${limit}&offset=${state.offset}`;
  if(!state.date&&(state.within||state.cheapOnly)&&state.within!=='all'){const days=Number(state.within||7);const end=new Date(Date.now()+days*86400000).toISOString().slice(0,10);q+='&event_date=lte.'+end;}
  if(state.category)q+='&category=eq.'+encodeURIComponent(state.category);
- if(Number(state.maxPrice)>0)q+='&min_total=lte.'+Math.round(Number(state.maxPrice)*100);
- if(state.cheapOnly||Number(state.maxPrice)>0){q+='&min_total=not.is.null&price_checked_at=gte.'+encodeURIComponent(new Date(Date.now()-72*3600000).toISOString());}
+ if(priceOnly&&Number(state.maxPrice)>0)q+='&min_total=lte.'+Math.round(Number(state.maxPrice)*100);
+ if(priceOnly){q+='&min_total=not.is.null&price_checked_at=gte.'+encodeURIComponent(new Date(Date.now()-72*3600000).toISOString());}
  // Strip PostgREST filter syntax, then quote each server-side search pattern.
  const clean=s=>s.replace(/[%*(),"\\]/g,' ').trim();
  if(state.search){const term=clean(state.search);if(term)q+='&or='+encodeURIComponent(`(name.ilike."*${term}*",slug.ilike."*${term.replace(/\s+/g,'-')}*")`);}
@@ -38,14 +39,21 @@ async function loadEvents(append=false){
  state.controller?.abort();const ctrl=state.controller=new AbortController();const box=$('#events');if(!append)box.innerHTML=loadingRows();
  const more=$('#more-events');if(more){more.disabled=true;more.textContent='Loading…';}
  try{
-  const rows=await sbGet(catalogQuery(),{signal:ctrl.signal});if(ctrl!==state.controller)return;
+  if(!append)state.catalogFallback=false;
+  let rows=await sbGet(catalogQuery(),{signal:ctrl.signal});if(ctrl!==state.controller)return;
+  if(!append&&!rows.length&&(state.cheapOnly||Number(state.maxPrice)>0)){
+   rows=await sbGet(catalogQuery(13,true),{signal:ctrl.signal});if(ctrl!==state.controller)return;
+   state.catalogFallback=rows.length>0;
+  }
   const moreAvailable=rows.length>12;rows.length=Math.min(rows.length,12);state.events=append?[...state.events,...rows]:rows;
   if(!append)box.innerHTML='';
-  if(!state.events.length)box.innerHTML=`<div class="empty-state">${icon('search')}<h3>No events found.</h3><p>Try a shorter name, another date, or remove the city filter.</p><button class="button secondary" id="empty-reset">Clear filters</button></div>`;
-  rows.forEach(e=>{const el=document.createElement('article');el.className='event-row';el.innerHTML=`${dateBadge(e.event_date)}<div class="event-info"><span class="event-category">${esc(leagueName(e.category))}</span><h3><a href="./event.html?event=${encodeURIComponent(e.event_id)}">${esc(cap(e.name))}</a></h3><p>${esc(e.venue||cap(e.venue_slug))}<span class="event-place">${esc(e.city)}, ${esc(e.state)}</span></p>${marketLinks(e.name)}</div><div class="event-price">${e.min_total&&ageMinutes(e.price_checked_at)<4320?`<strong>${money(e.min_total)}</strong><small>${e.discovery_status==='metadata_only'?'Get-in only':'Checked'} ${ago(e.price_checked_at).toLowerCase()}</small>`:'<span>Pick your price</span>'}</div><a class="button alert-button" href="./new.html?event=${encodeURIComponent(e.event_id)}">${icon('bell')}<span>Set alert</span><span class="sr-only"> for ${esc(cap(e.name))}</span></a>`;box.appendChild(el);});
-  $('#results-count').textContent=state.events.length?`${state.events.length}${moreAvailable?'+':''} upcoming events${state.place?' in '+state.place:''}`:'No upcoming matches';
+  if(!state.events.length){const heading=state.date?`No ${state.category?esc(leagueName(state.category))+' ':''}events listed for ${esc(whenShort(state.date))}.`:'No upcoming events match these filters.';box.innerHTML=`<div class="empty-state">${icon('search')}<h3>${heading}</h3><p>${state.date?'Try another date or see upcoming events.':'Try another category, city, or date.'}</p>${state.date?'<button class="button secondary" id="empty-upcoming">Show upcoming events</button>':''}<button class="button secondary" id="empty-reset">Clear filters</button></div>`;}
+  if(state.catalogFallback&&!append)box.innerHTML=`<div class="notice subtle" role="status"><strong>No recently checked prices match these filters.</strong><p>Showing real upcoming events while price checks continue. An event without a price has not been confirmed cheap${Number(state.maxPrice)>0?' or under your budget':''}.</p></div>`+box.innerHTML;
+  rows.forEach(e=>{const el=document.createElement('article');el.className='event-row';el.innerHTML=`${dateBadge(e.event_date)}<div class="event-info"><span class="event-category">${esc(leagueName(e.category))}</span><h3><a href="./event.html?event=${encodeURIComponent(e.event_id)}">${esc(cap(e.name))}</a></h3><p>${esc(e.venue||cap(e.venue_slug))}<span class="event-place">${esc(e.city)}, ${esc(e.state)}</span></p>${marketLinks(e.name)}</div><div class="event-price">${e.min_total&&ageMinutes(e.price_checked_at)<4320?`<strong>${money(e.min_total)}</strong><small>${e.discovery_status==='metadata_only'?'Get-in only':'Checked'} ${ago(e.price_checked_at).toLowerCase()}</small>`:'<span>Price not checked</span>'}</div><a class="button alert-button" href="./new.html?event=${encodeURIComponent(e.event_id)}">${icon('bell')}<span>Set alert</span><span class="sr-only"> for ${esc(cap(e.name))}</span></a>`;box.appendChild(el);});
+  $('#results-count').textContent=state.events.length?`${state.events.length}${moreAvailable?'+':''} upcoming events${state.place?' in '+state.place:''}${state.catalogFallback?' · prices pending':''}`:state.date?'No events on this date':'No upcoming matches';
   if(more){more.hidden=!moreAvailable;more.disabled=false;more.textContent='Show more events';}
   if($('#empty-reset'))$('#empty-reset').onclick=()=>$('#clear-filters').click();
+  if($('#empty-upcoming'))$('#empty-upcoming').onclick=()=>{state.date='';state.offset=0;$('#event-date').value='';loadEvents();};
  }catch(e){if(e.name==='AbortError')return;if(ctrl!==state.controller)return;box.innerHTML=errorBox(e.message);$('#retry').onclick=()=>loadEvents();$('#results-count').textContent='Events could not load';if(more)more.hidden=true;}
 }
 async function getHealth(){try {const rows=await sbGet('tix_state?k=in.(collector_health,notification_health)&select=k,v');return Object.fromEntries(rows.map(r=>[r.k,typeof r.v==='string'?JSON.parse(r.v):r.v]));}catch{return {};}}

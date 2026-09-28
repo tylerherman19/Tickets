@@ -23,9 +23,10 @@ NOW = datetime.now(timezone.utc)
 FAST_WINDOW_DAYS = 7          # events this close get checked every run
 SLOW_CHECK_MINUTES = 60       # farther out: at most one check per hour
 MAX_EVENT_FETCHES = 60
-DISCOVERY_NEAR_FETCHES = 24
+DISCOVERY_NEAR_FETCHES = 20
 DISCOVERY_LATER_FETCHES = 8
 DISCOVERY_SEED_CITIES = (('Minneapolis','MN'),('Milwaukee','WI'))
+DISCOVERY_SEED_CATEGORIES = ('mlb-baseball','nfl-football','nba-basketball','nhl-hockey')
 CLUB_RE = re.compile(r"club", re.I)
 SITEMAPS = ["sport-events", "music-events", "comedy-events", "theater-events"]
 CATALOG_TTL_HOURS = 6
@@ -487,6 +488,11 @@ def discovery_due():
         out.extend(sb('GET',f'tix_events_v?city=eq.{urllib.parse.quote(city)}&state=eq.{state}'
                       f'&event_date=gte.{today}&event_date=lte.{end}'
                       '&discovery_attempt_at=is.null&order=event_date,event_id&select=*&limit=4'))
+    for category in DISCOVERY_SEED_CATEGORIES:
+        out.extend(sb('GET',f'tix_events_v?category=eq.{category}'
+                      f'&event_date=gte.{today}&event_date=lte.{end}'
+                      '&name=not.ilike.*tbd*&discovery_attempt_at=is.null'
+                      '&order=event_date,event_id&select=*&limit=2'))
     for start,end,limit in [(0,7,DISCOVERY_NEAR_FETCHES),(8,30,DISCOVERY_LATER_FETCHES)]:
         out.extend(sb('POST','rpc/tix_discovery_due',
                       {'p_from_days':start,'p_to_days':end,'p_limit':limit}))
