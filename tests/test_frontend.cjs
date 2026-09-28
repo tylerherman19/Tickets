@@ -16,6 +16,14 @@ test('untrusted labels cannot create markup',()=>{assert.equal(run('esc("<img on
 const app=fs.readFileSync('app.js','utf8');const start=app.indexOf('function watchLatest(');const end=app.indexOf('function renderWatches(');vm.runInContext('const state={prices:[],scans:[]};'+app.slice(start,end),sandbox);
 const queryStart=app.indexOf('function catalogQuery('),queryEnd=app.indexOf('async function loadEvents(');
 vm.runInContext(app.slice(queryStart,queryEnd),sandbox);
+test('clearing search cannot leave an invisible filter active',()=>{
+ const controls=Object.fromEntries(['search-form','event-search','category','place','event-date','max-price','within','clear-filters'].map(id=>['#'+id,{value:''}]));
+ sandbox.controls=controls;sandbox.document={querySelector:selector=>controls[selector],querySelectorAll:()=>[]};sandbox.loadCalls=0;
+ vm.runInContext(app.slice(app.indexOf('function bindSearch('),queryStart),sandbox);
+ run('state.search="old search";state.offset=12;bindSearch(()=>{loadCalls++});controls["#event-search"].oninput({target:controls["#event-search"]})');
+ assert.equal(run('state.search'),'');assert.equal(run('state.offset'),0);assert.equal(sandbox.loadCalls,1);
+ assert.doesNotMatch(run('catalogQuery()'),/&or=/);
+});
 test('homepage pagination retains one order and advances by displayed rows',()=>{
  run('Object.assign(state,{category:"",date:"",search:"",place:"",maxPrice:"",offset:0})');
  const first=run('catalogQuery()');run('state.offset=12');const second=run('catalogQuery()');
