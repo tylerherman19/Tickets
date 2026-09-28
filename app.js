@@ -35,6 +35,13 @@ function catalogQuery(limit=13,includeUnpriced=state.catalogFallback){
  if(state.place){const p=clean(state.place);q+=p.length===2?'&state=eq.'+encodeURIComponent(p.toUpperCase()):'&city=ilike.'+encodeURIComponent('*'+p+'*');}
  return q;
 }
+function priceCheckCandidates(rows){return [...new Set(rows.filter(e=>e.event_date>=todayISO()&&(!e.price_checked_at||ageMinutes(e.price_checked_at)>15)).map(e=>e.event_id))].slice(0,3);}
+async function queuePriceChecks(rows,ctrl){
+ const ids=priceCheckCandidates(rows),status=$('#price-request-status');if(!ids.length||IS_DEV||!status)return;
+ const results=await Promise.allSettled(ids.map(id=>sbPublicRpc('tix_request_price_check',{p_event_id:id},{signal:ctrl.signal})));
+ if(ctrl!==state.controller||!status.isConnected)return;
+ status.textContent=results.some(r=>r.status==='fulfilled'&&r.value===true)?'Price checks requested for these events. Check back after the next scheduled run.':results.some(r=>r.status==='fulfilled')?'Price checks were requested recently. Check back after the next scheduled run.':'Automatic price requests are unavailable right now. The regular collector will continue checking.';
+}
 async function loadEvents(append=false){
  state.controller?.abort();const ctrl=state.controller=new AbortController();const box=$('#events');if(!append)box.innerHTML=loadingRows();
  const more=$('#more-events');if(more){more.disabled=true;more.textContent='Loading…';}
@@ -48,12 +55,13 @@ async function loadEvents(append=false){
   const moreAvailable=rows.length>12;rows.length=Math.min(rows.length,12);state.events=append?[...state.events,...rows]:rows;
   if(!append)box.innerHTML='';
   if(!state.events.length){const heading=state.date?`No ${state.category?esc(leagueName(state.category))+' ':''}events listed for ${esc(whenShort(state.date))}.`:'No upcoming events match these filters.';box.innerHTML=`<div class="empty-state">${icon('search')}<h3>${heading}</h3><p>${state.date?'Try another date or see upcoming events.':'Try another category, city, or date.'}</p>${state.date?'<button class="button secondary" id="empty-upcoming">Show upcoming events</button>':''}<button class="button secondary" id="empty-reset">Clear filters</button></div>`;}
-  if(state.catalogFallback&&!append)box.innerHTML=`<div class="notice subtle" role="status"><strong>No recently checked prices match these filters.</strong><p>Showing real upcoming events while price checks continue. An event without a price has not been confirmed cheap${Number(state.maxPrice)>0?' or under your budget':''}.</p></div>`+box.innerHTML;
+  if(state.catalogFallback&&!append)box.innerHTML=`<div class="notice subtle" role="status"><strong>No recently checked prices match these filters.</strong><p>Showing real upcoming events. An event without a price has not been confirmed cheap${Number(state.maxPrice)>0?' or under your budget':''}.</p><p id="price-request-status"></p></div>`+box.innerHTML;
   rows.forEach(e=>{const el=document.createElement('article');el.className='event-row';el.innerHTML=`${dateBadge(e.event_date)}<div class="event-info"><span class="event-category">${esc(leagueName(e.category))}</span><h3><a href="./event.html?event=${encodeURIComponent(e.event_id)}">${esc(cap(e.name))}</a></h3><p>${esc(e.venue||cap(e.venue_slug))}<span class="event-place">${esc(e.city)}, ${esc(e.state)}</span></p>${marketLinks(e.name)}</div><div class="event-price">${e.min_total&&ageMinutes(e.price_checked_at)<4320?`<strong>${money(e.min_total)}</strong><small>${e.discovery_status==='metadata_only'?'Get-in only':'Checked'} ${ago(e.price_checked_at).toLowerCase()}</small>`:'<span>Price not checked</span>'}</div><a class="button alert-button" href="./new.html?event=${encodeURIComponent(e.event_id)}">${icon('bell')}<span>Set alert</span><span class="sr-only"> for ${esc(cap(e.name))}</span></a>`;box.appendChild(el);});
   $('#results-count').textContent=state.events.length?`${state.events.length}${moreAvailable?'+':''} upcoming events${state.place?' in '+state.place:''}${state.catalogFallback?' · prices pending':''}`:state.date?'No events on this date':'No upcoming matches';
   if(more){more.hidden=!moreAvailable;more.disabled=false;more.textContent='Show more events';}
   if($('#empty-reset'))$('#empty-reset').onclick=()=>$('#clear-filters').click();
   if($('#empty-upcoming'))$('#empty-upcoming').onclick=()=>{state.date='';state.offset=0;$('#event-date').value='';loadEvents();};
+  if(state.catalogFallback&&!append)queuePriceChecks(rows,ctrl);
  }catch(e){if(e.name==='AbortError')return;if(ctrl!==state.controller)return;box.innerHTML=errorBox(e.message);$('#retry').onclick=()=>loadEvents();$('#results-count').textContent='Events could not load';if(more)more.hidden=true;}
 }
 async function getHealth(){try {const rows=await sbGet('tix_state?k=in.(collector_health,notification_health)&select=k,v');return Object.fromEntries(rows.map(r=>[r.k,typeof r.v==='string'?JSON.parse(r.v):r.v]));}catch{return {};}}

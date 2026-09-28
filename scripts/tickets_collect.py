@@ -482,6 +482,7 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
 
 def discovery_due():
     out = []
+    out.extend(sb('POST','rpc/tix_requested_discovery',{'p_limit':8}))
     today = NOW.date().isoformat()
     end = (NOW.date()+timedelta(days=7)).isoformat()
     for city,state in DISCOVERY_SEED_CITIES:

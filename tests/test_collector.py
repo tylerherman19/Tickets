@@ -31,14 +31,16 @@ class CollectorTests(unittest.TestCase):
     def test_discovery_seeds_local_cities_and_major_sports_then_queries_other_markets(self):
         with patch.object(c,'sb',return_value=[]) as db:
             c.discovery_due()
-        self.assertEqual(db.call_count,8)
-        self.assertIn('city=eq.Minneapolis',db.call_args_list[0].args[1])
-        self.assertIn('city=eq.Milwaukee',db.call_args_list[1].args[1])
-        self.assertIn('category=eq.mlb-baseball',db.call_args_list[2].args[1])
-        self.assertIn('name=not.ilike.*tbd*',db.call_args_list[2].args[1])
-        self.assertEqual(db.call_args_list[6].args[1],'rpc/tix_discovery_due')
-        self.assertEqual(db.call_args_list[6].args[2]['p_limit'],c.DISCOVERY_NEAR_FETCHES)
-        self.assertEqual(db.call_args_list[7].args[2]['p_from_days'],8)
+        self.assertEqual(db.call_count,9)
+        self.assertEqual(db.call_args_list[0].args[1],'rpc/tix_requested_discovery')
+        self.assertEqual(db.call_args_list[0].args[2],{'p_limit':8})
+        self.assertIn('city=eq.Minneapolis',db.call_args_list[1].args[1])
+        self.assertIn('city=eq.Milwaukee',db.call_args_list[2].args[1])
+        self.assertIn('category=eq.mlb-baseball',db.call_args_list[3].args[1])
+        self.assertIn('name=not.ilike.*tbd*',db.call_args_list[3].args[1])
+        self.assertEqual(db.call_args_list[7].args[1],'rpc/tix_discovery_due')
+        self.assertEqual(db.call_args_list[7].args[2]['p_limit'],c.DISCOVERY_NEAR_FETCHES)
+        self.assertEqual(db.call_args_list[8].args[2]['p_from_days'],8)
 
     def test_exact_quantity_respects_allowed_lots(self):
         self.assertIsNone(c.cheapest_any([listing(lots=[1,3,4])],2))

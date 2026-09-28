@@ -79,6 +79,12 @@ async function sbGet(path, {signal}={}) {
  if(!r.ok) throw new Error(r.status===401||r.status===403 ? 'Your session could not access this data. Please reload and try again.' : 'Could not load ticket data. Check your connection and try again.');
  return r.json();
 }
+async function sbPublicRpc(name,body,{signal}={}) {
+ if(IS_DEV) return false;
+ const r=await fetch(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:H,body:JSON.stringify(body),signal:signal?AbortSignal.any([signal,AbortSignal.timeout(10000)]):AbortSignal.timeout(10000)});
+ if(!r.ok) throw new Error('Could not request a price check.');
+ return r.json();
+}
 async function sbWrite(method,path,body,prefer='return=representation') {
  if(IS_DEV) throw new Error('Local preview is read-only. Sign in on the live site to save an alert.');
  const token=await accessToken();if(!token)throw new Error('Sign in again to change your alert.');

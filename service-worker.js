@@ -1,6 +1,6 @@
-const CACHE='ticketline-shell-20260928f';
-const SHELL=['./index.html','./tickets.css?v=20260928f','./tickets.js?v=20260928f',
-  './auth.js?v=20260928f','./dev-fixtures.js?v=20260928f','./app.js?v=20260928f'];
+const CACHE='ticketline-shell-20260928g';
+const SHELL=['./index.html','./tickets.css?v=20260928g','./tickets.js?v=20260928g',
+  './auth.js?v=20260928g','./dev-fixtures.js?v=20260928g','./app.js?v=20260928g'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
 self.addEventListener('fetch',event=>{

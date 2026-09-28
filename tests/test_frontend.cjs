@@ -45,6 +45,12 @@ test('price discovery can fall back to real catalog events without claiming an u
  assert.match(fallback,/category=eq\.mlb-baseball/);
  assert.match(fallback,/order=event_date,event_id&limit=13&offset=0/);
 });
+test('public searches request only three real stale event prices',()=>{
+ const now=new Date().toISOString(),future='2099-10-04',past='2020-01-01';
+ const rows=[{event_id:'a',event_date:future,price_checked_at:null},{event_id:'a',event_date:future,price_checked_at:null},{event_id:'b',event_date:future,price_checked_at:null},{event_id:'c',event_date:future,price_checked_at:null},{event_id:'d',event_date:future,price_checked_at:null},{event_id:'old',event_date:past,price_checked_at:null},{event_id:'fresh',event_date:future,price_checked_at:now}];
+ sandbox.priceRows=rows;
+ assert.deepEqual(Array.from(run('priceCheckCandidates(priceRows)')),['a','b','c']);
+});
 test('watch prices stay isolated even for the same event',()=>{run(`state.prices=[{watch_id:'other',event_id:'e',club:'Any section',price_cents:100,qty:2,checked_at:new Date().toISOString()},{watch_id:'mine',event_id:'e',club:'Any section',price_cents:200,qty:2,checked_at:new Date().toISOString()}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,created_at:'2020-01-01'})[0].price_cents`),200);});
 test('an unavailable latest scan hides an older listing',()=>{run(`state.scans=[{watch_id:'mine',event_id:'e',outcome:'unavailable',checked_at:new Date().toISOString()}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,created_at:'2020-01-01'}).length`),0);});
 test('changed criteria never display earlier prices',()=>{run(`state.scans=[]`);assert.equal(run(`watchLatest({id:'mine',qty:2,criteria_updated_at:new Date(Date.now()+1000).toISOString()}).length`),0);});

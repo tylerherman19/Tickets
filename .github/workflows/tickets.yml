@@ -7,10 +7,14 @@ on:
         description: "Send one test to the legacy fallback destination"
         type: boolean
         default: false
+      watchdog:
+        description: "Run the health watchdog; collect only if the last check is stale"
+        type: boolean
+        default: false
   # The existing cron-job.org job sends tickets-ping every 15 minutes.
   # It is the sole automatic scheduler. There is no GitHub cron or pacer.
   repository_dispatch:
-    types: [tickets-ping]
+    types: [tickets-ping, tickets-watchdog]
 
 concurrency:
   group: tickets-collector
@@ -27,7 +31,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: check watched events
+      - name: check watched events or recover stale collector
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -35,4 +39,10 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           SMS_GATEWAY: ${{ secrets.SMS_GATEWAY }}
           TIX_TEST_SMS: ${{ inputs.test_sms }}
-        run: python scripts/tickets_collect.py
+          TIX_WATCHDOG: ${{ github.event.action == 'tickets-watchdog' || inputs.watchdog == true }}
+        run: |
+          if [ "$TIX_WATCHDOG" = "true" ]; then
+            python scripts/tickets_watchdog.py
+          else
+            python scripts/tickets_collect.py
+          fi
