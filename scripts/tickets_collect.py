@@ -364,7 +364,8 @@ def destination_address(destination):
     return f"{phone}@{domain}" if re.fullmatch(r"[2-9][0-9]{2}[2-9][0-9]{6}", phone) and domain else ""
 
 def send_sms(subject, body, recipient=None, test=False):
-    recipient = recipient or SMS_GATEWAY
+    if test and not recipient:
+        recipient = SMS_GATEWAY
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not recipient:
         print("alert: notification configuration missing"); write_state("notification_health", {"status":"failed", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
     import smtplib, ssl
@@ -609,7 +610,7 @@ def main():
                             f"{fmt_money(price)}/ticket including fees; {fmt_money(price*w['qty'])} total. "
                             f"{club}, sec {sec}, row {row}. At or below your {fmt_money(w['threshold_cents'])} target. {url}")
                     destinations = sb("GET", f"tix_destinations?watch_id=eq.{w['id']}&select=phone_digits,provider&limit=1")
-                    recipient = destination_address(destinations[0]) if destinations else SMS_GATEWAY
+                    recipient = destination_address(destinations[0]) if destinations else ""
                     ok = send_sms(subject, body, recipient=recipient)
                     sb("POST", "tix_alerts", [{"watch_id":w["id"], "event_id":eid, "club":club, "qty":w["qty"],
                        "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed",
