@@ -15,6 +15,27 @@ def listing(price=15000, lots=None, seats=None, group='Club'):
             'spot':{'sectionGroup':group,'section':'C1','row':'2'}, 'seoUrl':'https://gametime.co/event/listings/listing'}
 
 class CollectorTests(unittest.TestCase):
+    def test_successful_empty_provider_market_clears_old_get_in_price(self):
+        event={'event_id':'abc','name':'A game','event_date':'2026-10-04','url':'https://gametime.co/events/abc'}
+        writes=[]
+        with patch.object(c,'sb',side_effect=lambda method,path,body=None,prefer=None: writes.append((path,body)) or []):
+            c.record_event_market(event,{'event_id':'abc','name':'A game','min_total':None},[],c.NOW.isoformat())
+        patch_body=next(body for path,body in writes if path.startswith('tix_catalog?'))
+        self.assertIn('min_total',patch_body)
+        self.assertIsNone(patch_body['min_total'])
+        self.assertEqual(patch_body['discovery_status'],'ok')
+        sample=next(body for path,body in writes if path.startswith('tix_event_market?'))
+        self.assertEqual(sample[0]['event_id'],'abc')
+        self.assertEqual(sample[0]['listing_count'],0)
+
+    def test_discovery_queries_near_and_later_events_with_capped_limits(self):
+        with patch.object(c,'sb',return_value=[]) as db:
+            c.discovery_due()
+        self.assertEqual(db.call_count,2)
+        self.assertEqual(db.call_args_list[0].args[1],'rpc/tix_discovery_due')
+        self.assertEqual(db.call_args_list[0].args[2]['p_limit'],c.DISCOVERY_NEAR_FETCHES)
+        self.assertEqual(db.call_args_list[1].args[2]['p_from_days'],8)
+
     def test_exact_quantity_respects_allowed_lots(self):
         self.assertIsNone(c.cheapest_any([listing(lots=[1,3,4])],2))
         self.assertIsNone(c.cheapest_for([listing(lots=[1,3,4])],'Club',2))

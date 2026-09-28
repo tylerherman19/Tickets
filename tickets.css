@@ -39,3 +39,5 @@
 .detail-prices p{font-size:.84rem;margin:.4rem 0 0;color:#52647a}.detail-prices select{width:100%;margin:.3rem 0;padding:.5rem;border:1px solid #aab7c5;border-radius:.3rem}
 .detail-actions{display:flex;flex-wrap:wrap;gap:.6rem;margin:1rem 0}.seat-breakdown{list-style:none;margin:0 0 1.5rem;padding:0}.seat-breakdown li{display:flex;gap:.5rem;align-items:baseline;border-bottom:1px solid #e3e8ed;padding:.5rem 0}.seat-breakdown li span{flex:1}.seat-breakdown li small{color:#617083}
 @media(max-width:720px){.event-detail,.detail-prices{grid-template-columns:1fr}}
+.hero-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.hero-actions .button{white-space:nowrap}
+@media(max-width:640px){.hero-actions{align-items:stretch;flex-direction:column}.hero-actions .button{text-align:center}}

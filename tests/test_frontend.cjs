@@ -27,6 +27,14 @@ test('price discovery requires a real recent provider check',()=>{
  assert.match(url,/min_total=lte\.10000/);assert.match(url,/price_checked_at=gte\./);
  assert.doesNotMatch(url,/last_seen=gte\./);
 });
+test('anonymous cheap discovery uses stable price order and a short upcoming window',()=>{
+ run('Object.assign(state,{cheapOnly:true,maxPrice:"",within:"",date:"",offset:0})');
+ const first=run('catalogQuery()');run('state.offset=12');const second=run('catalogQuery()');
+ assert.match(first,/order=min_total,event_date,event_id&limit=13&offset=0/);
+ assert.match(first,/min_total=not\.is\.null&price_checked_at=gte\./);
+ assert.match(first,/event_date=lte\./);
+ assert.equal(second,first.replace('offset=0','offset=12'));
+});
 test('watch prices stay isolated even for the same event',()=>{run(`state.prices=[{watch_id:'other',event_id:'e',club:'Any section',price_cents:100,qty:2,checked_at:new Date().toISOString()},{watch_id:'mine',event_id:'e',club:'Any section',price_cents:200,qty:2,checked_at:new Date().toISOString()}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,created_at:'2020-01-01'})[0].price_cents`),200);});
 test('an unavailable latest scan hides an older listing',()=>{run(`state.scans=[{watch_id:'mine',event_id:'e',outcome:'unavailable',checked_at:new Date().toISOString()}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,created_at:'2020-01-01'}).length`),0);});
 test('changed criteria never display earlier prices',()=>{run(`state.scans=[]`);assert.equal(run(`watchLatest({id:'mine',qty:2,criteria_updated_at:new Date(Date.now()+1000).toISOString()}).length`),0);});

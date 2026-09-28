@@ -23,6 +23,8 @@ NOW = datetime.now(timezone.utc)
 FAST_WINDOW_DAYS = 7          # events this close get checked every run
 SLOW_CHECK_MINUTES = 60       # farther out: at most one check per hour
 MAX_EVENT_FETCHES = 60
+DISCOVERY_NEAR_FETCHES = 24
+DISCOVERY_LATER_FETCHES = 8
 CLUB_RE = re.compile(r"club", re.I)
 SITEMAPS = ["sport-events", "music-events", "comedy-events", "theater-events"]
 CATALOG_TTL_HOURS = 6
@@ -426,6 +428,48 @@ def scan_result(watch_id, event_id, outcome, checked_at, criteria_version=1, det
        "outcome": outcome, "checked_at": checked_at, "criteria_version":criteria_version,
        "detail":detail or {}}], prefer="resolution=merge-duplicates,return=minimal")
 
+def record_event_market(cat, meta, listings, checked_at):
+    """Persist a successful provider parse, including a genuine empty market."""
+    eid = cat['event_id']
+    new_date = (meta.get('datetime_local') or '')[:10]
+    changes = []
+    for field, new_value in [('datetime_local', meta.get('datetime_local')),
+                             ('event_date', new_date), ('venue', meta.get('venue'))]:
+        old_value = cat.get(field)
+        if new_value and old_value and new_value != old_value and (field != 'event_date' or cat.get('datetime_local')):
+            changes.append({'event_id':eid,'field':field,'old_value':old_value,
+                            'new_value':new_value,'detected_at':checked_at})
+    if changes: sb('POST','tix_event_changes',changes,prefer='return=minimal')
+    listing_prices = [(l.get('price') or {}).get('total') for l in listings]
+    real_prices = [p for p in listing_prices if isinstance(p,int) and p > 0]
+    provider_min = meta.get('min_total')
+    minimum = provider_min if isinstance(provider_min,int) and provider_min > 0 else min(real_prices,default=None)
+    patch = {'price_checked_at':checked_at,'discovery_attempt_at':checked_at,
+             'discovery_status':'ok','min_total':minimum,'last_seen':checked_at}
+    for key, value in [('name',meta.get('name')),('datetime_local',meta.get('datetime_local')),
+                       ('event_date',new_date or None),('venue',meta.get('venue'))]:
+        if value is not None: patch[key] = value
+    sb('PATCH',f'tix_catalog?event_id=eq.{eid}',patch)
+    if meta.get('name'): cat['name'] = meta['name']
+    if meta.get('datetime_local'): cat['datetime_local'] = meta['datetime_local']
+    groups = club_groups(listings)
+    sorted_groups = sorted(groups.values(),key=lambda g:g['cheapest'])
+    sb('POST','tix_event_market?on_conflict=event_id',[{'event_id':eid,'checked_at':checked_at,
+       'by_qty':market_spreads(listings),'groups':sorted_groups,'listing_count':len(listings)}],
+       prefer='resolution=merge-duplicates,return=minimal')
+    if cat.get('venue_slug'):
+        sb('POST','tix_venue_clubs?on_conflict=venue_slug',[{'venue_slug':cat['venue_slug'],
+           'venue':cat.get('venue'),'clubs':sorted_groups,'sample_event_id':eid,
+           'updated_at':checked_at}],prefer='resolution=merge-duplicates,return=minimal')
+    return groups, len(changes)
+
+def discovery_due():
+    out = []
+    for start,end,limit in [(0,7,DISCOVERY_NEAR_FETCHES),(8,30,DISCOVERY_LATER_FETCHES)]:
+        out.extend(sb('POST','rpc/tix_discovery_due',
+                      {'p_from_days':start,'p_to_days':end,'p_limit':limit}))
+    return out
+
 def main():
     has_saved_destination = bool(sb("GET", "tix_destinations?select=watch_id&limit=1"))
     health = {"checked_at": NOW.isoformat(), "sms_configured": bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD and (SMS_GATEWAY or has_saved_destination)),
@@ -452,10 +496,6 @@ def main():
         health["status"] = "error"
     watches = [w for w in watches if valid_watch(w)]
     print(f"{len(watches)} active watches")
-    if not watches:
-        write_state("collector_health", health)
-        if health["status"] == "error": raise RuntimeError("Some ticket confirmations failed; see collector status")
-        return
     resolved, events, watchers = {}, {}, {}
     for w in watches:
         try:
@@ -511,28 +551,8 @@ def main():
                 raise ValueError('parser_failure: provider event/listing data missing')
             if not meta or meta.get("event_id") != eid:
                 raise ValueError("event_unavailable: event ID changed or removed")
-            new_date = (meta.get('datetime_local') or '')[:10]
-            changes = []
-            for field, new_value in [('datetime_local',meta.get('datetime_local')),
-                                     ('event_date',new_date),('venue',meta.get('venue'))]:
-                old_value = cat.get(field)
-                if new_value and old_value and new_value != old_value and (field != 'event_date' or cat.get('datetime_local')):
-                    changes.append({'event_id':eid,'field':field,'old_value':old_value,
-                                    'new_value':new_value,'detected_at':checked_at})
-            if changes:
-                sb('POST','tix_event_changes',changes,prefer='return=minimal')
-                health['event_changes'] = health.get('event_changes',0)+len(changes)
-            sb("PATCH", f"tix_catalog?event_id=eq.{eid}", {k:v for k,v in {
-                "name":meta["name"], "datetime_local":meta["datetime_local"], "event_date":new_date or None,
-                "venue":meta.get('venue'), "min_total":meta["min_total"],
-                "last_seen":checked_at, "price_checked_at":checked_at}.items() if v is not None})
-            if meta.get("name"): cat["name"] = meta["name"]
-            if meta.get("datetime_local"): cat["datetime_local"] = meta["datetime_local"]
-            groups = club_groups(listings)
-            if cat.get("venue_slug"):
-                sb("POST", "tix_venue_clubs?on_conflict=venue_slug", [{"venue_slug":cat["venue_slug"],
-                   "venue":cat.get("venue"), "clubs":[{"group":"__market__", "by_qty":market_spreads(listings)}] + sorted(groups.values(), key=lambda g:g["cheapest"]),
-                   "sample_event_id":eid, "updated_at":checked_at}], prefer="resolution=merge-duplicates,return=minimal")
+            groups,change_count = record_event_market(cat,meta,listings,checked_at)
+            health['event_changes'] = health.get('event_changes',0)+change_count
             for w in watchers[eid]:
                 # Re-read before delivery: honor pause, delete, or edit made during a long run.
                 current = sb("GET", f"tix_watches?id=eq.{w['id']}&select=*")
@@ -586,6 +606,40 @@ def main():
                 try: scan_result(w["id"], eid, outcome, checked_at, w.get('criteria_version',1))
                 except Exception: pass  # watch may have been deleted during the fetch
         time.sleep(1)
+    # Discovery serves anonymous browsing. These capped scans are independent
+    # of alert watches; a failed page is recorded and rotated behind other cities.
+    discovery = discovery_due()
+    health['discovery_queued'] = len(discovery)
+    health['discovery_checked'] = 0
+    health['discovery_failed'] = 0
+    for cat in discovery:
+        eid = cat['event_id']
+        if eid in events: continue
+        checked_at = datetime.now(timezone.utc).isoformat()
+        try:
+            html = get_text(cat['url'])
+            meta,listings = parse_event_page(html)
+            if page_outcome(html,meta) != 'ok':
+                raise ValueError('parser_failure: provider event/listing data missing')
+            if not meta or meta.get('event_id') != eid:
+                raise ValueError('event_unavailable: event ID changed or removed')
+            _,change_count = record_event_market(cat,meta,listings,checked_at)
+            health['event_changes'] = health.get('event_changes',0)+change_count
+            health['discovery_checked'] += 1
+        except Exception as e:
+            outcome = ('parser_failure' if 'parser_failure' in str(e) else
+                       'event_unavailable' if 'event_unavailable' in str(e) or
+                       isinstance(e,urllib.error.HTTPError) and e.code in (404,410) else 'http_failure')
+            health['discovery_failed'] += 1
+            health.setdefault('discovery_outcomes',{})[outcome] = health.setdefault('discovery_outcomes',{}).get(outcome,0)+1
+            print(f'discovery {eid} failed: {outcome}: {type(e).__name__}',file=sys.stderr)
+            sb('PATCH',f'tix_catalog?event_id=eq.{eid}',
+               {'discovery_attempt_at':checked_at,'discovery_status':outcome})
+        time.sleep(1)
+    if health.get('discovery_outcomes',{}).get('parser_failure',0) >= 3:
+        health['status'] = 'error'
+    elif health['discovery_failed'] and health['status'] == 'ok':
+        health['status'] = 'degraded'
     health["checked_at"] = datetime.now(timezone.utc).isoformat()
     write_state("collector_health", health)
     print(f"done. events checked: {health['checked_events']}, failed: {health['failed_events']}, alerts accepted: {sent}")
