@@ -25,7 +25,7 @@ test('clearing search cannot leave an invisible filter active',()=>{
  assert.doesNotMatch(run('catalogQuery()'),/&or=/);
 });
 test('homepage pagination retains one order and advances by displayed rows',()=>{
- run('Object.assign(state,{category:"",date:"",search:"",place:"",maxPrice:"",offset:0})');
+ run('Object.assign(state,{category:"",date:"",search:"",place:"",maxPrice:"",offset:0,catalogSnapshotAt:Date.now()})');
  const first=run('catalogQuery()');run('state.offset=12');const second=run('catalogQuery()');
  assert.match(first,/order=event_date,event_id&limit=13&offset=0/);
  assert.equal(second,first.replace('offset=0','offset=12'));
@@ -36,7 +36,7 @@ test('price discovery requires a real recent provider check',()=>{
  assert.doesNotMatch(url,/last_seen=gte\./);
 });
 test('anonymous cheap discovery uses stable price order and a short upcoming window',()=>{
- run('Object.assign(state,{cheapOnly:true,maxPrice:"",within:"",date:"",offset:0})');
+ run('Object.assign(state,{cheapOnly:true,maxPrice:"",within:"",date:"",offset:0,catalogSnapshotAt:Date.now()})');
  const first=run('catalogQuery()');run('state.offset=12');const second=run('catalogQuery()');
  assert.match(first,/order=min_total,event_date,event_id&limit=13&offset=0/);
  assert.match(first,/min_total=not\.is\.null&price_checked_at=gte\./);

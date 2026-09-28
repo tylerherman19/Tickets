@@ -11,7 +11,7 @@ const perTicketTargetCents = (amount,qty,mode='per') => {
  const cents=Math.round(Number(amount)*100);
  return Number.isInteger(qty)&&qty>0&&Number.isFinite(cents)?(mode==='total'?Math.floor(cents/qty):cents):NaN;
 };
-const todayISO = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+const todayISO = (d=new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const dateObj = iso => new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso||'') ? iso+'T12:00:00' : iso);
 const whenShort = iso => iso ? dateObj(iso).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : 'Date to be confirmed';
 const cap = s => String(s||'').replace(/-/g,' ').replace(/\b\w/g, c=>c.toUpperCase()).replace(/\bAt\b/g,'at').replace(/U S Bank/g,'U.S. Bank').replace(/49 Ers/g,'49ers');

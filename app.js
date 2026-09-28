@@ -3,7 +3,7 @@ const page=document.body.dataset.page;
 chrome(page);
 const main=$('#main');
 const query=new URLSearchParams(location.search);
-const state={events:[],category:query.get('cheap')==='1'?'':query.get('category')||'nfl-football',search:query.get('q')||'',place:'',date:'',within:'',cheapOnly:query.get('cheap')==='1',catalogFallback:false,maxPrice:'',offset:0,controller:null,kind:'event',selected:null,teams:[],step:1,qty:2,threshold:'',budgetMode:'per',clubLevel:false,clubs:[],clubOptions:[],homeAway:'home',alertStyle:'first',phone:'',provider:'',destinationConfigured:false,existingProvider:'',watches:[],prices:[],scans:[],intelligence:[],filter:'all',activityKind:'alerts',activityWatch:'all',activitySort:'newest',spread:null};
+const state={events:[],category:query.get('cheap')==='1'?'':query.get('category')||'nfl-football',search:query.get('q')||'',place:'',date:'',within:'',cheapOnly:query.get('cheap')==='1',catalogFallback:false,catalogSnapshotAt:null,maxPrice:'',offset:0,controller:null,kind:'event',selected:null,teams:[],step:1,qty:2,threshold:'',budgetMode:'per',clubLevel:false,clubs:[],clubOptions:[],homeAway:'home',alertStyle:'first',phone:'',provider:'',destinationConfigured:false,existingProvider:'',watches:[],prices:[],scans:[],intelligence:[],filter:'all',activityKind:'alerts',activityWatch:'all',activitySort:'newest',spread:null};
 const matchSummary=w=>w.kind==='team'?`${cap(w.match.slug)} · ${w.match.home_away==='any'?'Home & away':cap(w.match.home_away||'home')+' games'}`:w.kind==='date'?whenShort(w.match.date)+(w.match.city?` in ${w.match.city}`:w.match.state?` in ${w.match.state}`:''):w.label;
 function layout(title,sub,body,action='') {main.innerHTML=`<div class="container page"><div class="page-heading"><div><h1>${title}</h1><p>${sub}</p></div>${action}</div>${body}</div>`;}
 function stadiumArt(){return `<div class="hero-art" aria-hidden="true"><div class="ticket-art"><div class="ticket-art-top"><span>Good times ahead</span>${icon('ticket')}</div><div class="stadium"><div class="stadium-ring ring-one"></div><div class="stadium-ring ring-two"></div><div class="stadium-ring ring-three"></div><div class="field"><div class="field-center"></div><div class="endzone first">GAME</div><div class="endzone last">DAY</div><i></i><b></b></div><span class="stadium-light light-one"></span><span class="stadium-light light-two"></span></div><div class="ticket-art-bottom"><span>Your seat is out there.</span><div class="barcode"></div></div></div><div class="floating-tag">${icon('bell')} The right price. You’re in.</div></div>`;}
@@ -25,11 +25,12 @@ function bindSearch(load){
 }
 function catalogQuery(limit=13,includeUnpriced=state.catalogFallback){
  const priceOnly=(state.cheapOnly||Number(state.maxPrice)>0)&&!includeUnpriced;
- let q=`tix_events_v?select=*&event_date=${state.date?'eq.'+state.date:'gte.'+todayISO()}&order=${state.cheapOnly&&!includeUnpriced?'min_total,event_date,event_id':'event_date,event_id'}&limit=${limit}&offset=${state.offset}`;
- if(!state.date&&(state.within||state.cheapOnly)&&state.within!=='all'){const days=Number(state.within||7);const end=new Date(Date.now()+days*86400000).toISOString().slice(0,10);q+='&event_date=lte.'+end;}
+ const now=new Date(state.catalogSnapshotAt||Date.now());
+ let q=`tix_events_v?select=*&event_date=${state.date?'eq.'+state.date:'gte.'+todayISO(now)}&order=${state.cheapOnly&&!includeUnpriced?'min_total,event_date,event_id':'event_date,event_id'}&limit=${limit}&offset=${state.offset}`;
+ if(!state.date&&(state.within||state.cheapOnly)&&state.within!=='all'){const days=Number(state.within||7);const end=todayISO(new Date(now.getTime()+days*86400000));q+='&event_date=lte.'+end;}
  if(state.category)q+='&category=eq.'+encodeURIComponent(state.category);
  if(priceOnly&&Number(state.maxPrice)>0)q+='&min_total=lte.'+Math.round(Number(state.maxPrice)*100);
- if(priceOnly){q+='&min_total=not.is.null&price_checked_at=gte.'+encodeURIComponent(new Date(Date.now()-72*3600000).toISOString());}
+ if(priceOnly){q+='&min_total=not.is.null&price_checked_at=gte.'+encodeURIComponent(new Date(now.getTime()-72*3600000).toISOString());}
  // Strip PostgREST filter syntax, then quote each server-side search pattern.
  const clean=s=>s.replace(/[%*(),"\\]/g,' ').trim();
  if(state.search){const term=clean(state.search);if(term)q+='&or='+encodeURIComponent(`(name.ilike."*${term}*",slug.ilike."*${term.replace(/\s+/g,'-')}*")`);}
@@ -47,7 +48,7 @@ async function loadEvents(append=false){
  state.controller?.abort();const ctrl=state.controller=new AbortController();const box=$('#events');if(!append){box.innerHTML=loadingRows();const status=$('#price-request-status');if(status){status.hidden=true;status.textContent='';}}
  const more=$('#more-events');if(more){more.disabled=true;more.textContent='Loading…';}
  try{
-  if(!append)state.catalogFallback=false;
+  if(!append){state.catalogFallback=false;state.catalogSnapshotAt=Date.now();}
   let rows=await sbGet(catalogQuery(),{signal:ctrl.signal});if(ctrl!==state.controller)return;
   if(!append&&!rows.length&&(state.cheapOnly||Number(state.maxPrice)>0)){
    rows=await sbGet(catalogQuery(13,true),{signal:ctrl.signal});if(ctrl!==state.controller)return;
