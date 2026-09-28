@@ -27,7 +27,7 @@ async function accessToken(){
 async function requireSession(){
   if(IS_DEV || await accessToken()) return true;
   const main=document.querySelector('#main');
-  main.innerHTML='<div class="container page auth-page"><h1>Sign in to your alerts.</h1><p>Enter your email for a secure sign-in link.</p><form id="sign-in-form"><label class="field-label" for="sign-in-email">Email</label><input id="sign-in-email" type="email" autocomplete="email" required><button class="button primary" type="submit">Email me a sign-in link</button></form><p id="sign-in-status" role="status"></p></div>';
+  main.innerHTML='<div class="container page auth-page"><h1>Sign in to your alerts.</h1><p>Enter your email for a secure sign-in link. You can browse ticket prices without signing in.</p><p>Alerts currently go to your cell through your carrier’s email-to-text gateway. The sign-in email is only for account access; Ticketline does not send price alerts to that inbox.</p><form id="sign-in-form"><label class="field-label" for="sign-in-email">Email</label><input id="sign-in-email" type="email" autocomplete="email" required><button class="button primary" type="submit">Email me a sign-in link</button></form><p id="sign-in-status" role="status"></p></div>';
   document.querySelector('#sign-in-form').onsubmit=async event=>{
     event.preventDefault();const button=event.target.querySelector('button');button.disabled=true;
     const email=document.querySelector('#sign-in-email').value.trim();
