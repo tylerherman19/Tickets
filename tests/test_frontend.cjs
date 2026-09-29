@@ -108,3 +108,17 @@ test('incomplete provider response separates get-in from exact two-seat price',(
  assert.match(message,/does not verify 2 tickets together/);
  assert.doesNotMatch(message,/no matching tickets/i);
 });
+test('a newer incomplete scan keeps the previous verified lot labeled as historical',()=>{
+ sandbox.watch={kind:'event',qty:2};
+ sandbox.previous=[{price_cents:12000,checked_at:new Date(Date.now()-44*60000).toISOString()}];
+ sandbox.scan={outcome:'provider_incomplete'};
+ const display=run('watchPriceDisplay(watch,null,previous,scan)');
+ assert.equal(display.price_cents,12000);
+ assert.equal(display.label,'Previous verified lot');
+ assert.match(display.detail,/not verified by the latest check/);
+ const current=run('watchPriceDisplay(watch,{price_cents:11100,checked_at:new Date().toISOString()},previous,scan)');
+ assert.equal(current.price_cents,11100);
+ assert.equal(current.label,'Latest verified lot');
+ const team=run('watchPriceDisplay({kind:"team",qty:2},null,previous,scan)');
+ assert.equal(team.price_cents,null);
+});
