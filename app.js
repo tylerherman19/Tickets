@@ -86,7 +86,9 @@ async function watches(){
  for(const result of batches)if(result.status==='fulfilled')for(const event of result.value)state.eventMarkets[event.event_id]=event;
  renderWatches();
  const h=health.collector_health;
- $('#watch-health').innerHTML=h?`<div class="health-strip ${ageMinutes(h.checked_at)>35||h.status!=='ok'?'attention':''}">${icon('clock')}<span>${ageMinutes(h.checked_at)>35?'Checks are delayed.':h.status==='error'?'Some checks need attention.':h.status==='degraded'?'Gametime listing details are missing on some checks.':'Last collector run '+ago(h.checked_at).toLowerCase()+'.'} New alerts usually get their first check on the next run.</span><a href="./notifications.html">View status</a></div>`:'';
+ const watchIssue=state.scans.some(s=>['provider_incomplete','failed','parser_failure','http_failure','event_unavailable'].includes(s.outcome));
+ const checkLate=h&&ageMinutes(h.checked_at)>35;
+ $('#watch-health').innerHTML=h?`<div class="health-strip ${checkLate||watchIssue?'attention':''}">${icon('clock')}<span>${checkLate?'Checks are delayed.':watchIssue?'One or more alert checks need attention.':'Last collector run '+ago(h.checked_at).toLowerCase()+'.'} New alerts usually get their first check on the next run.</span><a href="./notifications.html">View status</a></div>`:'';
  }catch(e){$('#watches').innerHTML=errorBox(e.message);$('#retry').onclick=watches;}
 }
 function watchLatest(w){
