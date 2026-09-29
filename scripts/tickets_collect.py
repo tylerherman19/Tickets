@@ -606,6 +606,7 @@ def main():
                     scan_result(w['id'],eid,'provider_incomplete',checked_at,w.get('criteria_version',1),
                                 {'reason':'Provider supplied a get-in price without listing quantities'})
                 health['provider_incomplete'] = health.get('provider_incomplete',0)+1
+                if health['status'] == 'ok': health['status'] = 'degraded'
                 health['checked_events'] += 1
                 continue
             for w in watchers[eid]:
@@ -688,6 +689,7 @@ def main():
             health['discovery_checked'] += 1
             if provider_status == 'metadata_only':
                 health['discovery_metadata_only'] = health.get('discovery_metadata_only',0)+1
+                if health['status'] == 'ok': health['status'] = 'degraded'
         except Exception as e:
             outcome = ('parser_failure' if 'parser_failure' in str(e) else
                        'event_unavailable' if 'event_unavailable' in str(e) or

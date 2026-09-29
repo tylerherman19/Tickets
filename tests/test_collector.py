@@ -182,6 +182,27 @@ class CollectorTests(unittest.TestCase):
         catalog=next(body for path,body in writes if path.startswith('tix_catalog?'))
         self.assertEqual(catalog['min_total'],3300)
         self.assertEqual(catalog['discovery_status'],'metadata_only')
+    def test_metadata_only_watch_marks_collector_degraded(self):
+        watch={'id':'w','kind':'event','match':{'event_ids':['abc']},'clubs':[],'qty':2,
+               'threshold_cents':7000,'alert_style':'first','active':True,
+               'created_at':c.NOW.isoformat()}
+        event={'event_id':'abc','event_date':(c.NOW+timedelta(days=1)).date().isoformat(),
+               'name':'A game','url':'https://gametime.co/events/abc'}
+        def db(method,path,body=None,prefer=None):
+            return [watch] if path.startswith('tix_watches?') else []
+        with patch.object(c,'sb',side_effect=db), \
+             patch.object(c,'catalog_stale',return_value=False), \
+             patch.object(c,'send_pending_confirmations',return_value=0), \
+             patch.object(c,'resolve_events',return_value=[event]), \
+             patch.object(c,'discovery_due',return_value=[]), \
+             patch.object(c,'fetch_provider_page',return_value=('metadata_only',{'event_id':'abc','min_total':10800},[])), \
+             patch.object(c,'record_event_market',return_value=({},0)), \
+             patch.object(c,'scan_result') as scan, \
+             patch.object(c,'write_state') as state, patch.object(c.time,'sleep'):
+            c.main()
+        self.assertEqual(scan.call_args.args[2],'provider_incomplete')
+        self.assertEqual(state.call_args.args[1]['status'],'degraded')
+        self.assertEqual(state.call_args.args[1]['provider_incomplete'],1)
     def test_event_time_change_is_recorded(self):
         watch={'id':'w','kind':'event','match':{'event_ids':['abc']},'clubs':[], 'qty':2,
                'threshold_cents':10000,'alert_style':'first','active':True,'created_at':c.NOW.isoformat()}
