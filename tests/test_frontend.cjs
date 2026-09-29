@@ -94,3 +94,17 @@ test('team market query follows the chosen home or away schedule',()=>{
  run('state.homeAway="any"');
  assert.equal(new URL('https://example.test/'+run('teamPriceQuery()')).searchParams.get('or'),'(slug.ilike.*-at-minnesota-vikings,slug.ilike.minnesota-vikings-at-*)');
 });
+test('one historical price is not presented as a trend or seven-day low',()=>{
+ run('var oneObservation=[{price_cents:10800,checked_at:new Date().toISOString()}]');
+ assert.equal(run('priceContext(oneObservation)'),'');
+});
+test('incomplete provider response separates get-in from exact two-seat price',()=>{
+ const watch={active:true,qty:2,threshold_cents:7000};
+ const intel={last_checked_at:new Date().toISOString(),scan_outcome:'provider_incomplete'};
+ const market={min_total:10800,price_checked_at:new Date().toISOString()};
+ sandbox.w=watch;sandbox.intel=intel;sandbox.market=market;
+ const message=run('watchDiagnostic(w,intel,null,market)');
+ assert.match(message,/get-in is \$108/);
+ assert.match(message,/does not verify 2 tickets together/);
+ assert.doesNotMatch(message,/no matching tickets/i);
+});

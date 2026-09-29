@@ -39,7 +39,7 @@ function sparkline(rows,wide=false,target=null,alerts=[]){
  return `<svg class="price-chart ${wide?'full-chart':'sparkline'}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Price history from ${money(vals[0])} to ${money(vals.at(-1))}">${targetLine}<polyline points="${pts}"/>${dots}${markers}</svg>`;
 }
 function priceContext(rows){
- if(!rows.length)return '';
+ if(rows.length<2)return '';
  const latest=rows.at(-1),cut=Date.now()-86400000,prior=[...rows].reverse().find(r=>new Date(r.checked_at).getTime()<=cut),min=Math.min(...rows.map(r=>r.price_cents));
  const bits=[];
  if(prior){const d=latest.price_cents-prior.price_cents;bits.push(d===0?'unchanged since yesterday':`${d<0?'down':'up'} ${money(Math.abs(d))} since yesterday`);}
