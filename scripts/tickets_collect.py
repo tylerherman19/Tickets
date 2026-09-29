@@ -216,6 +216,15 @@ def page_outcome(page, meta):
         return 'metadata_only'
     return 'ok'
 
+def page_shape(page, meta, listings):
+    """Safe structural diagnostics; never log provider HTML or ticket contents."""
+    return {'bytes':len(page), 'legacy': 'window.__data=' in page,
+            'astro': 'component-export="EventListings"' in page,
+            'listings_key': '"listings"' in page,
+            'listings_response': 'listingsResponse' in page,
+            'lot_keys': page.count('availableLots'),
+            'event':bool(meta), 'listings':len(listings)}
+
 def fetch_provider_page(url, discovery=False):
     """Retry an incomplete provider render once before recording its state."""
     for attempt in range(2):
@@ -226,6 +235,8 @@ def fetch_provider_page(url, discovery=False):
         except (ValueError,TypeError,KeyError) as error:
             if attempt == 0: continue
             raise ValueError(f'parser_failure: {type(error).__name__}') from error
+        if outcome != 'ok':
+            print(f"provider response {outcome} attempt {attempt+1}: {page_shape(page,meta,listings)}")
         if outcome == 'ok' or attempt == 1:
             return outcome,meta,listings
     raise ValueError('parser_failure: no event data')

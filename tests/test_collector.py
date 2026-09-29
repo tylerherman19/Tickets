@@ -155,6 +155,12 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(c.page_outcome('<html>changed markup</html>',None),'parser_failure')
         self.assertEqual(c.page_outcome('<astro-island component-export="EventListings" props="listingsResponse"></astro-island>',{'event_id':'e'}),'ok')
         self.assertEqual(c.page_outcome('window.__data={"fullEvents":{}}',{'event_id':'e'}),'metadata_only')
+    def test_provider_diagnostics_expose_structure_without_response_content(self):
+        page='<html>window.__data={"listings":[],"availableLots":[]}</html>'
+        shape=c.page_shape(page,{'event_id':'secret'},[])
+        self.assertEqual(shape['lot_keys'],1)
+        self.assertEqual(shape['listings'],0)
+        self.assertNotIn('secret',repr(shape))
     def test_provider_metadata_without_lots_is_retried_once(self):
         meta={'event_id':'e','min_total':3300}
         with patch.object(c,'get_text',side_effect=['metadata','complete']) as fetch, \
