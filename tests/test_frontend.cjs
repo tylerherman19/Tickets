@@ -73,3 +73,15 @@ test('calendar export preserves event date and escapes labels',()=>{
  assert.match(ics,/DTEND;VALUE=DATE:20261005/);
  assert.match(ics,/SUMMARY:A\\, B\\; Show/);
 });
+
+const teamStart=app.indexOf('function teamPriceQuery('),teamEnd=app.indexOf('async function loadTeamPriceReference(');
+vm.runInContext(app.slice(teamStart,teamEnd),sandbox);
+test('team price context shows only recent real game checks',()=>{
+ const now=Date.now();sandbox.teamRows=[
+  {min_total:10600,price_checked_at:new Date(now-60000).toISOString(),discovery_status:'metadata_only'},
+  {min_total:14000,price_checked_at:new Date(now-3600000).toISOString(),discovery_status:'ok'},
+  {min_total:9900,price_checked_at:new Date(now-4*86400000).toISOString(),discovery_status:'ok'},
+  {min_total:null,price_checked_at:null,discovery_status:'pending'}];
+ const result=run('teamPriceSummary(teamRows)');
+ assert.equal(result.total,4);assert.equal(result.count,2);assert.equal(result.low,10600);assert.equal(result.average,12300);
+});

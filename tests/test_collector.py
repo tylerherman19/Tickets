@@ -102,19 +102,34 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'xfinity'}),'6125550148@mypixmessages.com')
         self.assertEqual(c.destination_address({'phone_digits':'1123456789','provider':'tmobile'}),'')
         self.assertEqual(c.destination_address({'phone_digits':'6125550148','provider':'unknown'}),'')
-    def test_new_destination_queues_the_requested_confirmation_copy(self):
-        queue={'watch_id':'w','event_label':'Minnesota Vikings at Green Bay Packers','attempts':0}
+    def test_confirmation_sends_email_and_optional_carrier_text_independently(self):
+        queue={'watch_id':'w','event_label':'Minnesota Vikings at Green Bay Packers','attempts':0,
+               'email_attempts':0,'email_enabled':True,'sms_enabled':True,'sent_at':None,'email_sent_at':None}
         writes=[]
         def db(method,path,body=None,prefer=None):
-            if path.startswith('tix_confirmation_queue?sent_at='): return [queue]
+            if path.startswith('tix_confirmation_queue?') and method=='GET': return [queue]
             if path.startswith('tix_destinations?'): return [{'phone_digits':'6125550148','provider':'tmobile'}]
             if path.startswith('tix_watches?'): return [{'threshold_cents':15000}]
             writes.append((path,body)); return []
-        with patch.object(c,'sb',side_effect=db),patch.object(c,'send_sms',return_value=True) as send:
+        with patch.object(c,'sb',side_effect=db),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send:
             self.assertEqual(c.send_pending_confirmations(),0)
-        self.assertIn("We're on the lookout for tickets to Minnesota Vikings at Green Bay Packers at $150 or less.",send.call_args.args[1])
-        self.assertEqual(send.call_args.kwargs['recipient'],'6125550148@tmomail.net')
-        self.assertTrue(any(body.get('sent_at') for _,body in writes))
+        self.assertEqual({call.kwargs['recipient'] for call in send.call_args_list},
+                         {'owner@example.com','6125550148@tmomail.net'})
+        self.assertIn("We're on the lookout for tickets to Minnesota Vikings at Green Bay Packers at $150 or less.",
+                      send.call_args.args[1])
+        self.assertTrue(any(body.get('sent_at') and body.get('email_sent_at') for _,body in writes))
+    def test_confirmation_email_only_does_not_require_phone(self):
+        queue={'watch_id':'w','event_label':'Vikings','attempts':0,'email_attempts':0,
+               'email_enabled':True,'sms_enabled':False,'email_sent_at':None}
+        def db(method,path,body=None,prefer=None):
+            if path.startswith('tix_confirmation_queue?email_enabled=') and method=='GET': return [queue]
+            if path.startswith('tix_confirmation_queue?') and method=='GET': return []
+            if path.startswith('tix_watches?'): return [{'threshold_cents':15000}]
+            return []
+        with patch.object(c,'sb',side_effect=db),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send:
+            self.assertEqual(c.send_pending_confirmations(),0)
+        send.assert_called_once()
+        self.assertEqual(send.call_args.kwargs['recipient'],'owner@example.com')
     def test_repeat_is_limited_to_one_hour(self):
         with patch.object(c,'sb',return_value=[{'sent_at':(c.NOW-timedelta(minutes=59)).isoformat()}]):
             self.assertTrue(c.already_alerted('w','e','Club',60))
@@ -124,7 +139,7 @@ class CollectorTests(unittest.TestCase):
     def test_first_match_deduplication_uses_current_criteria_version(self):
         with patch.object(c,'sb',return_value=[{'sent_at':c.NOW.isoformat()}]) as db:
             self.assertTrue(c.already_alerted('w','e','Club',criteria_version=3))
-            self.assertIn('criteria_version=eq.3',db.call_args.args[1])
+            self.assertIn('criteria_version=eq.3',db.call_args.args[1]);self.assertIn('channel=eq.sms',db.call_args.args[1])
     def test_adaptive_intervals_respect_workflow_cadence(self):
         self.assertEqual(c.check_interval_minutes(2),15)
         self.assertEqual(c.check_interval_minutes(20),60)
@@ -187,7 +202,7 @@ class CollectorTests(unittest.TestCase):
                 if method=='GET': return []
                 writes.append((path,body)); return []
             meta={'event_id':'abc','name':'A game','datetime_local':None,'min_total':price}
-            with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[listing(price)])),patch.object(c,'send_sms',return_value=True) as send,patch.object(c.time,'sleep'):
+            with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[listing(price)])),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send,patch.object(c.time,'sleep'):
                 c.main();self.assertEqual(send.called,expect_send)
                 self.assertTrue(any(path.startswith('tix_scans') and body[0]['outcome']=='ok' for path,body in writes))
     def test_no_matching_lots_records_unavailable(self):

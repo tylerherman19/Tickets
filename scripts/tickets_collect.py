@@ -364,11 +364,16 @@ def destination_address(destination):
     domain = PROVIDER_GATEWAYS.get(destination.get("provider"))
     return f"{phone}@{domain}" if re.fullmatch(r"[2-9][0-9]{2}[2-9][0-9]{6}", phone) and domain else ""
 
+def owner_email(watch_id):
+    rows = sb("POST", "rpc/tix_owner_email", {"p_watch_id": watch_id})
+    return rows if isinstance(rows, str) and re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", rows) else ""
+
 def send_sms(subject, body, recipient=None, test=False):
     if test and not recipient:
         recipient = SMS_GATEWAY
+    channel = "carrier text" if recipient and recipient.rsplit("@", 1)[-1] in PROVIDER_GATEWAYS.values() else "email"
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not recipient:
-        print("alert: notification configuration missing"); write_state("notification_health", {"status":"failed", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
+        print("alert: notification configuration missing"); write_state("notification_health", {"status":"failed", "channel":channel, "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
     import smtplib, ssl
     from email.message import EmailMessage
     msg = EmailMessage()
@@ -380,36 +385,39 @@ def send_sms(subject, body, recipient=None, test=False):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=30) as s:
             s.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD.replace(" ", ""))
             s.send_message(msg)
-        print("alert: mail server accepted message (carrier receipt not confirmed)"); write_state("notification_health", {"status":"accepted", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return True
+        print(f"alert: mail server accepted {channel} message (recipient receipt not confirmed)"); write_state("notification_health", {"status":"accepted", "channel":channel, "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return True
     except Exception as e:
-        print(f"alert: gmail smtp failed: {type(e).__name__}"); write_state("notification_health", {"status":"failed", "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
+        print(f"alert: gmail smtp failed: {type(e).__name__}"); write_state("notification_health", {"status":"failed", "channel":channel, "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
 
 def send_pending_confirmations():
-    rows = sb("GET", "tix_confirmation_queue?sent_at=is.null&attempts=lt.3&select=*&order=requested_at.asc&limit=25")
+    sms_rows = sb("GET", "tix_confirmation_queue?sms_enabled=eq.true&sent_at=is.null&attempts=lt.3&select=*&order=requested_at.asc&limit=25")
+    email_rows = sb("GET", "tix_confirmation_queue?email_enabled=eq.true&email_sent_at=is.null&email_attempts=lt.3&select=*&order=requested_at.asc&limit=25")
+    rows = {r["watch_id"]: r for r in sms_rows + email_rows}.values()
     accepted = 0
     for queued in rows:
         watch_id = queued["watch_id"]
-        destinations = sb("GET", f"tix_destinations?watch_id=eq.{watch_id}&select=phone_digits,provider&limit=1")
         watches = sb("GET", f"tix_watches?id=eq.{watch_id}&select=threshold_cents&limit=1")
-        recipient = destination_address(destinations[0]) if destinations else ""
-        if not recipient or not watches:
-            sb("PATCH", f"tix_confirmation_queue?watch_id=eq.{watch_id}", {"attempts": queued["attempts"] + 1, "last_error": "delivery configuration missing"})
-            continue
         label = re.sub(r"\s+", " ", queued.get("event_label") or "your event").strip()[:70]
-        target = fmt_money(watches[0]["threshold_cents"])
-        body = f"We're on the lookout for tickets to {label} at {target} or less. We'll text you when the price hits."
-        ok = send_sms("Ticketline is on it", body, recipient=recipient)
-        update = {"attempts": queued["attempts"] + 1, "last_error": None if ok else "send failed"}
-        if ok:
-            update["sent_at"] = datetime.now(timezone.utc).isoformat()
-            accepted += 1
-        sb("PATCH", f"tix_confirmation_queue?watch_id=eq.{watch_id}", update)
-    if rows: print(f"confirmations accepted: {accepted}/{len(rows)}")
-    return len(rows) - accepted
+        target = fmt_money(watches[0]["threshold_cents"]) if watches else "your target"
+        update = {}
+        if queued.get("email_enabled") and not queued.get("email_sent_at") and queued.get("email_attempts",0) < 3:
+            recipient = owner_email(watch_id)
+            ok = bool(recipient and watches and send_sms("Ticketline alert confirmed", f"We're watching {label} for tickets at {target} or less per ticket. We'll email you when a matching listing appears.", recipient=recipient))
+            update.update(email_attempts=queued.get("email_attempts",0)+1,email_last_error=None if ok else "email send failed")
+            if ok: update["email_sent_at"] = datetime.now(timezone.utc).isoformat(); accepted += 1
+        if queued.get("sms_enabled") and not queued.get("sent_at") and queued.get("attempts",0) < 3:
+            destinations = sb("GET", f"tix_destinations?watch_id=eq.{watch_id}&select=phone_digits,provider&limit=1")
+            recipient = destination_address(destinations[0]) if destinations else ""
+            ok = bool(recipient and watches and send_sms("Ticketline is on it", f"We're on the lookout for tickets to {label} at {target} or less. We'll text you when the price hits.", recipient=recipient))
+            update.update(attempts=queued.get("attempts",0)+1,last_error=None if ok else "carrier gateway send failed")
+            if ok: update["sent_at"] = datetime.now(timezone.utc).isoformat(); accepted += 1
+        if update: sb("PATCH", f"tix_confirmation_queue?watch_id=eq.{watch_id}", update)
+    if rows: print(f"confirmation channels accepted: {accepted}")
+    return len(sms_rows) + len(email_rows) - accepted
 
-def already_alerted(watch_id, event_id, club, repeat_window_min=None, criteria_version=1):
+def already_alerted(watch_id, event_id, club, repeat_window_min=None, criteria_version=1, channel="sms"):
     q = (f"tix_alerts?watch_id=eq.{watch_id}&event_id=eq.{event_id}&club=eq.{urllib.parse.quote(club)}&status=eq.sent"
-         f"&criteria_version=eq.{criteria_version}&select=sent_at&order=sent_at.desc&limit=1")
+         f"&criteria_version=eq.{criteria_version}&channel=eq.{channel}&select=sent_at&order=sent_at.desc&limit=1")
     rows = sb("GET", q)
     if not rows: return False
     if repeat_window_min is None: return True
@@ -501,7 +509,8 @@ def discovery_due():
 
 def main():
     has_saved_destination = bool(sb("GET", "tix_destinations?select=watch_id&limit=1"))
-    health = {"checked_at": NOW.isoformat(), "sms_configured": bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD and (SMS_GATEWAY or has_saved_destination)),
+    health = {"checked_at": NOW.isoformat(), "email_configured": bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD),
+              "sms_configured": bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD and (SMS_GATEWAY or has_saved_destination)),
               "status": "ok", "checked_events": 0, "failed_events": 0}
     if os.environ.get("TIX_TEST_SMS") == "true":
         ok = send_sms("Ticketline test", "Ticketline: your ticket alerts are connected. This is a delivery test, not a ticket offer.", test=True)
@@ -610,20 +619,26 @@ def main():
                        "listing_url":url, "checked_at":checked_at,
                        "criteria_version":w.get('criteria_version',1)}], prefer="return=minimal")
                     if price > w["threshold_cents"]: continue
-                    if already_alerted(w["id"], eid, club, 60 if w["alert_style"] == "repeat" else None,
-                                       w.get('criteria_version',1)): continue
                     subject = f"Ticketline: {fmt_money(price)} tickets"
                     body = (f"{cat.get('name') or eid} {fmt_when(cat)}. {w['qty']} tickets together, "
                             f"{fmt_money(price)}/ticket including fees; {fmt_money(price*w['qty'])} total. "
                             f"{club}, sec {sec}, row {row}. At or below your {fmt_money(w['threshold_cents'])} target. {url}")
-                    destinations = sb("GET", f"tix_destinations?watch_id=eq.{w['id']}&select=phone_digits,provider&limit=1")
-                    recipient = destination_address(destinations[0]) if destinations else ""
-                    ok = send_sms(subject, body, recipient=recipient)
-                    sb("POST", "tix_alerts", [{"watch_id":w["id"], "event_id":eid, "club":club, "qty":w["qty"],
-                       "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed",
-                       "criteria_version":w.get('criteria_version',1)}], prefer="return=minimal")
-                    if ok: sent += 1
-                    else: health["status"] = "error"
+                    destinations = None
+                    for channel in ("email", "sms"):
+                        if not w.get(f"{channel}_enabled", channel == "email"): continue
+                        if already_alerted(w["id"], eid, club, 60 if w["alert_style"] == "repeat" else None,
+                                           w.get('criteria_version',1), channel=channel): continue
+                        if channel == "email": recipient = owner_email(w["id"])
+                        else:
+                            if destinations is None:
+                                destinations = sb("GET", f"tix_destinations?watch_id=eq.{w['id']}&select=phone_digits,provider&limit=1")
+                            recipient = destination_address(destinations[0]) if destinations else ""
+                        ok = send_sms(subject, body, recipient=recipient)
+                        sb("POST", "tix_alerts", [{"watch_id":w["id"], "event_id":eid, "club":club, "qty":w["qty"],
+                           "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed",
+                           "criteria_version":w.get('criteria_version',1), "channel":channel}], prefer="return=minimal")
+                        if ok: sent += 1
+                        else: health["status"] = "error"
                 scan_result(w["id"], eid, "ok" if found else "unavailable", checked_at,
                             w.get('criteria_version',1), {'listings_checked':len(listings),
                             'available_lots':sorted({n for l in listings for n in (l.get('availableLots') or []) if isinstance(n,int)}),
