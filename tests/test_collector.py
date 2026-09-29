@@ -49,6 +49,20 @@ class CollectorTests(unittest.TestCase):
     def test_missing_lots_is_not_proof_of_purchase_quantity(self):
         l=listing(); del l['availableLots']
         self.assertFalse(c.allows_quantity(l,2))
+    def test_rendered_cards_verify_only_selected_quantity_and_all_in_price(self):
+        cards=[{'href':'https://gametime.co/events/abc?listingId=l1&quantity=2',
+                'price':'11632','fees':True,'group':'Lower Corner','seat':'101, Row 3'},
+               {'href':'https://gametime.co/events/abc?listingId=l2&quantity=5',
+                'price':'9000','fees':True,'group':'Club','seat':'C1, Row 2'},
+               {'href':'https://gametime.co/events/abc?listingId=l3&quantity=2',
+                'price':'5000','fees':False,'group':'Club','seat':'C2, Row 2'},
+               {'href':'https://example.com/events/abc?listingId=l4&quantity=2',
+                'price':'3000','fees':True,'group':'Club','seat':'C3, Row 2'}]
+        parsed=c.parse_rendered_cards(cards,2)
+        self.assertEqual(len(parsed),1)
+        self.assertEqual(c.cheapest_any(parsed,2)[0],11632)
+        self.assertIsNone(c.cheapest_any(parsed,5))
+        self.assertEqual(parsed[0]['spot']['row'],'3')
     def test_club_and_qty_choose_correct_price(self):
         ls=[listing(1000, lots=[1]),listing(12000,group='Upper'),listing(16000),listing(15000)]
         self.assertEqual(c.cheapest_for(ls,'Club',2)[0],15000)
@@ -196,6 +210,7 @@ class CollectorTests(unittest.TestCase):
              patch.object(c,'resolve_events',return_value=[event]), \
              patch.object(c,'discovery_due',return_value=[]), \
              patch.object(c,'fetch_provider_page',return_value=('metadata_only',{'event_id':'abc','min_total':10800},[])), \
+             patch.object(c,'rendered_quantity_listings',return_value=None), \
              patch.object(c,'record_event_market',return_value=({},0)), \
              patch.object(c,'scan_result') as scan, \
              patch.object(c,'write_state') as state, patch.object(c.time,'sleep'):
@@ -203,6 +218,32 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(scan.call_args.args[2],'provider_incomplete')
         self.assertEqual(state.call_args.args[1]['status'],'degraded')
         self.assertEqual(state.call_args.args[1]['provider_incomplete'],1)
+    def test_rendered_exact_lot_recovers_metadata_only_watch(self):
+        watch={'id':'w','kind':'event','match':{'event_ids':['abc']},'clubs':[],'qty':2,
+               'threshold_cents':7000,'alert_style':'first','active':True,
+               'created_at':c.NOW.isoformat()}
+        event={'event_id':'abc','event_date':(c.NOW+timedelta(days=1)).date().isoformat(),
+               'name':'A game','url':'https://gametime.co/events/abc'}
+        verified={'id':'l1','verified_quantity':2,'price':{'total':10800},
+                  'spot':{'sectionGroup':'Lower','section':'1','row':'2'},
+                  'seoUrl':'https://gametime.co/events/abc?listingId=l1&quantity=2'}
+        writes=[]
+        def db(method,path,body=None,prefer=None):
+            if path.startswith('tix_watches?'): return [watch]
+            writes.append((path,body));return []
+        with patch.object(c,'sb',side_effect=db), \
+             patch.object(c,'catalog_stale',return_value=False), \
+             patch.object(c,'send_pending_confirmations',return_value=0), \
+             patch.object(c,'resolve_events',return_value=[event]), \
+             patch.object(c,'discovery_due',return_value=[]), \
+             patch.object(c,'fetch_provider_page',return_value=('metadata_only',{'event_id':'abc','min_total':10800},[])), \
+             patch.object(c,'rendered_quantity_listings',return_value=[verified]), \
+             patch.object(c,'scan_result') as scan, \
+             patch.object(c,'write_state') as state,patch.object(c.time,'sleep'):
+            c.main()
+        self.assertEqual(scan.call_args.args[2],'ok')
+        self.assertEqual(state.call_args.args[1]['status'],'ok')
+        self.assertTrue(any(path=='tix_prices' for path,_ in writes))
     def test_event_time_change_is_recorded(self):
         watch={'id':'w','kind':'event','match':{'event_ids':['abc']},'clubs':[], 'qty':2,
                'threshold_cents':10000,'alert_style':'first','active':True,'created_at':c.NOW.isoformat()}

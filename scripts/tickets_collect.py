@@ -194,6 +194,10 @@ def allows_quantity(listing, qty):
     if not isinstance(qty, int) or not 1 <= qty <= 8: return False
     seats = listing.get("seats") or []
     lots = listing.get("availableLots")
+    # The rendered provider page filters these links to one requested quantity.
+    # This is direct evidence for that quantity only, not for splittable lots.
+    if listing.get('verified_quantity') == qty:
+        return True
     # Unknown allowed quantities are not proof that the requested lot can be bought.
     return isinstance(lots, list) and qty in lots and len(seats) >= qty
 
@@ -240,6 +244,87 @@ def fetch_provider_page(url, discovery=False):
         if outcome == 'ok' or attempt == 1:
             return outcome,meta,listings
     raise ValueError('parser_failure: no event data')
+
+def rendered_quantity_listings(url, quantities):
+    """Read all-in cards from the ordinary, quantity-filtered event page.
+
+    Return None for an incomplete render. Never turn a browser failure into
+    zero inventory or infer that a seller will split a larger lot.
+    """
+    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+    from urllib.parse import urlsplit, parse_qs, urlencode, urlunsplit
+    if urlsplit(url).hostname != 'gametime.co':
+        raise ValueError('parser_failure: unsafe event URL')
+    results = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(channel='chrome', headless=True, args=['--no-sandbox'],timeout=30000)
+        try:
+            page = browser.new_page()
+            for qty in sorted(set(quantities)):
+                if not isinstance(qty, int) or not 1 <= qty <= 8:
+                    continue
+                parts = urlsplit(url)
+                query = {k:v[-1] for k,v in parse_qs(parts.query).items() if k not in ('listingId','quantity')}
+                query['quantity'] = str(qty)
+                filtered_url = urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(query),''))
+                response = page.goto(filtered_url,wait_until='domcontentloaded',timeout=35000)
+                if not response or response.status >= 400:
+                    return None
+                # The older page sometimes arrives only after a real browser
+                # navigation. Its embedded listings retain exact cents and
+                # seller-provided availableLots, so prefer them to rounded UI.
+                _,embedded = parse_event_page(page.content())
+                if embedded and any(allows_quantity(l,qty) for l in embedded):
+                    results.extend(embedded)
+                    continue
+                try:
+                    page.locator('a[href*="listingId="] [data-testid="listing-card-current-price"]').first.wait_for(timeout=25000)
+                except PlaywrightTimeout:
+                    return None
+                if f'{qty} Ticket' not in page.locator('body').inner_text()[:500]:
+                    return None
+                cards = page.locator('a[href*="listingId="]').evaluate_all('''nodes => nodes.map(a => ({
+                    href:a.href,
+                    price:a.querySelector('[data-testid="listing-card-current-price"] price-display')?.getAttribute('cents'),
+                    fees:!!a.querySelector('[data-testid="listing-card-includes-fees"]'),
+                    group:a.querySelector('[data-testid="listing-card-details"] h3')?.textContent?.trim(),
+                    seat:a.querySelector('[data-testid="listing-seat-details"]')?.textContent?.trim()
+                }))''')
+                parsed = parse_rendered_cards(cards,qty)
+                if not parsed:
+                    return None
+                results.extend(parsed)
+        finally:
+            browser.close()
+    unique = {}
+    for listing in results:
+        unique[(listing.get('id'),listing.get('verified_quantity'))] = listing
+    return list(unique.values())
+
+def parse_rendered_cards(cards, qty):
+    """Keep only exact-quantity, fee-inclusive provider listing links."""
+    from urllib.parse import urlsplit, parse_qs
+    out = {}
+    for card in cards:
+        try:
+            parts = urlsplit(card.get('href') or '')
+            params = parse_qs(parts.query)
+            listing_id = params.get('listingId',[''])[0]
+            if (parts.scheme != 'https' or parts.hostname != 'gametime.co'
+                or params.get('quantity') != [str(qty)] or not listing_id
+                or not card.get('fees')):
+                continue
+            cents = int(card.get('price'))
+            if cents <= 0: continue
+            group = (card.get('group') or '').strip()
+            seat = (card.get('seat') or '').strip()
+            section, _, row = seat.partition(', Row ')
+            out[listing_id] = {'id':listing_id,'seoUrl':card['href'],
+                'price':{'total':cents},'verified_quantity':qty,
+                'spot':{'sectionGroup':group,'section':section,'row':row}}
+        except (TypeError,ValueError):
+            continue
+    return list(out.values())
 
 def cheapest_any(listings, qty):
     best = None
@@ -599,6 +684,17 @@ def main():
                 raise ValueError('parser_failure: provider event/listing data missing')
             if not meta or meta.get("event_id") != eid:
                 raise ValueError("event_unavailable: event ID changed or removed")
+            if provider_status == 'metadata_only':
+                requested = {w['qty'] for w in watchers[eid]}
+                try:
+                    rendered = rendered_quantity_listings(cat['url'],requested)
+                except Exception as error:
+                    print(f"rendered listing check failed for {eid}: {type(error).__name__}",file=sys.stderr)
+                    rendered = None
+                if rendered is not None and all(any(allows_quantity(l,qty) for l in rendered) for qty in requested):
+                    listings = rendered
+                    provider_status = 'ok'
+                    print(f"rendered listings verified for {eid}: {len(listings)} cards, quantities {sorted(requested)}")
             groups,change_count = record_event_market(cat,meta,listings,checked_at,provider_status)
             health['event_changes'] = health.get('event_changes',0)+change_count
             if provider_status == 'metadata_only':
@@ -653,7 +749,7 @@ def main():
                         else: health["status"] = "error"
                 scan_result(w["id"], eid, "ok" if found else "unavailable", checked_at,
                             w.get('criteria_version',1), {'listings_checked':len(listings),
-                            'available_lots':sorted({n for l in listings for n in (l.get('availableLots') or []) if isinstance(n,int)}),
+                            'available_lots':sorted({n for l in listings for n in ((l.get('availableLots') or []) + ([l['verified_quantity']] if l.get('verified_quantity') else [])) if isinstance(n,int)}),
                             'matching_listings':sum(allows_quantity(l,w['qty']) for l in listings)})
             health["checked_events"] += 1
         except Exception as e:
