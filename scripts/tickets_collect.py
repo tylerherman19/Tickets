@@ -653,7 +653,7 @@ def main():
         days_out = (datetime.fromisoformat(cat["event_date"]).date() - NOW.date()).days
         if days_out < 0: continue
         oldest = NOW
-        needs_check = False
+        needs_check = os.environ.get('TIX_FORCE_WATCHED') == 'true'
         for w in watchers[eid]:
             last = scans.get((w["id"], eid))
             if not last:

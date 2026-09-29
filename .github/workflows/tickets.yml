@@ -11,6 +11,10 @@ on:
         description: "Run the health watchdog; collect only if the last check is stale"
         type: boolean
         default: false
+      force_watched:
+        description: "Check all active watched events now, regardless of cadence"
+        type: boolean
+        default: false
   # The existing external dispatcher sends tickets-ping every 15 minutes.
   # This GitHub schedule is a backup health check, never an unconditional scan.
   schedule:
@@ -46,6 +50,7 @@ jobs:
           SMS_GATEWAY: ${{ secrets.SMS_GATEWAY }}
           TIX_TEST_SMS: ${{ inputs.test_sms }}
           TIX_WATCHDOG: ${{ github.event_name == 'schedule' || github.event.action == 'tickets-watchdog' || inputs.watchdog == true }}
+          TIX_FORCE_WATCHED: ${{ inputs.force_watched }}
         run: |
           if [ "$TIX_WATCHDOG" = "true" ]; then
             python scripts/tickets_watchdog.py
