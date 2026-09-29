@@ -140,6 +140,12 @@ class CollectorTests(unittest.TestCase):
         with patch.object(c,'sb',return_value=[{'sent_at':c.NOW.isoformat()}]) as db:
             self.assertTrue(c.already_alerted('w','e','Club',criteria_version=3))
             self.assertIn('criteria_version=eq.3',db.call_args.args[1]);self.assertIn('channel=eq.sms',db.call_args.args[1])
+    def test_price_alert_deduplication_is_independent_by_channel(self):
+        def db(method,path,body=None,prefer=None):
+            return [{'sent_at':c.NOW.isoformat()}] if 'channel=eq.sms' in path else []
+        with patch.object(c,'sb',side_effect=db):
+            self.assertTrue(c.already_alerted('w','e','Club',criteria_version=2,channel='sms'))
+            self.assertFalse(c.already_alerted('w','e','Club',criteria_version=2,channel='email'))
     def test_adaptive_intervals_respect_workflow_cadence(self):
         self.assertEqual(c.check_interval_minutes(2),15)
         self.assertEqual(c.check_interval_minutes(20),60)

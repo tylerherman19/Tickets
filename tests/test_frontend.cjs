@@ -1,6 +1,6 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');
 const code=fs.readFileSync('tickets.js','utf8');
-const sandbox={URL,Intl,Date,Number,AbortSignal,console};vm.createContext(sandbox);vm.runInContext(code,sandbox);
+const sandbox={URL,URLSearchParams,Intl,Date,Number,AbortSignal,console};vm.createContext(sandbox);vm.runInContext(code,sandbox);
 function run(expr){return vm.runInContext(expr,sandbox);}
 test('prices retain cents and unknown prices are not zero',()=>{assert.equal(run('money(10050)'),'$100.50');assert.equal(run('money(null)'),'—');});
 test('total budget maps to a seller-supported per-ticket threshold without overspending',()=>{
@@ -84,4 +84,13 @@ test('team price context shows only recent real game checks',()=>{
   {min_total:null,price_checked_at:null,discovery_status:'pending'}];
  const result=run('teamPriceSummary(teamRows)');
  assert.equal(result.total,4);assert.equal(result.count,2);assert.equal(result.low,10600);assert.equal(result.average,12300);
+});
+
+test('team market query follows the chosen home or away schedule',()=>{
+ run('Object.assign(state,{selected:{team:"minnesota-vikings"},category:"nfl-football",homeAway:"home"})');
+ assert.equal(new URL('https://example.test/'+run('teamPriceQuery()')).searchParams.get('slug'),'ilike.*-at-minnesota-vikings');
+ run('state.homeAway="away"');
+ assert.equal(new URL('https://example.test/'+run('teamPriceQuery()')).searchParams.get('slug'),'ilike.minnesota-vikings-at-*');
+ run('state.homeAway="any"');
+ assert.equal(new URL('https://example.test/'+run('teamPriceQuery()')).searchParams.get('or'),'(slug.ilike.*-at-minnesota-vikings,slug.ilike.minnesota-vikings-at-*)');
 });
