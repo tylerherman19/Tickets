@@ -402,7 +402,9 @@ def refresh_catalog():
     if old:
         ids = [r["event_id"] for r in old]
         for i in range(0, len(ids), 100):
-            chunk = ",".join(f'"{x}"' for x in ids[i:i + 100])
+            # Percent-encode the quotes: raw '"' in the URL gets the
+            # connection dropped before PostgREST ever sees the filter.
+            chunk = urllib.parse.quote(",".join(f'"{x}"' for x in ids[i:i + 100]), safe=",")
             sb("DELETE", f"tix_event_changes?event_id=in.({chunk})")
         sb("DELETE", f"tix_catalog?event_date=lt.{today}")
         print(f"catalog: expired {len(old)} past events")
@@ -427,7 +429,8 @@ def resolve_events(w):
     if kind == "event":
         ids = m.get("event_ids") or []
         if not ids: return []
-        return sb("GET", "tix_events_v?event_id=in.(" + ",".join(f'"{i}"' for i in ids) + f")&event_date=gte.{today}&select={cols}")
+        in_list = urllib.parse.quote(",".join(f'"{i}"' for i in ids), safe=",")
+        return sb("GET", f"tix_events_v?event_id=in.({in_list})&event_date=gte.{today}&select={cols}")
     if kind == "team":
         slug = (m.get("slug") or "").lower()
         ha = m.get("home_away") or "any"
