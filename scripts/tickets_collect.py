@@ -400,9 +400,11 @@ def refresh_catalog():
     # clear change history for expiring events before removing the catalog rows.
     old = sb("GET", f"tix_catalog?event_date=lt.{today}&select=event_id")
     if old:
-        ids = ",".join(f'"{r["event_id"]}"' for r in old)
-        sb("DELETE", f"tix_event_changes?event_id=in.({ids})")
-        sb("DELETE", f"tix_catalog?event_id=in.({ids})")
+        ids = [r["event_id"] for r in old]
+        for i in range(0, len(ids), 100):
+            chunk = ",".join(f'"{x}"' for x in ids[i:i + 100])
+            sb("DELETE", f"tix_event_changes?event_id=in.({chunk})")
+        sb("DELETE", f"tix_catalog?event_date=lt.{today}")
         print(f"catalog: expired {len(old)} past events")
     sb("POST", "tix_state?on_conflict=k", [{"k": "catalog_refreshed_at", "v": json.dumps(NOW.isoformat())}],
        prefer="resolution=merge-duplicates,return=minimal")
