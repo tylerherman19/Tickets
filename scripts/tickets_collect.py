@@ -396,7 +396,14 @@ def refresh_catalog():
         sb("POST", "tix_catalog?on_conflict=event_id", chunk,
            prefer="resolution=merge-duplicates,return=minimal")
     print(f"catalog: upserted {len(vals)} future events")
-    sb("DELETE", f"tix_catalog?event_date=lt.{today}")
+    # tix_event_changes references tix_catalog without ON DELETE CASCADE, so
+    # clear change history for expiring events before removing the catalog rows.
+    old = sb("GET", f"tix_catalog?event_date=lt.{today}&select=event_id")
+    if old:
+        ids = ",".join(f'"{r["event_id"]}"' for r in old)
+        sb("DELETE", f"tix_event_changes?event_id=in.({ids})")
+        sb("DELETE", f"tix_catalog?event_id=in.({ids})")
+        print(f"catalog: expired {len(old)} past events")
     sb("POST", "tix_state?on_conflict=k", [{"k": "catalog_refreshed_at", "v": json.dumps(NOW.isoformat())}],
        prefer="resolution=merge-duplicates,return=minimal")
 
@@ -754,11 +761,18 @@ def main():
             health["checked_events"] += 1
         except Exception as e:
             health["failed_events"] += 1
-            health["status"] = "error"
             print(f"check {eid} failed: {type(e).__name__}: {e}", file=sys.stderr)
             outcome = ('parser_failure' if 'parser_failure' in str(e) else
                        'event_unavailable' if 'event_unavailable' in str(e) or
                        isinstance(e, urllib.error.HTTPError) and e.code in (404,410) else 'http_failure')
+            if outcome in ('parser_failure', 'event_unavailable') and cat.get("event_date", "") <= NOW.date().isoformat():
+                # Game day (or past): the provider pulls listing data once the
+                # event starts, so an empty page is expected, not a collector
+                # failure. Record it and keep the run green; the 15-minute
+                # retry cadence covers transient pre-game hiccups.
+                outcome = 'event_passed'
+            else:
+                health["status"] = "error"
             health.setdefault('outcomes',{})[outcome] = health.setdefault('outcomes',{}).get(outcome,0)+1
             for w in watchers[eid]:
                 try: scan_result(w["id"], eid, outcome, checked_at, w.get('criteria_version',1))
