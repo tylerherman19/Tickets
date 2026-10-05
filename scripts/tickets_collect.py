@@ -398,16 +398,21 @@ def refresh_catalog():
     print(f"catalog: upserted {len(vals)} future events")
     # tix_event_changes references tix_catalog without ON DELETE CASCADE, so
     # clear change history for expiring events before removing the catalog rows.
-    old = sb("GET", f"tix_catalog?event_date=lt.{today}&select=event_id")
-    if old:
-        ids = [r["event_id"] for r in old]
-        for i in range(0, len(ids), 100):
-            # Percent-encode the quotes: raw '"' in the URL gets the
-            # connection dropped before PostgREST ever sees the filter.
-            chunk = urllib.parse.quote(",".join(f'"{x}"' for x in ids[i:i + 100]), safe=",")
-            sb("DELETE", f"tix_event_changes?event_id=in.({chunk})")
-        sb("DELETE", f"tix_catalog?event_date=lt.{today}")
-        print(f"catalog: expired {len(old)} past events")
+    # tix_event_changes references tix_catalog without ON DELETE CASCADE, so
+    # clear change history for expiring events before removing the catalog rows.
+    # Loop until no old events remain: the listing GET is capped at 1000 rows,
+    # so one pass may not cover everything, and the chunked in-filters keep
+    # each request URL small (raw quotes get the connection dropped, hence
+    # the percent-encoding).
+    expired = 0
+    for _ in range(100):
+        old = sb("GET", f"tix_catalog?event_date=lt.{today}&select=event_id&limit=100")
+        if not old: break
+        chunk = urllib.parse.quote(",".join(f'"{r["event_id"]}"' for r in old), safe=",")
+        sb("DELETE", f"tix_event_changes?event_id=in.({chunk})")
+        sb("DELETE", f"tix_catalog?event_id=in.({chunk})")
+        expired += len(old)
+    if expired: print(f"catalog: expired {expired} past events")
     sb("POST", "tix_state?on_conflict=k", [{"k": "catalog_refreshed_at", "v": json.dumps(NOW.isoformat())}],
        prefer="resolution=merge-duplicates,return=minimal")
 
