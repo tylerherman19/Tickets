@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /Tickets/$
+Allow: /Tickets/index.html
+Allow: /Tickets/event.html
+Allow: /Tickets/privacy.html
+Disallow: /Tickets/watches.html
+Disallow: /Tickets/new.html
+Disallow: /Tickets/ledger.html
+Disallow: /Tickets/notifications.html
+
+Sitemap: https://tylerherman19.github.io/Tickets/sitemap.xml

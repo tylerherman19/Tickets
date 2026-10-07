@@ -122,3 +122,34 @@ test('a newer incomplete scan keeps the previous verified lot labeled as histori
  const team=run('watchPriceDisplay({kind:"team",qty:2},null,previous,scan)');
  assert.equal(team.price_cents,null);
 });
+const htmlFiles=fs.readdirSync('.').filter(f=>f.endsWith('.html'));
+test('every page has a real title, description, social card, CSP and favicon',()=>{
+ for(const f of htmlFiles){const html=fs.readFileSync(f,'utf8');
+  assert.match(html,/<title>[^<]+ · Ticketline<\/title>/,f);assert.doesNotMatch(html,/Vite|React App|Next\.js/,f);
+  for(const re of [/name="description"/,/property="og:image"/,/Content-Security-Policy/,/rel="icon"/])assert.match(html,re,f);}
+});
+test('private pages are not indexed and public ones are canonical',()=>{
+ for(const f of ['watches.html','new.html','ledger.html','notifications.html','404.html'])assert.match(fs.readFileSync(f,'utf8'),/name="robots" content="noindex"/,f);
+ for(const f of ['index.html','event.html','privacy.html'])assert.match(fs.readFileSync(f,'utf8'),/rel="canonical"/,f);
+});
+test('local links and assets resolve to files in the repo',()=>{
+ const sources=[...htmlFiles,'app.js','tickets.js','auth.js','manifest.webmanifest','service-worker.js'];
+ for(const f of sources){const text=fs.readFileSync(f,'utf8');
+  for(const [,ref] of text.matchAll(/(?:href|src)=["'`]\.\/([^"'`?#$]+)/g))assert.ok(fs.existsSync(ref),`${f} links to missing ./${ref}`);
+  for(const [,ref] of text.matchAll(/"src":"\.\/([^"]+)"/g))assert.ok(fs.existsSync(ref),`${f} links to missing ./${ref}`);}
+});
+test('404 page resolves assets from the project root on nested paths',()=>{assert.match(fs.readFileSync('404.html','utf8'),/<base href="\/Tickets\/">/);});
+test('removed hero tagline stays removed',()=>{assert.doesNotMatch(app,/For the love of being there/);});
+test('reads retry transient failures but not client errors',async()=>{
+ sandbox.setTimeout=(fn)=>setTimeout(fn,0);let calls=0;
+ sandbox.fetch=async()=>{calls++;return {status:calls<3?503:200,ok:calls>=3};};
+ const r=await run('fetchWithRetry("x",{},{tries:3})');assert.equal(r.status,200);assert.equal(calls,3);
+ calls=0;sandbox.fetch=async()=>{calls++;return {status:404,ok:false};};
+ await run('fetchWithRetry("x",{},{tries:3})');assert.equal(calls,1);
+ calls=0;sandbox.fetch=async()=>{calls++;throw new TypeError('offline');};
+ await assert.rejects(()=>run('fetchWithRetry("x",{},{tries:2})'));assert.equal(calls,2);
+});
+test('empty or null API bodies become safe values',async()=>{
+ assert.equal(await run('readJson({text:async()=>""})'),null);
+ await assert.rejects(()=>run('readJson({text:async()=>"<html>"})'),/unexpected response/);
+});

@@ -88,6 +88,23 @@ Collector health distinguishes parser failures, HTTP failures, removed events, a
 
 Apply `scripts/20260928_email_delivery.sql` after the earlier migrations. It adds email and SMS flags to watches, labels historical alert deliveries as SMS, tracks each channel separately on confirmations, and exposes a service-role-only owner-email lookup. Existing watches with saved phone destinations retain text delivery; email is enabled for all owned watches. The migration preserves previous watch, price, and alert rows. The save RPC remains transactional and now allows email-only alerts without a phone. Gmail SMTP uses the existing free GitHub Actions secrets. Deploy the collector and frontend together after this migration so email confirmations and optional text delivery use the new fields.
 
+Apply `scripts/20261007_hardening.sql` after the earlier migrations. It is additive and idempotent:
+
+- Browser `PATCH` access to `tix_watches` is limited to `active`, `purchased_at`, `purchase_price_cents` and `match` (archive/restore). Criteria changes must go through the validating `tix_save_alert` RPC.
+- Check constraints (quantity 1–8, threshold $1–$50,000, label length, kind, alert style, bounded `match`) are enforced for new writes; `NOT VALID` keeps legacy rows from blocking the migration.
+- `updated_at` on watches and a service-only `tix_watch_audit` change log (who, what, when; no emails or phone numbers).
+- Deleting an auth user cascades to their watches and all dependent rows; expiring a catalog event cascades to its change history.
+- `tix_delete_my_account()` lets a signed-in user permanently delete their account and data from the Notifications page. There is no support inbox, so this is the deletion path described in `privacy.html`.
+- Indexes for category/date listing, cheapest-first search, trigram name search and the activity feed.
+
+## Site pages and behavior
+
+- `privacy.html` is the privacy policy; it is linked from the footer and sign-in form. Update its date whenever data handling changes.
+- `404.html` is served by GitHub Pages for any unknown path. It uses `<base href="/Tickets/">`, so its links only resolve on the hosted site.
+- Each page sets a Content-Security-Policy meta tag (scripts from this origin only, API calls only to the Supabase project). Add any new external origin there.
+- Explore filters are mirrored in the URL (`q`, `category`, `place`, `date`, `within`, `max`, `cheap`), so views are shareable and survive refresh/Back.
+- Reads retry network errors, 429 and 5xx twice with backoff; writes are never retried automatically. An unhandled error shows an error page with a short reference also written to the browser console. There is no third-party error tracker or analytics.
+
 ## Deployment
 
 Push `main`; the existing GitHub Pages deployment publishes the root directory. Verify the Pages workflow and public pages after each deploy. `Ticketline checks` runs the collector and frontend regression tests on pushes and pull requests.

@@ -398,8 +398,6 @@ def refresh_catalog():
     print(f"catalog: upserted {len(vals)} future events")
     # tix_event_changes references tix_catalog without ON DELETE CASCADE, so
     # clear change history for expiring events before removing the catalog rows.
-    # tix_event_changes references tix_catalog without ON DELETE CASCADE, so
-    # clear change history for expiring events before removing the catalog rows.
     # Loop until no old events remain: the listing GET is capped at 1000 rows,
     # so one pass may not cover everything, and the chunked in-filters keep
     # each request URL small (raw quotes get the connection dropped, hence
