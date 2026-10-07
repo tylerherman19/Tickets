@@ -72,39 +72,77 @@ const iconPaths = {
  refresh:'<path d="M20 7a9 9 0 1 0 1 8M20 3v5h-5"/>'
 };
 const icon = (name, cls='') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name]||iconPaths.ticket}</svg>`;
+// Abort after `ms`, and also when the caller's signal aborts.
+const withTimeout = (ms,signal) => signal ? AbortSignal.any([signal,AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
+const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
+// Reads are idempotent, so retry network errors, 429s and 5xx with backoff.
+// Writes are never retried automatically; the caller decides.
+async function fetchWithRetry(url,options,{tries=3,timeout=20000,signal}={}){
+ for(let attempt=1;;attempt++){
+  try{
+   const r=await fetch(url,{...options,signal:withTimeout(timeout,signal)});
+   if((r.status===429||r.status>=500)&&attempt<tries){await sleep(400*2**attempt);continue;}
+   return r;
+  }catch(e){
+   if(signal?.aborted||attempt>=tries)throw e.name==='TimeoutError'?new Error('The request timed out. Check your connection and try again.'):e;
+   await sleep(400*2**attempt);
+  }
+ }
+}
+// PostgREST returns arrays for table reads; tolerate null or an empty body.
+async function readJson(r){const text=await r.text();if(!text)return null;try{return JSON.parse(text);}catch{throw new Error('The server sent an unexpected response. Please try again.');}}
 async function sbGet(path, {signal}={}) {
  if(IS_DEV) return devGet(path);
  const token=await accessToken();
- const r=await fetch(SB_URL+'/rest/v1/'+path,{headers:{...H,Authorization:'Bearer '+(token||SB_KEY)},signal:signal?AbortSignal.any([signal,AbortSignal.timeout(20000)]):AbortSignal.timeout(20000)});
+ const r=await fetchWithRetry(SB_URL+'/rest/v1/'+path,{headers:{...H,Authorization:'Bearer '+(token||SB_KEY)}},{signal});
+ if(r.status===401&&token){expireSession();throw new Error('Your session expired. Sign in again to continue.');}
  if(!r.ok) throw new Error(r.status===401||r.status===403 ? 'Your session could not access this data. Please reload and try again.' : 'Could not load ticket data. Check your connection and try again.');
- return r.json();
+ return (await readJson(r)) ?? [];
 }
 async function sbPublicRpc(name,body,{signal}={}) {
  if(IS_DEV) return false;
- const r=await fetch(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:H,body:JSON.stringify(body),signal:signal?AbortSignal.any([signal,AbortSignal.timeout(10000)]):AbortSignal.timeout(10000)});
+ const r=await fetchWithRetry(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:H,body:JSON.stringify(body)},{signal,timeout:10000,tries:2});
  if(!r.ok) throw new Error('Could not request a price check.');
- return r.json();
+ return readJson(r);
 }
 async function sbWrite(method,path,body,prefer='return=representation') {
  if(IS_DEV) throw new Error('Local preview is read-only. Sign in on the live site to save an alert.');
- const token=await accessToken();if(!token)throw new Error('Sign in again to change your alert.');
- const r=await fetch(SB_URL+'/rest/v1/'+path,{method,headers:{...H,Authorization:'Bearer '+token,Prefer:prefer},body:body==null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
- if(!r.ok) throw new Error(r.status===401||r.status===403 ? 'This alert could not be saved. Access to the alert board is unavailable.' : 'Your changes were not saved. Please try again.');
- return r.status===204 ? [] : r.json();
+ const token=await accessToken();if(!token)throw new Error('Your session expired. Sign in again to change your alert.');
+ let r;
+ try{r=await fetch(SB_URL+'/rest/v1/'+path,{method,headers:{...H,Authorization:'Bearer '+token,Prefer:prefer},body:body==null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});}
+ catch(e){throw new Error(e.name==='TimeoutError'?'The save timed out. Refresh to check whether it went through before trying again.':'You appear to be offline. Your changes were not saved.');}
+ if(r.status===401){expireSession();throw new Error('Your session expired. Sign in again to change your alert.');}
+ if(!r.ok) throw new Error(r.status===403 ? 'This alert could not be saved. Access to the alert board is unavailable.' : 'Your changes were not saved. Please try again.');
+ return r.status===204 ? [] : (await readJson(r)) ?? [];
 }
 async function sbRpc(name,body) {
  if(IS_DEV) throw new Error('Local preview is read-only.');
- const token=await accessToken();if(!token)throw new Error('Sign in again to change your alert.');
- const r=await fetch(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:{...H,Authorization:'Bearer '+token},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
- if(!r.ok){let detail='';try{detail=(await r.json()).message||'';}catch{}throw new Error(detail||'Your text destination was not saved. Please try again.');}
- return r.status===204?null:r.json();
+ const token=await accessToken();if(!token)throw new Error('Your session expired. Sign in again to change your alert.');
+ let r;
+ try{r=await fetch(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:{...H,Authorization:'Bearer '+token},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});}
+ catch(e){throw new Error(e.name==='TimeoutError'?'The save timed out. Check My alerts before trying again so you do not create a duplicate.':'You appear to be offline. Nothing was saved.');}
+ if(r.status===401){expireSession();throw new Error('Your session expired. Sign in again to save.');}
+ if(!r.ok){
+  // Only surface messages raised deliberately by our RPCs (P0001 / 42501), never raw database detail.
+  let detail='';try{const err=await r.json();if(['P0001','42501'].includes(err.code))detail=err.message||'';}catch{}
+  if(r.status>=500)reportError(new Error('rpc '+name+' '+r.status));
+  throw new Error(detail||'Your alert was not saved. Please try again.');
+ }
+ return r.status===204?null:readJson(r);
+}
+// Client-side error reporting. There is no third-party tracker (by design, see privacy.html);
+// errors are logged with a short reference the user can quote, and never include personal data.
+function reportError(error,context=''){
+ const ref=Math.random().toString(36).slice(2,8).toUpperCase();
+ console.error(`[ticketline ${ref}]`,context,error?.message||error);
+ return ref;
 }
 function toast(message) { $('#toast').textContent=message; $('#toast').classList.add('show'); clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),5000); }
 function errorBox(message,retryId='retry') {return `<div class="notice error" role="alert">${icon('info')}<div><strong>Something interrupted that.</strong><p>${esc(message)}</p>${retryId?`<button class="text-button" id="${retryId}">Try again</button>`:''}</div></div>`;}
 function loadingRows(n=4) {return `<div aria-label="Loading events" role="status">${Array.from({length:n},()=>'<div class="skeleton-row"><i></i><div><b></b><span></span></div></div>').join('')}</div>`;}
 function chrome(page) {
   $('#chrome').innerHTML=`<header class="header"><div class="header-inner"><a class="brand" href="./index.html" aria-label="Ticketline home"><span class="brand-mark">${icon('ticket')}</span><span>Ticketline<span class="brand-period">.</span></span></a><nav aria-label="Main navigation"><a ${page==='explore'?'aria-current="page"':''} href="./index.html">Find events</a><a ${page==='watches'||page==='new'?'aria-current="page"':''} href="./watches.html">My alerts</a><a ${page==='activity'?'aria-current="page"':''} href="./ledger.html">Activity</a></nav>${session?'<button id="sign-out" class="text-button">Sign out</button>':''}<a class="notification-link" aria-label="Notification status" ${page==='notifications'?'aria-current="page"':''} href="./notifications.html">${icon('bell')}<span>Notifications</span></a></div></header>`;
- $('#footer').innerHTML=`<footer class="footer"><div><a class="brand small" href="./index.html">${icon('ticket')}Ticketline.</a><p>A little patience. A better ticket.</p></div><div><span>Prices from Gametime. All prices in USD.</span><p>Availability and checkout prices can change.</p></div><div class="footer-links"><a href="./notifications.html">Notification settings</a><button class="text-button" id="how-link">How it works</button></div></footer>`;
+ $('#footer').innerHTML=`<footer class="footer"><div><a class="brand small" href="./index.html">${icon('ticket')}Ticketline.</a><p>A little patience. A better ticket.</p></div><div><span>Prices from Gametime. All prices in USD.</span><p>Availability and checkout prices can change.</p></div><div class="footer-links"><a href="./notifications.html">Notification settings</a><a href="./privacy.html">Privacy</a><button class="text-button" id="how-link">How it works</button></div></footer>`;
  if($('#sign-out'))$('#sign-out').onclick=signOut;
  $('#how-link').onclick=()=>showDialog('Your game. Your budget.',`<div class="help-steps"><p><strong>1. Pick what you want to see.</strong><br>Track one event, a team’s schedule, or a day out.</p><p><strong>2. Set your limit.</strong><br>Choose the exact number of tickets and your maximum price per ticket, fees included.</p><p><strong>3. Get the heads-up.</strong><br>When a checked listing is at or below your limit, we send an alert with a link to Gametime. You choose whether to buy.</p></div><p class="muted">Checks target every 15 minutes in the week before an event and hourly further out. Scheduling can be delayed. Sign in to keep your alerts and history private.</p><a class="button primary" href="./new.html">Create an alert ${icon('arrow')}</a>`);
 }
