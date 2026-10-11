@@ -164,12 +164,19 @@ def parse_event_page(page):
         break
     return meta, listings
 
+def lots_of(listing):
+    value = listing.get("availableLots")
+    return value if value is not None else listing.get("available_lots")
+
+def group_of(spot):
+    return spot.get("sectionGroup") or spot.get("section_group")
+
 def club_groups(listings):
     """sectionGroup -> {listings, cheapest} for club groups only."""
     groups = {}
     for l in listings:
         spot = l.get("spot") or {}
-        g = spot.get("sectionGroup")
+        g = group_of(spot)
         if not g or not CLUB_RE.search(g): continue
         total = ((l.get("price") or {}).get("total"))
         if total is None: continue
@@ -193,7 +200,7 @@ def allows_quantity(listing, qty):
     """The seller must permit exactly the requested lot, not merely have enough seats."""
     if not isinstance(qty, int) or not 1 <= qty <= 8: return False
     seats = listing.get("seats") or []
-    lots = listing.get("availableLots")
+    lots = lots_of(listing)
     # The rendered provider page filters these links to one requested quantity.
     # This is direct evidence for that quantity only, not for splittable lots.
     if listing.get('verified_quantity') == qty:
@@ -226,7 +233,7 @@ def page_shape(page, meta, listings):
             'astro': 'component-export="EventListings"' in page,
             'listings_key': '"listings"' in page,
             'listings_response': 'listingsResponse' in page,
-            'lot_keys': page.count('availableLots'),
+            'lot_keys': page.count('availableLots') + page.count('available_lots'),
             'event':bool(meta), 'listings':len(listings)}
 
 def fetch_provider_page(url, discovery=False):
@@ -342,7 +349,7 @@ def cheapest_for(listings, group, qty):
     best = None
     for l in listings:
         spot = l.get("spot") or {}
-        if spot.get("sectionGroup") != group: continue
+        if group_of(spot) != group: continue
         seats = l.get("seats") or []
         if not allows_quantity(l, qty): continue
         total = ((l.get("price") or {}).get("total"))
@@ -764,7 +771,7 @@ def main():
                         else: health["status"] = "error"
                 scan_result(w["id"], eid, "ok" if found else "unavailable", checked_at,
                             w.get('criteria_version',1), {'listings_checked':len(listings),
-                            'available_lots':sorted({n for l in listings for n in ((l.get('availableLots') or []) + ([l['verified_quantity']] if l.get('verified_quantity') else [])) if isinstance(n,int)}),
+                            'available_lots':sorted({n for l in listings for n in ((lots_of(l) or []) + ([l['verified_quantity']] if l.get('verified_quantity') else [])) if isinstance(n,int)}),
                             'matching_listings':sum(allows_quantity(l,w['qty']) for l in listings)})
             health["checked_events"] += 1
         except Exception as e:
