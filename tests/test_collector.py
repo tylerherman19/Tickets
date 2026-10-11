@@ -15,6 +15,42 @@ def listing(price=15000, lots=None, seats=None, group='Club'):
             'spot':{'sectionGroup':group,'section':'C1','row':'2'}, 'seoUrl':'https://gametime.co/event/listings/listing'}
 
 class CollectorTests(unittest.TestCase):
+    def test_saved_pages_select_same_exact_quantity_offline(self):
+        results=[]
+        with patch.object(c,'get_text',side_effect=AssertionError('offline fixture cannot fetch')), patch.object(c,'sb',side_effect=AssertionError('offline fixture cannot write')), patch.object(c,'send_sms',side_effect=AssertionError('offline fixture cannot send')):
+            for shape in ('camel','snake'):
+                with open(os.path.join(os.path.dirname(__file__),'fixtures',f'listing_{shape}.html')) as source:
+                    page=source.read()
+                meta,items=c.parse_event_page(page)
+                self.assertEqual(meta['event_id'],'fixture')
+                results.append(c.cheapest_for(items,'Club',2))
+                self.assertIsNone(c.cheapest_for(items,'Club',3))
+        self.assertEqual(results[0],results[1])
+
+    def test_both_quantity_aliases_and_explicit_empty(self):
+        for key in ('availableLots', 'available_lots'):
+            item=listing(); del item['availableLots']; item[key]=[2,4]
+            self.assertTrue(c.allows_quantity(item,2))
+            self.assertFalse(c.allows_quantity(item,3))
+            item[key]=[]
+            self.assertFalse(c.allows_quantity(item,2))
+        item=listing(lots=[]); item['available_lots']=[2]
+        self.assertFalse(c.allows_quantity(item,2))
+        item=listing(); del item['availableLots']
+        self.assertFalse(c.allows_quantity(item,2))
+        item['availableLots']=None; item['available_lots']=[2,4]
+        self.assertTrue(c.allows_quantity(item,2))
+
+    def test_both_group_aliases_select_same_listing(self):
+        camel=listing(); snake=listing()
+        snake['spot']['section_group']=snake['spot'].pop('sectionGroup')
+        self.assertEqual(c.club_groups([camel]),c.club_groups([snake]))
+        self.assertEqual(c.cheapest_for([camel],'Club',2),c.cheapest_for([snake],'Club',2))
+
+    def test_page_shape_counts_both_lots_aliases(self):
+        for page,count in [('availableLots',1),('available_lots',1),('availableLots available_lots',2)]:
+            self.assertEqual(c.page_shape(page,{'event_id':'fixture'},[])['lot_keys'],count)
+
     def test_successful_empty_provider_market_clears_old_get_in_price(self):
         event={'event_id':'abc','name':'A game','event_date':'2026-10-04','url':'https://gametime.co/events/abc'}
         writes=[]
