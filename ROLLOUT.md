@@ -1,6 +1,6 @@
 # Guarded price capture and history release
 
-This PR is staged for review. It does not apply SQL, deploy Edge, change production secrets, enable capture/cleanup, send test alerts, or merge itself. The original request requires a separate merge go-ahead. The temporary feasibility probe remains disabled.
+This PR is staged for review. It does not apply SQL, deploy Edge, change production secrets, enable capture/cleanup, send test alerts, or merge itself. The original request requires a separate merge go-ahead. The scheduled workflow checks schema readiness and uses the pinned pre-PR collector only when PostgREST explicitly reports the new status RPC missing; this preserves existing collection if backend deployment is unavailable at merge. Once the RPC exists, every collector run uses the shared guards. Auth/network errors never trigger the fallback. The temporary feasibility probe remains disabled.
 
 ## What ships
 
@@ -12,7 +12,7 @@ This PR is staged for review. It does not apply SQL, deploy Edge, change product
 
 ## Release order after merge approval
 
-1. Confirm current main/CI, record active-watch count and collector health, and export a recoverable backup of **Ticketline tables only** before enabling deletion. Preview the expiry set using the same date condition below. Keep unrelated prop-edge tables untouched.
+1. Confirm current main/CI, record active-watch count and collector health, and export a recoverable backup of **Ticketline tables only** before enabling deletion. Also count legacy price/alert/scan rows whose event IDs no longer exist in the catalog: prior catalog expiry left some history orphaned. New expiry cannot establish an event date for those rows; delete only after recovering reliable date evidence, without guessing. Preview the expiry set using the same date condition below. Keep unrelated prop-edge tables untouched.
 2. Apply `scripts/20261012_guarded_history.sql` after the existing migrations, particularly `20261011_listing_fields.sql`. The migration is idempotent; fetching and expiry are disabled and catalog fetching is off. Deploy `supabase/functions/ticketline-prices/index.ts` with its shared module and `verify_jwt = true` from `supabase/config.toml`.
 3. Let PR CI pass; merge only after the separate go-ahead. Wait for Pages and workflow availability. Confirm cached public prices work while fetching is disabled, authenticated requests return rollout-disabled, and anonymous requests cannot write tracking.
 4. For a canary, set `enabled=true`, retain limits of **3/minute, 30/hour, 100/day**, `allow_catalog=false`, `expiry_enabled=false`, and set `canary_event_ids` to a small list of verified future catalog IDs. All instances share one lease and transactional admission for every HTTP attempt, including browser subresources. No implicit provider retries or redirects. Sitemap refresh and other events stay deferred during this canary. Set the canary list deliberately: an empty array permits all in-horizon events.
