@@ -1,9 +1,10 @@
+import contextlib
 import json
 import os
 import sys
 import unittest
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 os.environ.setdefault('SUPABASE_URL', 'https://example.test')
 os.environ.setdefault('SUPABASE_SERVICE_KEY', 'test')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
@@ -15,6 +16,17 @@ def listing(price=15000, lots=None, seats=None, group='Club'):
             'spot':{'sectionGroup':group,'section':'C1','row':'2'}, 'seoUrl':'https://gametime.co/event/listings/listing'}
 
 class CollectorTests(unittest.TestCase):
+    def setUp(self):
+        # Existing delivery tests isolate provider admission/history; their
+        # contracts are independently exercised in test_guard.py and Postgres.
+        guard=MagicMock(event_id='e')
+        def capture(event_id,source):
+            guard.event_id=event_id
+            return contextlib.nullcontext(guard)
+        guard.capture.side_effect=capture
+        for name,value in [('GUARD',guard),('expire_event_storage',lambda:0),('persist_capture',lambda *a,**k:None)]:
+            patched=patch.object(c,name,value);patched.start();self.addCleanup(patched.stop)
+
     def test_saved_pages_select_same_exact_quantity_offline(self):
         results=[]
         with patch.object(c,'get_text',side_effect=AssertionError('offline fixture cannot fetch')), patch.object(c,'sb',side_effect=AssertionError('offline fixture cannot write')), patch.object(c,'send_sms',side_effect=AssertionError('offline fixture cannot send')):
@@ -342,14 +354,14 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(shape['lot_keys'],1)
         self.assertEqual(shape['listings'],0)
         self.assertNotIn('secret',repr(shape))
-    def test_provider_metadata_without_lots_is_retried_once(self):
+    def test_provider_metadata_without_lots_is_not_retried(self):
         meta={'event_id':'e','min_total':3300}
         with patch.object(c,'get_text',side_effect=['metadata','complete']) as fetch, \
              patch.object(c,'parse_event_page',side_effect=[(meta,[]),(meta,[listing()])]), \
              patch.object(c,'page_outcome',side_effect=['metadata_only','ok']):
             status,_,listings=c.fetch_provider_page('https://gametime.co/events/e')
-        self.assertEqual(status,'ok');self.assertEqual(len(listings),1)
-        self.assertEqual(fetch.call_count,2)
+        self.assertEqual(status,'metadata_only');self.assertEqual(len(listings),0)
+        self.assertEqual(fetch.call_count,1)
     def test_persistent_metadata_only_keeps_provider_get_in_without_exact_lots(self):
         meta={'event_id':'e','min_total':3300}
         with patch.object(c,'get_text',return_value='metadata'), \

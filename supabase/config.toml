@@ -1,0 +1,2 @@
+[functions.ticketline-prices]
+verify_jwt = true

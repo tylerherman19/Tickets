@@ -135,3 +135,7 @@ python3 scripts/check_no_emoji.py
 ```
 
 These saved HTML pages are synthetic contract fixtures, not captured vendor schema. No paid service is added. Anonymous access does not establish permission for recurring collection; resolve applicable permission before adding collection routes or expanding use.
+
+## Price capture and history rollout
+
+See [ROLLOUT.md](ROLLOUT.md) for the disabled-by-default migration, hosted Edge/Actions setup, conservative expiry, canary sequence and rollback. Tests: `npm ci && npm test` plus `python -m unittest discover -s tests -v`. History-only refresh never creates an alert or enables delivery.

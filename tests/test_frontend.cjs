@@ -53,8 +53,8 @@ test('price discovery can fall back to real catalog events without claiming an u
  assert.match(fallback,/category=eq\.mlb-baseball/);
  assert.match(fallback,/order=event_date,event_id&limit=13&offset=0/);
 });
-test('public searches request only three real stale event prices',()=>{
- const now=new Date().toISOString(),future='2099-10-04',past='2020-01-01';
+test('searches refresh only three real stale event prices within the year',()=>{
+ const now=new Date().toISOString(),future=new Date(Date.now()+35*86400000).toISOString().slice(0,10),past='2020-01-01';
  const rows=[{event_id:'a',event_date:future,price_checked_at:null},{event_id:'a',event_date:future,price_checked_at:null},{event_id:'b',event_date:future,price_checked_at:null},{event_id:'c',event_date:future,price_checked_at:null},{event_id:'d',event_date:future,price_checked_at:null},{event_id:'old',event_date:past,price_checked_at:null},{event_id:'fresh',event_date:future,price_checked_at:now}];
  sandbox.priceRows=rows;
  assert.deepEqual(Array.from(run('priceCheckCandidates(priceRows)')),['a','b','c']);
