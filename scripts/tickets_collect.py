@@ -7,13 +7,15 @@ when a listing with qty+ seats together lands under the watch's
 per-ticket threshold.
 
 Env: SUPABASE_URL, SUPABASE_SERVICE_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, SMS_GATEWAY
-Runs in GitHub Actions; free, no auth needed for any Gametime read.
+Runs in GitHub Actions. Anonymous page access does not establish collection permission.
+Use --fixture PATH for offline parsing/selection without database writes or alerts.
 """
 import html as html_lib, json, os, re, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone, timedelta
 
-SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
-SB_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+OFFLINE = '--fixture' in sys.argv
+SB_URL = ('https://offline.invalid' if OFFLINE else os.environ["SUPABASE_URL"]).rstrip("/")
+SB_KEY = 'offline' if OFFLINE else os.environ["SUPABASE_SERVICE_KEY"]
 SMS_GATEWAY = os.environ.get("SMS_GATEWAY", "")
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
@@ -105,14 +107,16 @@ def _parse_astro_event_page(page):
     if not match:
         return None, []
     props = _decode_astro(json.loads(html_lib.unescape(match.group(1))))
+    if not isinstance(props,dict): return None, []
     full_event = props.get("fullEvent") or {}
+    if not isinstance(full_event,dict): raise ValueError('parser_failure: invalid event wrapper')
     event = full_event.get("event") or {}
-    response = props.get("listingsResponse") or {}
-    listings = response.get("listings") or []
-    if not event:
+    state,listings = inventory_envelope(props,"listingsResponse")
+    if not isinstance(event,dict) or not event:
         return None, listings
     venue = event.get('venue') or {}
     return {
+        "_inventory_state":state,
         "event_id": event.get("id") or props.get("eventId"),
         "name": event.get("name"),
         "category": event.get("category"),
@@ -146,13 +150,18 @@ def parse_event_page(page):
     if not end: return None, []
     payload = re.sub(r'("(?:\\.|[^"\\])*"|undefined)', lambda m: "null" if m.group(0) == "undefined" else m.group(0), page[i:end])
     data = json.loads(payload)
+    if not isinstance(data,dict): raise ValueError('parser_failure: invalid page payload')
     redux = data.get("redux", {})
-    listings = (redux.get("listings") or {}).get("listings") or []
+    if not isinstance(redux,dict): raise ValueError('parser_failure: invalid page wrapper')
+    state,listings = inventory_envelope(redux,"listings")
     meta = None
     full_events = (((redux.get("data") or {}).get("fullEvents") or {}).get("events")) or {}
     for event_id, wrap in full_events.items():
+        if not isinstance(wrap,dict): raise ValueError('parser_failure: invalid event wrapper')
         event = wrap.get("event") or {}
+        if not isinstance(event,dict) or not event: continue
         meta = {
+            "_inventory_state":state,
             "event_id": event.get("id") or event_id,
             "name": event.get("name"),
             "category": event.get("category"),
@@ -171,14 +180,68 @@ def lots_of(listing):
 def group_of(spot):
     return spot.get("sectionGroup") or spot.get("section_group")
 
+def alias_value(obj, camel, snake):
+    """Retain null/zero/empty values; conflicting extra-field aliases are unknown."""
+    if camel in obj and snake in obj and (type(obj[camel]) is not type(obj[snake]) or obj[camel] != obj[snake]): return None
+    return obj[camel] if camel in obj else obj.get(snake)
+
+def cents_value(value, positive=False):
+    return value if type(value) is int and value >= (1 if positive else 0) else None
+
+def listing_fields(listing):
+    """Nullable storage fields. History is opaque; no vendor schema or tier ranking."""
+    price = listing.get('price') if isinstance(listing.get('price'),dict) else {}
+    total = cents_value(price.get('total'),positive=True)
+    base = cents_value(price.get('prefee'))
+    tax = cents_value(alias_value(price,'salesTax','sales_tax'))
+    pretax = cents_value(alias_value(price,'preTaxTotal','pre_tax_total'))
+    consistent = (total is not None and base is not None and tax is not None
+                  and base + tax <= total and (pretax is None or pretax == total-tax))
+    lots = lots_of(listing)
+    lots = sorted(set(lots)) if isinstance(lots,list) and all(type(n) is int and n>0 for n in lots) else None
+    historical = alias_value(listing,'historicalPrice','historical_price')
+    trend = alias_value(listing,'historicalTrend','historical_trend')
+    hist = {'historical_price':historical,'historical_trend':trend} if any(
+        key in listing for key in ('historicalPrice','historical_price','historicalTrend','historical_trend')) else None
+    deal = listing.get('deal')
+    return {'prefee_cents':base,'sales_tax_cents':tax,'pre_tax_total_cents':pretax,
+            'deal':deal if isinstance(deal,str) and deal.strip() else None,
+            'hist':hist,'lots':lots,
+            'basis':'fees_included_tax_reported' if consistent else 'fees_included_tax_unknown'}
+
+def quantity_state(listing, qty):
+    if type(qty) is not int or not 1 <= qty <= 8: return 'unknown'
+    lots = listing_fields(listing)['lots']
+    seats = listing.get('seats')
+    if lots is not None and qty not in lots: return 'disallowed'
+    if isinstance(seats,list) and len(seats)<qty: return 'disallowed'
+    if listing.get('verified_quantity') == qty: return 'allowed'
+    if lots is None or not isinstance(seats,list): return 'unknown'
+    return 'allowed'
+
+def match_unknown(listing, watch):
+    """An unconfirmed lot/group/amount is not evidence of an empty market."""
+    if not isinstance(listing,dict): return True
+    club_level=(watch.get('match') or {}).get('club_level',bool(watch.get('clubs')))
+    group=group_of(listing.get('spot') or {})
+    if club_level and (not isinstance(group,str) or not group): return True
+    if club_level and (not CLUB_RE.search(group) or watch.get('clubs') and group not in watch['clubs']): return False
+    state=quantity_state(listing,watch['qty'])
+    return state=='unknown' or state=='allowed' and cents_value((listing.get('price') or {}).get('total'),positive=True) is None
+
+def deal_gate_reason(listing, minimum):
+    if not minimum: return None
+    # No ranked tiers were observed in the one-off page inspection. Never guess.
+    return 'deal_missing' if listing_fields(listing)['deal'] is None else 'deal_ranking_unverified'
+
 def club_groups(listings):
     """sectionGroup -> {listings, cheapest} for club groups only."""
     groups = {}
     for l in listings:
         spot = l.get("spot") or {}
         g = group_of(spot)
-        if not g or not CLUB_RE.search(g): continue
-        total = ((l.get("price") or {}).get("total"))
+        if not isinstance(g,str) or not g or not CLUB_RE.search(g): continue
+        total = cents_value((l.get("price") or {}).get("total"),positive=True)
         if total is None: continue
         cur = groups.setdefault(g, {"group": g, "listings": 0, "cheapest": None})
         cur["listings"] += 1
@@ -190,23 +253,17 @@ def market_spreads(listings):
     """Low, median, and high current listing prices by permitted ticket lot."""
     out = {}
     for qty in range(1, 9):
-        values = sorted((l.get("price") or {}).get("total") for l in listings
-                        if (l.get("price") or {}).get("total") and allows_quantity(l, qty))
+        values = sorted(cents_value((l.get('price') or {}).get('total'),positive=True) for l in listings
+                        if cents_value((l.get('price') or {}).get('total'),positive=True) is not None and allows_quantity(l, qty))
         if values:
-            out[str(qty)] = {"low": values[0], "typical": values[len(values)//2], "high": values[-1], "listings": len(values)}
+            bases={listing_fields(l)['basis'] for l in listings if allows_quantity(l,qty) and cents_value((l.get('price') or {}).get('total'),positive=True) is not None}
+            out[str(qty)] = {"low": values[0], "typical": values[len(values)//2], "high": values[-1], "listings": len(values),
+                             'basis':'fees_included_tax_reported' if bases=={'fees_included_tax_reported'} else 'fees_included_tax_unknown'}
     return out
 
 def allows_quantity(listing, qty):
     """The seller must permit exactly the requested lot, not merely have enough seats."""
-    if not isinstance(qty, int) or not 1 <= qty <= 8: return False
-    seats = listing.get("seats") or []
-    lots = lots_of(listing)
-    # The rendered provider page filters these links to one requested quantity.
-    # This is direct evidence for that quantity only, not for splittable lots.
-    if listing.get('verified_quantity') == qty:
-        return True
-    # Unknown allowed quantities are not proof that the requested lot can be bought.
-    return isinstance(lots, list) and qty in lots and len(seats) >= qty
+    return quantity_state(listing,qty) == 'allowed'
 
 def check_interval_minutes(days_out, price_cents=None, threshold_cents=None):
     """A 15-minute workflow can only realize 15-minute or slower intervals."""
@@ -216,16 +273,25 @@ def check_interval_minutes(days_out, price_cents=None, threshold_cents=None):
     if days_out <= 30: return 60
     return 180
 
+def inventory_envelope(parent, key):
+    container=parent.get(key)
+    if container is None: return 'metadata_only',[]
+    if not isinstance(container,dict): return 'parser_failure',[]
+    items=container.get('listings')
+    if items is None: return 'metadata_only',[]
+    if not isinstance(items,list) or any(not isinstance(item,dict) for item in items):
+        return 'parser_failure',[]
+    return 'ok',items
+
 def page_outcome(page, meta):
-    """Never confuse changed provider markup with an empty inventory."""
+    """Decoded field presence, not words in HTML, distinguishes incomplete/empty."""
     if not meta: return 'parser_failure'
-    if 'window.__data=' not in page and 'component-export="EventListings"' not in page:
+    if '_inventory_state' in meta: return meta['_inventory_state']
+    try:
+        decoded,_=parse_event_page(page)
+        return decoded.get('_inventory_state','parser_failure') if decoded else 'parser_failure'
+    except (ValueError,TypeError,KeyError,AttributeError):
         return 'parser_failure'
-    if 'window.__data=' in page and '"listings"' not in page:
-        return 'metadata_only'
-    if 'component-export="EventListings"' in page and 'listingsResponse' not in page:
-        return 'metadata_only'
-    return 'ok'
 
 def page_shape(page, meta, listings):
     """Safe structural diagnostics; never log provider HTML or ticket contents."""
@@ -337,10 +403,10 @@ def cheapest_any(listings, qty):
     best = None
     for l in listings:
         seats = l.get("seats") or []
-        p = (l.get("price") or {}).get("total")
+        p = cents_value((l.get("price") or {}).get("total"),positive=True)
         if p is None or p <= 0 or not allows_quantity(l, qty): continue
         spot = l.get("spot") or {}
-        cand = (p, l.get("id"), l.get("seoUrl") or "", spot.get("section") or "?", spot.get("row") or "?", len(seats))
+        cand = (p, l.get("id"), l.get("seoUrl") or "", spot.get("section") or "?", spot.get("row") or "?", len(seats) if isinstance(l.get('seats'),list) else None, l)
         if best is None or cand[0] < best[0]: best = cand
     return best
 
@@ -352,11 +418,11 @@ def cheapest_for(listings, group, qty):
         if group_of(spot) != group: continue
         seats = l.get("seats") or []
         if not allows_quantity(l, qty): continue
-        total = ((l.get("price") or {}).get("total"))
+        total = cents_value((l.get("price") or {}).get("total"),positive=True)
         if total is None or total <= 0: continue
         if best is None or total < best[0]:
             best = (total, l.get("id"), l.get("seoUrl"),
-                    spot.get("section"), spot.get("row"), len(seats))
+                    spot.get("section"), spot.get("row"), len(seats) if isinstance(l.get('seats'),list) else None, l)
     return best
 
 # ---------- catalog ----------
@@ -562,8 +628,8 @@ def fmt_when(c):
 # ---------- main ----------
 def valid_watch(w):
     return (w.get("kind") in ("event", "team", "date")
-            and isinstance(w.get("qty"), int) and 1 <= w["qty"] <= 8
-            and isinstance(w.get("threshold_cents"), int) and 100 <= w["threshold_cents"] <= 5000000
+            and type(w.get("qty")) is int and 1 <= w["qty"] <= 8
+            and type(w.get("threshold_cents")) is int and 100 <= w["threshold_cents"] <= 5000000
             and w.get("alert_style") in ("first", "repeat"))
 
 def scan_result(watch_id, event_id, outcome, checked_at, criteria_version=1, detail=None):
@@ -584,9 +650,9 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
                             'new_value':new_value,'detected_at':checked_at})
     if changes: sb('POST','tix_event_changes',changes,prefer='return=minimal')
     listing_prices = [(l.get('price') or {}).get('total') for l in listings]
-    real_prices = [p for p in listing_prices if isinstance(p,int) and p > 0]
+    real_prices = [p for p in listing_prices if cents_value(p,positive=True) is not None]
     provider_min = meta.get('min_total')
-    minimum = provider_min if isinstance(provider_min,int) and provider_min > 0 else min(real_prices,default=None)
+    minimum = provider_min if cents_value(provider_min,positive=True) is not None else min(real_prices,default=None)
     patch = {'price_checked_at':checked_at,'discovery_attempt_at':checked_at,
              'discovery_status':status,'min_total':minimum,'last_seen':checked_at}
     for key, value in [('name',meta.get('name')),('datetime_local',meta.get('datetime_local')),
@@ -596,9 +662,14 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
     if meta.get('name'): cat['name'] = meta['name']
     if meta.get('datetime_local'): cat['datetime_local'] = meta['datetime_local']
     groups = club_groups(listings)
+    if status != 'ok': return groups,len(changes)
     sorted_groups = sorted(groups.values(),key=lambda g:g['cheapest'])
+    coverage={'complete':not any(item.get('verified_quantity') for item in listings),
+              'quantities':sorted({item['verified_quantity'] for item in listings if type(item.get('verified_quantity')) is int}),
+              'unknown_lots':sum(listing_fields(item)['lots'] is None and not item.get('verified_quantity') for item in listings),
+              'unknown_seats':sum(not isinstance(item.get('seats'),list) and not item.get('verified_quantity') for item in listings)}
     sb('POST','tix_event_market?on_conflict=event_id',[{'event_id':eid,'checked_at':checked_at,
-       'by_qty':market_spreads(listings),'groups':sorted_groups,'listing_count':len(listings)}],
+       'by_qty':market_spreads(listings),'groups':sorted_groups,'listing_count':len(listings),'coverage':coverage}],
        prefer='resolution=merge-duplicates,return=minimal')
     if cat.get('venue_slug'):
         sb('POST','tix_venue_clubs?on_conflict=venue_slug',[{'venue_slug':cat['venue_slug'],
@@ -737,22 +808,31 @@ def main():
                 club_level = (w.get("match") or {}).get("club_level", bool(w.get("clubs")))
                 clubs = [g for g in (w.get("clubs") or list(groups)) if g in groups] if club_level else ["Any section"]
                 found = False
+                reasons = set()
                 for club in clubs:
                     best = cheapest_any(listings, w["qty"]) if club == "Any section" else cheapest_for(listings, club, w["qty"])
                     if not best: continue
                     found = True
-                    price,lid,lurl,sec,row,nseats = best
+                    price,lid,lurl,sec,row,nseats,item = best
+                    fields=listing_fields(item)
                     url = lurl or cat["url"]
                     if not url.startswith("https://gametime.co/"): url = cat["url"]
                     sb("POST", "tix_prices", [{"watch_id":w["id"], "event_id":eid, "event_label":cat.get("name"),
                        "club":club, "qty":w["qty"], "price_cents":price, "listing_id":lid,
                        "listing_url":url, "checked_at":checked_at,
-                       "criteria_version":w.get('criteria_version',1)}], prefer="return=minimal")
+                       "criteria_version":w.get('criteria_version',1), **fields}], prefer="return=minimal")
                     if price > w["threshold_cents"]: continue
+                    gate_reason=deal_gate_reason(item,(w.get('match') or {}).get('min_deal'))
+                    if gate_reason:
+                        reasons.add(gate_reason)
+                        continue
                     subject = f"Ticketline: {fmt_money(price)} tickets"
                     body = (f"{cat.get('name') or eid} {fmt_when(cat)}. {w['qty']} tickets together, "
                             f"{fmt_money(price)}/ticket including fees; {fmt_money(price*w['qty'])} total. "
                             f"{club}, sec {sec}, row {row}. At or below your {fmt_money(w['threshold_cents'])} target. {url}")
+                    if fields['deal']:
+                        # Keep the supplied string; neutralize control characters in messages.
+                        body += ' Gametime deal: '+re.sub(r'[\x00-\x1f\x7f]',' ',fields['deal'])[:120]+'.'
                     destinations = None
                     for channel in ("email", "sms"):
                         if not w.get(f"{channel}_enabled", channel == "email"): continue
@@ -766,13 +846,20 @@ def main():
                         ok = send_sms(subject, body, recipient=recipient)
                         sb("POST", "tix_alerts", [{"watch_id":w["id"], "event_id":eid, "club":club, "qty":w["qty"],
                            "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed",
-                           "criteria_version":w.get('criteria_version',1), "channel":channel}], prefer="return=minimal")
+                           "criteria_version":w.get('criteria_version',1), "channel":channel, "deal":fields['deal']}], prefer="return=minimal")
                         if ok: sent += 1
                         else: health["status"] = "error"
-                scan_result(w["id"], eid, "ok" if found else "unavailable", checked_at,
-                            w.get('criteria_version',1), {'listings_checked':len(listings),
-                            'available_lots':sorted({n for l in listings for n in ((lots_of(l) or []) + ([l['verified_quantity']] if l.get('verified_quantity') else [])) if isinstance(n,int)}),
-                            'matching_listings':sum(allows_quantity(l,w['qty']) for l in listings)})
+                unknown=any(match_unknown(item,w) for item in listings)
+                if unknown: reasons.add('required_listing_fields_unknown')
+                outcome='ok' if found else 'provider_incomplete' if unknown else 'unavailable'
+                if outcome=='provider_incomplete':
+                    health['provider_incomplete']=health.get('provider_incomplete',0)+1
+                    if health['status']=='ok': health['status']='degraded'
+                scan_result(w['id'],eid,outcome,checked_at,w.get('criteria_version',1),
+                            {'listings_checked':len(listings),
+                             'available_lots':sorted({n for item in listings for n in (listing_fields(item)['lots'] or [])}),
+                             'matching_listings':sum(allows_quantity(item,w['qty']) for item in listings),
+                             'reasons':sorted(reasons)})
             health["checked_events"] += 1
         except Exception as e:
             health["failed_events"] += 1
@@ -834,5 +921,23 @@ def main():
     print(f"done. events checked: {health['checked_events']}, failed: {health['failed_events']}, alerts accepted: {sent}")
     if health["status"] == "error": raise RuntimeError("Some ticket checks or deliveries failed; see collector status")
 
+def offline_fixture(path, qty=2, group=None):
+    """Local/dev collector path: no I/O except reading the supplied saved HTML."""
+    with open(path,encoding='utf-8') as source: page=source.read()
+    meta,items=parse_event_page(page)
+    best=cheapest_for(items,group,qty) if group else cheapest_any(items,qty)
+    return {'event_id':(meta or {}).get('event_id'),'status':page_outcome(page,meta),
+            'qty':qty,'selected_price_cents':best[0] if best else None,
+            'fields':listing_fields(best[-1]) if best else None}
+
 if __name__ == "__main__":
-    main()
+    if OFFLINE:
+        import argparse
+        parser=argparse.ArgumentParser(description='Offline saved-page inspection; never sends alerts or writes Supabase.')
+        parser.add_argument('--fixture',required=True)
+        parser.add_argument('--qty',type=int,default=2)
+        parser.add_argument('--group')
+        args=parser.parse_args()
+        print(json.dumps(offline_fixture(args.fixture,args.qty,args.group)))
+    else:
+        main()

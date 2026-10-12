@@ -11,6 +11,35 @@ const perTicketTargetCents = (amount,qty,mode='per') => {
  const cents=Math.round(Number(amount)*100);
  return Number.isInteger(qty)&&qty>0&&Number.isFinite(cents)?(mode==='total'?Math.floor(cents/qty):cents):NaN;
 };
+const knownPriceBasis = basis => ['fees_included_tax_reported','fees_included_tax_unknown'].includes(basis);
+function priceBreakdown(price){
+ if(!price||!Number.isInteger(price.price_cents)||price.price_cents<=0)return '';
+ const total=price.price_cents,base=price.prefee_cents,tax=price.sales_tax_cents,pretax=price.pre_tax_total_cents;
+ if(price.basis==='fees_included_tax_reported'&&Number.isInteger(base)&&base>=0&&Number.isInteger(tax)&&tax>=0&&total>=base+tax&&(pretax==null||Number.isInteger(pretax)&&pretax===total-tax))
+   return `${money(base)} base + ${money(total-base-tax)} fees + ${money(tax)} tax = ${money(total)} all-in`;
+ return knownPriceBasis(price.basis)?`${money(total)} · fees included, tax not confirmed`:`${money(total)} · price basis not confirmed`;
+}
+function priceProof(rows,current){
+ // Vendor history is opaque until a real comparable schema is observed.
+ // Compare only Ticketline checks on the same basis/event/quantity/section.
+ const comparable=rows.filter(r=>current&&r.basis===current.basis&&(!current.event_id||r.event_id===current.event_id)&&(!current.qty||r.qty===current.qty)&&(!current.club||r.club===current.club));
+ const context=priceContext(comparable);
+ return context?'Ticketline checks · '+context:'No history available';
+}
+function lotFilterMarkup(id,value='any'){
+ return `<label class="field-label" for="${id}">Group filter</label><select id="${id}">${[['any','Any'],['2','Pairs (2)'],['4','Groups of 4']].map(([v,label])=>`<option value="${v}" ${value===v?'selected':''}>${label}</option>`).join('')}</select>`;
+}
+function marketQuantityText(sample,qty,metadataOnly=false){
+ const spread=sample?.by_qty?.[String(qty)],coverage=sample?.coverage;
+ const prior=metadataOnly||ageMinutes(sample?.checked_at)>=120;
+ if(spread&&knownPriceBasis(spread.basis)){
+   const basis=spread.basis==='fees_included_tax_reported'?'all-in (reported tax)':'fees included, tax not confirmed';
+   return `${prior?'Prior sample':'Last checked'}: ${money(spread.low)} low · ${money(spread.typical)} typical · ${money(spread.high)} high for exactly ${qty} together · ${basis} · ${spread.listings} matching listings`;
+ }
+ if(spread)return `Recorded ${qty}-ticket prices have an unconfirmed basis.`;
+ if(!metadataOnly&&coverage?.complete&&!(coverage.unknown_lots>0)&&!(coverage.unknown_seats>0))return `No seller-confirmed ${qty}-ticket lot in the last market sample.`;
+ return `Exactly ${qty} together: not confirmed. Seller lot coverage is incomplete.`;
+}
 const todayISO = (d=new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const dateObj = iso => new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso||'') ? iso+'T12:00:00' : iso);
 const whenShort = iso => iso ? dateObj(iso).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : 'Date to be confirmed';
@@ -39,6 +68,9 @@ function sparkline(rows,wide=false,target=null,alerts=[]){
  return `<svg class="price-chart ${wide?'full-chart':'sparkline'}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Price history from ${money(vals[0])} to ${money(vals.at(-1))}">${targetLine}<polyline points="${pts}"/>${dots}${markers}</svg>`;
 }
 function priceContext(rows){
+ const basis=rows.at(-1)?.basis;
+ if(!knownPriceBasis(basis))return '';
+ rows=rows.filter(r=>r.basis===basis);
  if(rows.length<2)return '';
  const latest=rows.at(-1),cut=Date.now()-86400000,prior=[...rows].reverse().find(r=>new Date(r.checked_at).getTime()<=cut),min=Math.min(...rows.map(r=>r.price_cents));
  const bits=[];
