@@ -61,26 +61,15 @@ def sb(method, path, body=None, prefer=None):
             if i == 2: raise
             time.sleep(2)
 
-def get_json(url, headers=None, tries=3):
-    h = dict(UA); h.update(headers or {})
-    for i in range(tries):
-        try:
-            req = urllib.request.Request(url, headers=h)
-            with urllib.request.urlopen(req, timeout=90) as r:
-                return json.loads(r.read().decode())
-        except Exception:
-            if i == tries - 1: raise
-            time.sleep(3)
+from ticketline_guard import Guard, CaptureDeferred
+GUARD = Guard(lambda name,body: sb('POST','rpc/'+name,body))
 
-def get_text(url, tries=3, timeout=120):
-    for i in range(tries):
-        try:
-            req = urllib.request.Request(url, headers=UA)
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.read().decode("utf-8", "replace")
-        except Exception:
-            if i == tries - 1: raise
-            time.sleep(3)
+def get_text(url, tries=1, timeout=25):
+    # Only hosted Actions/Supabase may contact the provider. Offline fixtures
+    # never need networking; fail closed if somebody runs this locally.
+    if os.environ.get('GITHUB_ACTIONS') != 'true':
+        raise RuntimeError('Provider requests are hosted-only')
+    return GUARD.text(url,UA,min(timeout,25))
 
 # ---------- gametime parsing ----------
 def _decode_astro(value):
@@ -303,20 +292,17 @@ def page_shape(page, meta, listings):
             'event':bool(meta), 'listings':len(listings)}
 
 def fetch_provider_page(url, discovery=False):
-    """Retry an incomplete provider render once before recording its state."""
-    for attempt in range(2):
-        page = get_text(url,tries=1,timeout=25) if discovery else get_text(url)
-        try:
-            meta,listings = parse_event_page(page)
-            outcome = page_outcome(page,meta)
-        except (ValueError,TypeError,KeyError) as error:
-            if attempt == 0: continue
-            raise ValueError(f'parser_failure: {type(error).__name__}') from error
-        if outcome != 'ok':
-            print(f"provider response {outcome} attempt {attempt+1}: {page_shape(page,meta,listings)}")
-        if outcome == 'ok' or attempt == 1:
-            return outcome,meta,listings
-    raise ValueError('parser_failure: no event data')
+    """One admitted public-page request. Metadata-only is not empty inventory."""
+    page = get_text(url)
+    meta,listings = parse_event_page(page)
+    outcome = page_outcome(page,meta)
+    if outcome != 'ok':
+        print(f"provider response {outcome}: {page_shape(page,meta,listings)}")
+    if meta and meta.get('event_id') != GUARD.event_id:
+        raise ValueError('event_unavailable: event ID mismatch')
+    if meta and outcome != 'parser_failure':
+        persist_capture(meta,listings,outcome,finish=False)
+    return outcome,meta,listings
 
 def rendered_quantity_listings(url, quantities):
     """Read all-in cards from the ordinary, quantity-filtered event page.
@@ -324,6 +310,8 @@ def rendered_quantity_listings(url, quantities):
     Return None for an incomplete render. Never turn a browser failure into
     zero inventory or infer that a seller will split a larger lot.
     """
+    if os.environ.get('GITHUB_ACTIONS') != 'true' or not GUARD.token:
+        raise CaptureDeferred('Hosted capture lease required')
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
     from urllib.parse import urlsplit, parse_qs, urlencode, urlunsplit
     if urlsplit(url).hostname != 'gametime.co':
@@ -333,6 +321,25 @@ def rendered_quantity_listings(url, quantities):
         browser = pw.chromium.launch(channel='chrome', headless=True, args=['--no-sandbox'],timeout=30000)
         try:
             page = browser.new_page()
+            blocked = []
+            def route_request(route):
+                request = route.request
+                # No redirects, third-party trackers, images, fonts or media.
+                if request.redirected_from or urlsplit(request.url).hostname not in ('gametime.co','www.gametime.co') or request.resource_type in ('image','font','media'):
+                    route.abort(); return
+                try:
+                    GUARD.admit()
+                    route.continue_()
+                except Exception as error:
+                    blocked.append(error)
+                    route.abort()
+            page.route('**/*',route_request)
+            def inspect_response(response):
+                try:
+                    GUARD.inspect(response.status)
+                except Exception as error:
+                    blocked.append(error)
+            page.on('response',inspect_response)
             for qty in sorted(set(quantities)):
                 if not isinstance(qty, int) or not 1 <= qty <= 8:
                     continue
@@ -341,12 +348,18 @@ def rendered_quantity_listings(url, quantities):
                 query['quantity'] = str(qty)
                 filtered_url = urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(query),''))
                 response = page.goto(filtered_url,wait_until='domcontentloaded',timeout=35000)
+                if blocked: raise blocked[0]
                 if not response or response.status >= 400:
                     return None
+                GUARD.inspect(response.status,page.content())
                 # The older page sometimes arrives only after a real browser
                 # navigation. Its embedded listings retain exact cents and
                 # seller-provided availableLots, so prefer them to rounded UI.
-                _,embedded = parse_event_page(page.content())
+                embedded_meta,embedded = parse_event_page(page.content())
+                if not embedded_meta or embedded_meta.get('event_id') != GUARD.event_id:
+                    return None
+                if embedded_meta and embedded_meta.get('_inventory_state') != 'parser_failure':
+                    persist_capture(embedded_meta,embedded,embedded_meta['_inventory_state'],finish=False)
                 if embedded and any(allows_quantity(l,qty) for l in embedded):
                     results.extend(embedded)
                     continue
@@ -366,6 +379,7 @@ def rendered_quantity_listings(url, quantities):
                 parsed = parse_rendered_cards(cards,qty)
                 if not parsed:
                     return None
+                persist_capture(embedded_meta,parsed,'partial',finish=False)
                 results.extend(parsed)
         finally:
             browser.close()
@@ -447,7 +461,7 @@ def parse_catalog_url(u):
             "name": humanize(slug), "event_date": f"{y}-{int(mo):02d}-{int(d):02d}",
             "venue_slug": venue_slug or None, "city": city, "state": state, "url": u}
 
-def refresh_catalog():
+def _refresh_catalog():
     print("catalog: refreshing from sitemaps")
     rows = {}
     for sm in SITEMAPS:
@@ -461,7 +475,8 @@ def refresh_catalog():
         print(f"catalog: {sm} -> {len(rows)} cumulative")
     if not rows: raise RuntimeError("No catalog events could be fetched")
     today = NOW.date().isoformat()
-    vals = [r for r in rows.values() if r["event_date"] >= today]
+    horizon=(NOW.date()+timedelta(days=365)).isoformat()
+    vals = [r for r in rows.values() if today <= r['event_date'] <= horizon]
     if not vals: raise RuntimeError("No future catalog events could be fetched")
     keys = list(vals[0].keys())
     for i in range(0, len(vals), 500):
@@ -469,23 +484,12 @@ def refresh_catalog():
         sb("POST", "tix_catalog?on_conflict=event_id", chunk,
            prefer="resolution=merge-duplicates,return=minimal")
     print(f"catalog: upserted {len(vals)} future events")
-    # tix_event_changes references tix_catalog without ON DELETE CASCADE, so
-    # clear change history for expiring events before removing the catalog rows.
-    # Loop until no old events remain: the listing GET is capped at 1000 rows,
-    # so one pass may not cover everything, and the chunked in-filters keep
-    # each request URL small (raw quotes get the connection dropped, hence
-    # the percent-encoding).
-    expired = 0
-    for _ in range(100):
-        old = sb("GET", f"tix_catalog?event_date=lt.{today}&select=event_id&limit=100")
-        if not old: break
-        chunk = urllib.parse.quote(",".join(f'"{r["event_id"]}"' for r in old), safe=",")
-        sb("DELETE", f"tix_event_changes?event_id=in.({chunk})")
-        sb("DELETE", f"tix_catalog?event_id=in.({chunk})")
-        expired += len(old)
-    if expired: print(f"catalog: expired {expired} past events")
     sb("POST", "tix_state?on_conflict=k", [{"k": "catalog_refreshed_at", "v": json.dumps(NOW.isoformat())}],
        prefer="resolution=merge-duplicates,return=minimal")
+
+def refresh_catalog():
+    with GUARD.capture(None,'catalog'):
+        return _refresh_catalog()
 
 def catalog_stale():
     rows = sb("GET", "tix_state?k=eq.catalog_refreshed_at&select=v")
@@ -501,18 +505,19 @@ def resolve_events(w):
     m = w.get("match") or {}
     kind = w.get("kind")
     today = NOW.date().isoformat()
+    horizon=(NOW.date()+timedelta(days=365)).isoformat()
     cols = "event_id,category,slug,name,event_date,datetime_local,venue_slug,venue,city,state,url"
     if kind == "event":
         ids = m.get("event_ids") or []
         if not ids: return []
         in_list = urllib.parse.quote(",".join(f'"{i}"' for i in ids), safe=",")
-        return sb("GET", f"tix_events_v?event_id=in.({in_list})&event_date=gte.{today}&select={cols}")
+        return sb("GET", f"tix_events_v?event_id=in.({in_list})&event_date=gte.{today}&event_date=lte.{horizon}&select={cols}")
     if kind == "team":
         slug = (m.get("slug") or "").lower()
         ha = m.get("home_away") or "any"
-        q = f"tix_events_v?slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&select={cols}&limit=400"
+        q = f"tix_events_v?slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&event_date=lte.{horizon}&select={cols}&limit=400"
         if m.get("category"):
-            q = f"tix_events_v?category=eq.{urllib.parse.quote(m['category'])}&slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&select={cols}&limit=400"
+            q = f"tix_events_v?category=eq.{urllib.parse.quote(m['category'])}&slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&event_date=lte.{horizon}&select={cols}&limit=400"
         rows = sb("GET", q)
         out = []
         for c in rows:
@@ -526,7 +531,7 @@ def resolve_events(w):
         return out
     if kind == "date":
         d = m.get("date")
-        if not d or d < today: return []
+        if not d or d < today or d > horizon: return []
         q = f"tix_events_v?event_date=eq.{d}&select={cols}&order=event_date,event_id&limit=400"
         if m.get("state"): q += f"&state=eq.{urllib.parse.quote(m['state'])}"
         if m.get("city"): q += f"&city=ilike.{urllib.parse.quote(m['city'])}"
@@ -637,9 +642,47 @@ def scan_result(watch_id, event_id, outcome, checked_at, criteria_version=1, det
        "outcome": outcome, "checked_at": checked_at, "criteria_version":criteria_version,
        "detail":detail or {}}], prefer="resolution=merge-duplicates,return=minimal")
 
+def capture_payload(meta,listings,status):
+    normalized=[]
+    for item in listings:
+        f=listing_fields(item)
+        spot=item.get('spot') or {}
+        normalized.append({'provider':item,'listing_id':item.get('id'),
+            'price_cents':cents_value((item.get('price') or {}).get('total'),positive=True),
+            'basis':f['basis'],'prefee_cents':f['prefee_cents'],
+            'sales_tax_cents':f['sales_tax_cents'],'pre_tax_total_cents':f['pre_tax_total_cents'],
+            'lots':f['lots'],'section_group':spot.get('sectionGroup') or spot.get('section_group'),
+            'section':spot.get('section'),'row_label':spot.get('row'),
+            'verified_quantity':item.get('verified_quantity')})
+    partial=status=='partial' or any(item.get('verified_quantity') for item in listings)
+    state='metadata_only' if status=='metadata_only' else 'partial' if partial else 'complete' if listings else 'empty'
+    prices=[n['price_cents'] for n in normalized if n['price_cents'] is not None]
+    return {'meta':meta,'format':'rendered' if partial else 'embedded','state':state,
+      'min_total':cents_value(meta.get('min_total'),positive=True) or min(prices,default=None),
+      'listings':normalized,'by_qty':market_spreads(listings),
+      'groups':list(club_groups(listings).values()),
+      'coverage':{'complete':state in ('complete','empty'),
+        'quantities':sorted({l['verified_quantity'] for l in normalized if l['verified_quantity']}),
+        'unknown_lots':sum(n['lots'] is None for n in normalized),
+        'unknown_seats':sum(not isinstance(n['provider'].get('seats'),list) for n in normalized)}}
+
+def persist_capture(meta,listings,status,finish=True):
+    capture=capture_payload(meta,listings,status)
+    if finish: return GUARD.finish(capture)
+    return sb('POST','rpc/tix_save_capture',{'p_token':GUARD.token,'p_capture':capture})
+
+def expire_event_storage():
+    total=0
+    for _ in range(20):
+        count=sb('POST','rpc/tix_expire_event_storage',{'p_limit':100})
+        total+=count
+        if count<100: break
+    return total
+
 def record_event_market(cat, meta, listings, checked_at, status='ok'):
     """Persist a successful provider parse, including a genuine empty market."""
     eid = cat['event_id']
+    persist_capture(meta,listings,status)
     new_date = (meta.get('datetime_local') or '')[:10]
     changes = []
     for field, new_value in [('datetime_local', meta.get('datetime_local')),
@@ -654,7 +697,7 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
     provider_min = meta.get('min_total')
     minimum = provider_min if cents_value(provider_min,positive=True) is not None else min(real_prices,default=None)
     patch = {'price_checked_at':checked_at,'discovery_attempt_at':checked_at,
-             'discovery_status':status,'min_total':minimum,'last_seen':checked_at}
+             'discovery_status':'metadata_only' if status=='metadata_only' else 'ok','min_total':minimum,'last_seen':checked_at}
     for key, value in [('name',meta.get('name')),('datetime_local',meta.get('datetime_local')),
                        ('event_date',new_date or None),('venue',meta.get('venue'))]:
         if value is not None: patch[key] = value
@@ -662,7 +705,7 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
     if meta.get('name'): cat['name'] = meta['name']
     if meta.get('datetime_local'): cat['datetime_local'] = meta['datetime_local']
     groups = club_groups(listings)
-    if status != 'ok': return groups,len(changes)
+    if status == 'metadata_only': return groups,len(changes)
     sorted_groups = sorted(groups.values(),key=lambda g:g['cheapest'])
     coverage={'complete':not any(item.get('verified_quantity') for item in listings),
               'quantities':sorted({item['verified_quantity'] for item in listings if type(item.get('verified_quantity')) is int}),
@@ -679,7 +722,9 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
 
 def discovery_due():
     out = []
-    out.extend(sb('POST','rpc/tix_requested_discovery',{'p_limit':8}))
+    tracked=sb('POST','rpc/tix_requested_discovery',{'p_limit':8})
+    for row in tracked: row['_history_requested']=True
+    out.extend(tracked)
     today = NOW.date().isoformat()
     end = (NOW.date()+timedelta(days=7)).isoformat()
     for city,state in DISCOVERY_SEED_CITIES:
@@ -694,7 +739,10 @@ def discovery_due():
     for start,end,limit in [(0,7,DISCOVERY_NEAR_FETCHES),(8,30,DISCOVERY_LATER_FETCHES)]:
         out.extend(sb('POST','rpc/tix_discovery_due',
                       {'p_from_days':start,'p_to_days':end,'p_limit':limit}))
-    return list({row['event_id']:row for row in out}.values())
+    unique={}
+    for row in out:
+        unique.setdefault(row['event_id'],row)
+    return list(unique.values())
 
 def main():
     has_saved_destination = bool(sb("GET", "tix_destinations?select=watch_id&limit=1"))
@@ -707,6 +755,7 @@ def main():
         write_state("collector_health", health)
         if not ok: raise RuntimeError("Test text was not accepted by the mail server")
         return
+    health['expired_events']=expire_event_storage()
     try:
         if catalog_stale(): refresh_catalog()
     except Exception as e:
@@ -771,7 +820,9 @@ def main():
     for cat in due:
         eid = cat["event_id"]
         checked_at = datetime.now(timezone.utc).isoformat()
+        capture_context=GUARD.capture(eid,'collector')
         try:
+            capture_context.__enter__()
             provider_status,meta,listings = fetch_provider_page(cat["url"])
             if provider_status == 'parser_failure':
                 raise ValueError('parser_failure: provider event/listing data missing')
@@ -781,6 +832,8 @@ def main():
                 requested = {w['qty'] for w in watchers[eid]}
                 try:
                     rendered = rendered_quantity_listings(cat['url'],requested)
+                except CaptureDeferred:
+                    raise
                 except Exception as error:
                     print(f"rendered listing check failed for {eid}: {type(error).__name__}",file=sys.stderr)
                     rendered = None
@@ -861,6 +914,8 @@ def main():
                              'matching_listings':sum(allows_quantity(item,w['qty']) for item in listings),
                              'reasons':sorted(reasons)})
             health["checked_events"] += 1
+        except CaptureDeferred as e:
+            health['guard_deferred']=health.get('guard_deferred',0)+1
         except Exception as e:
             health["failed_events"] += 1
             print(f"check {eid} failed: {type(e).__name__}: {e}", file=sys.stderr)
@@ -879,6 +934,8 @@ def main():
             for w in watchers[eid]:
                 try: scan_result(w["id"], eid, outcome, checked_at, w.get('criteria_version',1))
                 except Exception: pass  # watch may have been deleted during the fetch
+        finally:
+            capture_context.__exit__(None,None,None)
         time.sleep(1)
     # Discovery serves anonymous browsing. These capped scans are independent
     # of alert watches; a failed page is recorded and rotated behind other cities.
@@ -890,18 +947,27 @@ def main():
         eid = cat['event_id']
         if eid in events: continue
         checked_at = datetime.now(timezone.utc).isoformat()
+        capture_context=GUARD.capture(eid,'collector')
         try:
+            capture_context.__enter__()
             provider_status,meta,listings = fetch_provider_page(cat['url'],discovery=True)
             if provider_status == 'parser_failure':
                 raise ValueError('parser_failure: provider event/listing data missing')
             if not meta or meta.get('event_id') != eid:
                 raise ValueError('event_unavailable: event ID changed or removed')
+            if provider_status=='metadata_only' and cat.get('_history_requested'):
+                richer=rendered_quantity_listings(cat['url'],{2})
+                if richer:
+                    listings=richer
+                    provider_status='partial' if any(l.get('verified_quantity') for l in richer) else 'ok'
             _,change_count = record_event_market(cat,meta,listings,checked_at,provider_status)
             health['event_changes'] = health.get('event_changes',0)+change_count
             health['discovery_checked'] += 1
             if provider_status == 'metadata_only':
                 health['discovery_metadata_only'] = health.get('discovery_metadata_only',0)+1
                 if health['status'] == 'ok': health['status'] = 'degraded'
+        except CaptureDeferred:
+            health['guard_deferred']=health.get('guard_deferred',0)+1
         except Exception as e:
             outcome = ('parser_failure' if 'parser_failure' in str(e) else
                        'event_unavailable' if 'event_unavailable' in str(e) or
@@ -911,6 +977,8 @@ def main():
             print(f'discovery {eid} failed: {outcome}: {type(e).__name__}',file=sys.stderr)
             sb('PATCH',f'tix_catalog?event_id=eq.{eid}',
                {'discovery_attempt_at':checked_at,'discovery_status':outcome})
+        finally:
+            capture_context.__exit__(None,None,None)
         time.sleep(1)
     if health.get('discovery_outcomes',{}).get('parser_failure',0) >= 3:
         health['status'] = 'error'

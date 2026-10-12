@@ -137,6 +137,20 @@ async function sbPublicRpc(name,body,{signal}={}) {
  if(!r.ok) throw new Error('Could not request a price check.');
  return readJson(r);
 }
+// One request only: a timed-out capture may already have committed history.
+async function captureEventPrice(eventId,{signal}={}) {
+ if(IS_DEV)return {state:'suspended',reason:'preview'};
+ const token=await accessToken();if(!token)return {state:'sign_in_required'};
+ const r=await fetch(SB_URL+'/functions/v1/ticketline-prices',{method:'POST',headers:{...H,Authorization:'Bearer '+token},body:JSON.stringify({event_id:eventId}),signal:signal||AbortSignal.timeout(25000)});
+ const result=await readJson(r);
+ if(!r.ok)throw new Error(result?.reason==='capture_failed'?'Price check failed. The saved price is still available.':'Could not refresh prices.');
+ return result;
+}
+function captureStateText(result) {
+ if(result.guard_enabled===false||result.reason==='rollout_disabled')return 'Live refresh is paused during rollout. Saved prices remain available.';
+ if(result.suspended||result.state==='suspended')return 'Live checks are paused. Saved prices remain available.';
+ return {sign_in_required:'Sign in to refresh prices and save history. Saving history does not enable alerts.',cached:'Using a recent saved price.',queued:'Check queued. Seat details may take a minute or longer, subject to request limits.',checking:'Checking prices. Seat details will follow when available.',metadata_only:'Get-in price saved. Seat details are queued; exact quantities are not confirmed yet.',complete:'Prices and seat details saved.',partial:'Available seat details saved. Coverage is partial.',empty:'The provider returned an empty listing set.',failed:'The check failed. The last saved price is still available.',expired:'This event has passed.',beyond_horizon:'Live checks cover events up to one year ahead.',not_checked:'No price check has completed yet.'}[result.state]||'Waiting for the next check.';
+}
 async function sbWrite(method,path,body,prefer='return=representation') {
  if(IS_DEV) throw new Error('Local preview is read-only. Sign in on the live site to save an alert.');
  const token=await accessToken();if(!token)throw new Error('Your session expired. Sign in again to change your alert.');

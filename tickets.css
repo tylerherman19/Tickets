@@ -54,3 +54,11 @@
 @media(orientation:landscape) and (max-height:500px){.header-inner,.container{padding-left:max(22px,env(safe-area-inset-left));padding-right:max(22px,env(safe-area-inset-right))}}
 .footer{padding-bottom:max(25px,env(safe-area-inset-bottom))}#toast{bottom:max(24px,env(safe-area-inset-bottom))}
 dialog{max-height:calc(100dvh - 32px);overflow:auto;overscroll-behavior:contain}
+
+/* Public capture history and seat inventory. */
+.listing-table-wrap { overflow-x:auto; margin-top:1rem; }
+.listing-table-wrap table { width:100%; border-collapse:collapse; text-align:left; }
+.listing-table-wrap th,.listing-table-wrap td { padding:.8rem; border-bottom:1px solid var(--line,#ddd); }
+.listing-table-wrap td small { display:block; font-size:.75rem; max-width:12rem; }
+#event-history .full-chart { width:100%; max-height:240px; margin-top:1rem; }
+#history-basis { width:100%; margin:.6rem 0 1rem; }

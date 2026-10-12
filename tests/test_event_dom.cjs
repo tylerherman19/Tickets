@@ -1,0 +1,34 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {JSDOM}=require('jsdom');
+const fs=require('node:fs');
+const app=fs.readFileSync('app.js','utf8');
+const eventCode=app.slice(app.indexOf('async function eventDetail(){'),app.indexOf('// Last-resort error page'));
+test('event page renders comparable history and escaped seat details; quantity changes reload exact listings',async()=>{
+ const dom=new JSDOM('<main id="main"></main>',{url:'http://localhost/event.html?event=fixture',runScripts:'outside-only'});
+ const w=dom.window,requests=[];
+ const prelude=`const main=document.querySelector('#main'),query=new URLSearchParams(location.search),session=null;
+ ${app.slice(app.indexOf('function layout('),app.indexOf('function stadiumArt'))}`;
+ w.mockGet=async path=> path.includes('tix_events_v')?[{event_id:'fixture',name:'Fixture event',venue:'Arena',event_date:'2026-11-15',min_total:1200,price_checked_at:new Date().toISOString(),url:'https://gametime.co/events/fixture'}]:path.includes('tix_event_market')?[{by_qty:{2:{low:1400,basis:'fees_included_tax_reported'}},groups:[],listing_count:1,checked_at:new Date().toISOString()}]:[];
+ w.mockRpc=async(name,body)=>{
+  requests.push({name,body});
+  if(name==='tix_event_price_history')return [{checked_at:'2026-10-10T12:00:00Z',price_cents:1500},{checked_at:'2026-10-11T12:00:00Z',price_cents:1400}];
+  if(name==='tix_event_listings')return [{listing_id:'lot',price_cents:1400,basis:'fees_included_tax_reported',lots:[2,4],seats:['1','2','<script>bad</script>','4'],section:'C1',row_label:'A',checked_at:new Date().toISOString(),coverage:{complete:true}}];
+ };
+ w.downloadICS=()=>{};w.googleCalendarUrl=()=> 'https://calendar.google.com/';
+ w.eval(fs.readFileSync('tickets.js','utf8')+prelude+';sbGet=window.mockGet;sbPublicRpc=window.mockRpc;'+eventCode+';eventDetail()');
+ await new Promise(r=>setImmediate(r));
+ const d=w.document;
+ assert.equal(d.querySelectorAll('#event-listings tbody tr').length,1);
+ assert.equal(d.querySelectorAll('#event-listings script').length,0);
+ assert.match(d.querySelector('#event-listings').textContent,/<script>bad<\/script>/);
+ assert.match(d.querySelector('#event-history svg').getAttribute('aria-label'),/\$15.*\$14/);
+ d.querySelector('#detail-qty').value='4';d.querySelector('#detail-qty').dispatchEvent(new w.Event('change'));
+ await new Promise(r=>setImmediate(r));
+ assert.equal(requests.filter(r=>r.name==='tix_event_listings').at(-1).body.p_qty,4);
+ d.querySelector('#history-basis').value='fees_included_tax_reported';d.querySelector('#history-basis').dispatchEvent(new w.Event('change'));
+ await new Promise(r=>setImmediate(r));
+ const historyRequest=requests.filter(r=>r.name==='tix_event_price_history').at(-1);
+ assert.equal(historyRequest.body.p_qty,4);assert.equal(historyRequest.body.p_basis,'fees_included_tax_reported');
+ dom.window.close();
+});
