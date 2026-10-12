@@ -59,11 +59,11 @@ test('public searches request only three real stale event prices',()=>{
  sandbox.priceRows=rows;
  assert.deepEqual(Array.from(run('priceCheckCandidates(priceRows)')),['a','b','c']);
 });
-test('watch prices stay isolated even for the same event',()=>{run(`state.prices=[{watch_id:'other',event_id:'e',club:'Any section',price_cents:100,qty:2,checked_at:new Date().toISOString()},{watch_id:'mine',event_id:'e',club:'Any section',price_cents:200,qty:2,checked_at:new Date().toISOString()}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,created_at:'2020-01-01'})[0].price_cents`),200);});
-test('an unavailable latest scan hides an older listing',()=>{run(`state.scans=[{watch_id:'mine',event_id:'e',outcome:'unavailable',checked_at:new Date().toISOString()}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,created_at:'2020-01-01'}).length`),0);});
+test('watch prices stay isolated even for the same event',()=>{run(`state.prices=[{watch_id:'other',event_id:'e',club:'Any section',price_cents:100,qty:2,checked_at:new Date().toISOString()},{watch_id:'mine',event_id:'e',club:'Any section',price_cents:200,qty:2,checked_at:new Date().toISOString(),basis:'fees_included_tax_unknown',criteria_version:1}];state.scans=[{watch_id:'mine',event_id:'e',outcome:'ok',criteria_version:1,checked_at:new Date().toISOString()}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,criteria_version:1,created_at:'2020-01-01'})[0].price_cents`),200);});
+test('an unavailable latest scan hides an older listing',()=>{run(`state.scans=[{watch_id:'mine',event_id:'e',outcome:'unavailable',checked_at:new Date().toISOString(),criteria_version:1}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,criteria_version:1,created_at:'2020-01-01'}).length`),0);});
 test('changed criteria never display earlier prices',()=>{run(`state.scans=[]`);assert.equal(run(`watchLatest({id:'mine',qty:2,criteria_updated_at:new Date(Date.now()+1000).toISOString()}).length`),0);});
 test('marketplace links are encoded search links',()=>{assert.equal(run('eventSearchUrl("tickpick","Packers at Vikings")'),'https://www.tickpick.com/search?q=Packers%20at%20Vikings');});
-test('price context explains its time basis',()=>{const now=Date.now();run(`var rows=[{price_cents:15000,checked_at:new Date(${now}-172800000).toISOString()},{price_cents:14600,checked_at:new Date(${now}).toISOString()}]`);assert.match(run('priceContext(rows)'),/down \$4 since yesterday/);assert.match(run('priceContext(rows)'),/lowest in 2 days/);});
+test('price context explains its time basis',()=>{const now=Date.now();run(`var rows=[{price_cents:15000,basis:'fees_included_tax_unknown',checked_at:new Date(${now}-172800000).toISOString()},{price_cents:14600,basis:'fees_included_tax_unknown',checked_at:new Date(${now}).toISOString()}]`);assert.match(run('priceContext(rows)'),/down \$4 since yesterday/);assert.match(run('priceContext(rows)'),/lowest in 2 days/);});
 vm.runInContext(fs.readFileSync('calendar.js','utf8'),sandbox);
 test('calendar export preserves event date and escapes labels',()=>{
  const event={event_id:'e',event_date:'2026-10-04',name:'A, B; Show',venue:'Arena',city:'Minneapolis',state:'MN'};
@@ -110,13 +110,13 @@ test('incomplete provider response separates get-in from exact two-seat price',(
 });
 test('a newer incomplete scan keeps the previous verified lot labeled as historical',()=>{
  sandbox.watch={kind:'event',qty:2};
- sandbox.previous=[{price_cents:12000,checked_at:new Date(Date.now()-44*60000).toISOString()}];
+ sandbox.previous=[{price_cents:12000,basis:'fees_included_tax_unknown',checked_at:new Date(Date.now()-44*60000).toISOString()}];
  sandbox.scan={outcome:'provider_incomplete'};
  const display=run('watchPriceDisplay(watch,null,previous,scan)');
  assert.equal(display.price_cents,12000);
  assert.equal(display.label,'Previous verified lot');
  assert.match(display.detail,/not verified by the latest check/);
- const current=run('watchPriceDisplay(watch,{price_cents:11100,checked_at:new Date().toISOString()},previous,scan)');
+ const current=run('watchPriceDisplay(watch,{price_cents:11100,basis:\'fees_included_tax_unknown\',checked_at:new Date().toISOString()},previous,scan)');
  assert.equal(current.price_cents,11100);
  assert.equal(current.label,'Latest verified lot');
  const team=run('watchPriceDisplay({kind:"team",qty:2},null,previous,scan)');
@@ -152,4 +152,38 @@ test('reads retry transient failures but not client errors',async()=>{
 test('empty or null API bodies become safe values',async()=>{
  assert.equal(await run('readJson({text:async()=>""})'),null);
  await assert.rejects(()=>run('readJson({text:async()=>"<html>"})'),/unexpected response/);
+});
+
+
+test('price breakdown preserves zero tax and never invents missing tax',()=>{
+ assert.equal(run("priceBreakdown({price_cents:15000,prefee_cents:12000,sales_tax_cents:1000,pre_tax_total_cents:14000,basis:'fees_included_tax_reported'})"),'$120 base + $20 fees + $10 tax = $150 all-in');
+ assert.match(run("priceBreakdown({price_cents:15000,prefee_cents:12000,sales_tax_cents:0,basis:'fees_included_tax_reported'})"),/\$0 tax/);
+ const missing=run("priceBreakdown({price_cents:15000,prefee_cents:12000,sales_tax_cents:null,basis:'fees_included_tax_unknown'})");
+ assert.match(missing,/fees included, tax not confirmed/);assert.doesNotMatch(missing,/\$0 tax|all-in/);
+ assert.match(run("priceBreakdown({price_cents:15000,prefee_cents:null,sales_tax_cents:null,basis:null})"),/price basis not confirmed/);
+ assert.match(run("priceBreakdown({price_cents:15000,prefee_cents:14900,sales_tax_cents:1000,basis:'fees_included_tax_reported'})"),/tax not confirmed/);
+});
+test('legacy null basis cannot become a fresh watch hit from either reader',()=>{
+ run("state.intelligence=[{watch_id:'legacy',criteria_version:1,current_price_cents:1000,scan_outcome:'ok',price_checked_at:new Date().toISOString(),basis:null}];state.prices=[{watch_id:'legacy',criteria_version:1,event_id:'e',qty:2,price_cents:1000,checked_at:new Date().toISOString(),basis:null}];state.scans=[{watch_id:'legacy',event_id:'e',criteria_version:1,outcome:'ok',checked_at:new Date().toISOString()}]");
+ assert.equal(run("watchLatest({id:'legacy',qty:2,criteria_version:1,created_at:'2020-01-01'}).length"),0);
+ run('state.intelligence=[]');
+ assert.equal(run("watchLatest({id:'legacy',qty:2,criteria_version:1,created_at:'2020-01-01'}).length"),0);
+ assert.equal(run("watchPriceDisplay({kind:'event'},null,state.prices,{}).label"),'Previous observed price');
+});
+test('group filters and partial samples cannot imply sold out',()=>{
+ assert.match(run("lotFilterMarkup('groups')"),/Pairs \(2\)/);assert.match(run("lotFilterMarkup('groups')"),/Groups of 4/);
+ assert.match(run("marketQuantityText({by_qty:{},coverage:null},4)"),/not confirmed/);
+ assert.match(run("marketQuantityText({by_qty:{},coverage:{complete:false,quantities:[2]}},4)"),/not confirmed/);
+ assert.match(run("marketQuantityText({by_qty:{},coverage:{complete:true,unknown_lots:1}},4)"),/not confirmed/);
+ assert.match(run("marketQuantityText({by_qty:{},checked_at:new Date().toISOString(),coverage:{complete:true,unknown_lots:0}},4)"),/No seller-confirmed/);
+ assert.match(run("marketQuantityText({by_qty:{'2':{low:10000,typical:11000,high:12000,listings:3,basis:'fees_included_tax_unknown'}},checked_at:new Date().toISOString()},2,true)"),/Prior sample/);
+ assert.doesNotMatch(run("marketQuantityText({by_qty:{'2':{low:10000,typical:11000,high:12000,listings:3,basis:'fees_included_tax_unknown'}},checked_at:new Date().toISOString()},2)"),/all-in/);
+});
+test('opaque vendor history is never interpreted and own-history comparisons share basis',()=>{
+ sandbox.proofCurrent={event_id:'e',qty:2,club:'Club',basis:'fees_included_tax_unknown',hist:{unknown_schema:{was:9999}},price_cents:14600};
+ sandbox.proofRows=[{...sandbox.proofCurrent,checked_at:new Date(Date.now()-2*86400000).toISOString(),price_cents:15000},{...sandbox.proofCurrent,checked_at:new Date().toISOString()}];
+ assert.match(run('priceProof(proofRows,proofCurrent)'),/Ticketline checks.*down \$4/);
+ sandbox.proofRows[0].basis='fees_included_tax_reported';
+ assert.equal(run('priceProof(proofRows,proofCurrent)'),'No history available');
+ assert.equal(run('priceProof([],proofCurrent)'),'No history available');
 });

@@ -8,7 +8,7 @@ Live: https://tylerherman19.github.io/Tickets/
 
 - Find real upcoming events by team, artist, category, date, or city/state.
 - Create an alert for an event, team schedule, or day out.
-- Choose 1–8 tickets, an exact all-in per-ticket maximum, any section or club seating, and email delivery to the sign-in inbox. Carrier email-to-text is an optional extra.
+- Choose 1–8 tickets, an per-ticket maximum with fees included, any section or club seating, and email delivery to the sign-in inbox. Carrier email-to-text is an optional extra.
 - Review the total budget before saving. Edit, pause, resume, or delete saved alerts.
 - Get a confirmation email when an alert is saved; optional carrier text uses the same queue.
 - View recent prices, channel-specific delivery attempts, and collector health.
@@ -66,7 +66,7 @@ Apply `scripts/20260927_criteria_lifecycle.sql` afterward. It gives catalog pric
 
 The event detail page shows the most recent real market sample, seller-confirmed exact quantity prices, section breakdown, event metadata changes, and calendar links. Dates are exported as all-day entries because the catalog's local start time has no timezone identifier. The budget form accepts either a per-ticket limit or a total budget and always displays both amounts before saving. Team alerts show the lowest and average recently checked get-in price across upcoming matching games, with the number of games sampled and a reminder that get-in does not prove the requested lot size. The PWA shell can be installed and browsed after a prior visit, but live ticket checks and alert editing require connectivity. Web push and direct SMS are not configured; verified inbox email is the default delivery method and carrier gateway text is optional.
 
-Apply `scripts/20260928_public_discovery.sql` before deploying the matching collector. It adds a separate public discovery attempt/status to the catalog and a per-event market sample table. No prior prices or alerts are removed. `tix_discovery_due` is callable only by the service role. On every 15-minute run, the collector checks up to 20 events in the next week and 8 events 8–30 days away, spread across cities. Four additional samples each in Minneapolis and Milwaukee and two each in MLB, NFL, NBA, and NHL seed useful browsing categories while the wider city rotation builds coverage. It never interprets a parser failure as zero tickets. The public **See what’s cheap** search shows real get-in prices checked in the past 72 hours, sorted by all-in price; city/state, category, date, upcoming range, and maximum price remain available without sign-in. When a filter has no recently checked prices, it shows matching catalog events with a clear price-pending label. If an exact date has no listed events, it says so and offers to remove only the date filter. Coverage grows as the bounded discovery scan runs; it is not a claim that every marketplace event has been priced. Event detail and the alert builder now read exact-quantity samples by event ID instead of a venue-wide sample that could belong to another event.
+Apply `scripts/20260928_public_discovery.sql` before deploying the matching collector. It adds a separate public discovery attempt/status to the catalog and a per-event market sample table. No prior prices or alerts are removed. `tix_discovery_due` is callable only by the service role. On every 15-minute run, the collector checks up to 20 events in the next week and 8 events 8–30 days away, spread across cities. Four additional samples each in Minneapolis and Milwaukee and two each in MLB, NFL, NBA, and NHL seed useful browsing categories while the wider city rotation builds coverage. It never interprets a parser failure as zero tickets. The public **See what’s cheap** search shows real get-in prices checked in the past 72 hours, sorted by reported get-in price; city/state, category, date, upcoming range, and maximum price remain available without sign-in. When a filter has no recently checked prices, it shows matching catalog events with a clear price-pending label. If an exact date has no listed events, it says so and offers to remove only the date filter. Coverage grows as the bounded discovery scan runs; it is not a claim that every marketplace event has been priced. Event detail and the alert builder now read exact-quantity samples by event ID instead of a venue-wide sample that could belong to another event.
 
 Apply `scripts/20260928_provider_metadata.sql` after the discovery migration. Gametime sometimes serves event metadata and a get-in price without the listing payload. The collector retries once. For watched events, it then renders the normal page at each requested quantity and accepts only verified, fee-inclusive listing prices. If that also fails, it records `metadata_only`. The get-in price can appear in public discovery with a clear label; exact quantity remains unverified, and a watch receives `provider_incomplete` instead of a false no-inventory result or a notification.
 
@@ -108,3 +108,30 @@ Apply `scripts/20261007_hardening.sql` after the earlier migrations. It is addit
 ## Deployment
 
 Push `main`; the existing GitHub Pages deployment publishes the root directory. Verify the Pages workflow and public pages after each deploy. `Ticketline checks` runs the collector and frontend regression tests on pushes and pull requests.
+
+
+## October 11 listing compatibility and price details
+
+Phase 1 accepts both `availableLots` / `available_lots` and `spot.sectionGroup` / `spot.section_group`. An explicit empty camelCase lot list remains empty, even if a second alias is present. The change addresses a compatibility risk; repository inspection is not evidence of a production outage. `pre-snakecase-patch` tags main before the patch.
+
+Before deploying Phase 2, apply `scripts/20261011_listing_fields.sql` after `scripts/20261007_hardening.sql`. The migration is additive and idempotent and keeps RLS/grants: nullable base/tax/pre-tax cents, deal string, opaque history JSON, allowed lots and price basis on `tix_prices`; a nullable deal on `tix_alerts`; safe aggregate coverage on `tix_event_market`; and updated owner-only intelligence/history readers. Existing prices stay null for these fields. Do not merge the Phase 2 PR until the migration has been applied and checked. No migration is applied by the collector.
+
+The price breakdown uses integer cents: base + (total - base - tax) fees + tax = total only when the three amounts are known and consistent, including the supplied pre-tax amount when present. `fees_included_tax_reported` means those reported components reconcile; it is not a checkout guarantee. With absent/inconsistent components the total is labeled `fees included, tax not confirmed` (`fees_included_tax_unknown`). A rendered fee badge confirms fees, not tax. Legacy null basis is labeled unknown and cannot become a fresh hit through history fallback. Existing threshold semantics, confirmation text, Gmail transport, cadence, caps and channel/criteria deduplication remain unchanged. A supplied deal string is appended to a price notification and saved on that delivery, without a computed score.
+
+`historical_price` / `historicalPrice` and `historical_trend` / `historicalTrend` are stored as separate opaque subtrees in `hist`. One ordinary event-page fetch on October 11 returned metadata for event `68f84157ddb3ef47977196e8`, zero listings, and no inspectable deal/history values. No endpoint replay or new collection path was used. Consequently vendor “was/now” history and the optional great-or-better alert setting are not enabled. The UI uses “No history available” or labeled “Ticketline checks” on a matching basis/event/quantity/section. No vendor history schema or tier ordering is invented. A watch already carrying `match.min_deal` fails closed (`deal_missing` or `deal_ranking_unverified`); editing preserves that setting and the existing match-change trigger controls criteria versions.
+
+Event detail and the builder offer Any, Pairs (2), and Groups of 4 using the existing per-quantity samples. The builder presets also select that watch quantity. Exact seller-approved lots are still required; unknown lots/seats do not qualify. Missing or malformed inventory is incomplete or parser failure, not sold out. An incomplete response retains the prior successful market sample; partial DOM samples never establish event-wide absence. These labels can reduce the amount of history presented as current or comparable, particularly on legacy rows and DOM-only checks.
+
+The frontend's localhost mode is read-only. The collector now also has a credential-free offline path that reads only a supplied saved page, never writes Supabase and never sends alerts:
+
+```sh
+python3 scripts/tickets_collect.py --fixture tests/fixtures/listing_camel.html --qty 2 --group Club
+python3 scripts/tickets_collect.py --fixture tests/fixtures/listing_snake.html --qty 2 --group Club
+python3 -m unittest discover -s tests -v
+node --check tickets.js
+node --check app.js
+node --test tests/test_frontend.cjs
+python3 scripts/check_no_emoji.py
+```
+
+These saved HTML pages are synthetic contract fixtures, not captured vendor schema. No paid service is added. Anonymous access does not establish permission for recurring collection; resolve applicable permission before adding collection routes or expanding use.

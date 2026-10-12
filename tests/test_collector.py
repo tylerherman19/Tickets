@@ -25,7 +25,7 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(meta['event_id'],'fixture')
                 results.append(c.cheapest_for(items,'Club',2))
                 self.assertIsNone(c.cheapest_for(items,'Club',3))
-        self.assertEqual(results[0],results[1])
+        self.assertEqual(results[0][:6],results[1][:6])
 
     def test_both_quantity_aliases_and_explicit_empty(self):
         for key in ('availableLots', 'available_lots'):
@@ -45,11 +45,139 @@ class CollectorTests(unittest.TestCase):
         camel=listing(); snake=listing()
         snake['spot']['section_group']=snake['spot'].pop('sectionGroup')
         self.assertEqual(c.club_groups([camel]),c.club_groups([snake]))
-        self.assertEqual(c.cheapest_for([camel],'Club',2),c.cheapest_for([snake],'Club',2))
+        self.assertEqual(c.cheapest_for([camel],'Club',2)[:6],c.cheapest_for([snake],'Club',2)[:6])
 
     def test_page_shape_counts_both_lots_aliases(self):
         for page,count in [('availableLots',1),('available_lots',1),('availableLots available_lots',2)]:
             self.assertEqual(c.page_shape(page,{'event_id':'fixture'},[])['lot_keys'],count)
+
+    def test_nullable_extra_fields_and_both_history_shapes(self):
+        from copy import deepcopy
+        outputs=[]
+        for snake in (False,True):
+            item=listing()
+            item['price'].update({'prefee':12000,('sales_tax' if snake else 'salesTax'):1000,('pre_tax_total' if snake else 'preTaxTotal'):14000})
+            item['deal']='synthetic-tier'
+            item['historical_price' if snake else 'historicalPrice']={'synthetic':{'unknown':[None,1]}}
+            item['historical_trend' if snake else 'historicalTrend']={}
+            before=deepcopy(item)
+            outputs.append(c.listing_fields(item))
+            self.assertEqual(item,before)
+        self.assertEqual(outputs[0],outputs[1])
+        self.assertEqual(outputs[0]['hist']['historical_price'],{'synthetic':{'unknown':[None,1]}})
+        self.assertEqual(outputs[0]['basis'],'fees_included_tax_reported')
+        missing=c.listing_fields(listing())
+        for key in ('prefee_cents','sales_tax_cents','pre_tax_total_cents','deal','hist'):
+            self.assertIsNone(missing[key])
+        self.assertEqual(missing['basis'],'fees_included_tax_unknown')
+
+    def test_tax_zero_missing_conflicts_and_bad_amounts(self):
+        item=listing();item['price'].update(prefee=12000,sales_tax=0,pre_tax_total=15000)
+        self.assertEqual(c.listing_fields(item)['sales_tax_cents'],0)
+        self.assertEqual(c.listing_fields(item)['basis'],'fees_included_tax_reported')
+        del item['price']['sales_tax']
+        self.assertIsNone(c.listing_fields(item)['sales_tax_cents'])
+        self.assertEqual(c.listing_fields(item)['basis'],'fees_included_tax_unknown')
+        item['price'].update(sales_tax=1000,salesTax=2000)
+        self.assertIsNone(c.listing_fields(item)['sales_tax_cents'])
+        for value in (True,15000.5,'15000',0,-1):
+            self.assertIsNone(c.cheapest_any([listing(value)],2))
+        item['price']={'total':15000,'prefee':14500,'sales_tax':1000}
+        self.assertEqual(c.listing_fields(item)['basis'],'fees_included_tax_unknown')
+
+    def test_unknown_quantity_and_group_fail_closed(self):
+        item=listing();del item['availableLots']
+        self.assertEqual(c.quantity_state(item,2),'unknown')
+        self.assertTrue(c.match_unknown(item,{'qty':2,'match':{}}))
+        for lots in ([True,2],['2'],[2.0],[0,2],None):
+            item=listing();item['availableLots']=lots
+            self.assertFalse(c.allows_quantity(item,2))
+        self.assertFalse(c.allows_quantity(listing(),True))
+        item=listing();del item['seats']
+        self.assertEqual(c.quantity_state(item,2),'unknown')
+        rendered=c.parse_rendered_cards([{'href':'https://gametime.co/events/e?listingId=l&quantity=2','price':'10000','fees':True}],2)[0]
+        self.assertTrue(c.allows_quantity(rendered,2))
+        self.assertFalse(c.allows_quantity(rendered,4))
+        self.assertIsNone(c.cheapest_any([rendered],2)[5])
+        self.assertIsNone(c.listing_fields(rendered)['sales_tax_cents'])
+        self.assertEqual(c.listing_fields(rendered)['basis'],'fees_included_tax_unknown')
+        item=listing();item['spot']={}
+        self.assertTrue(c.match_unknown(item,{'qty':2,'match':{'club_level':True}}))
+        self.assertFalse(c.match_unknown(item,{'qty':2,'match':{}}))
+
+    def test_real_empty_vs_missing_null_and_malformed_envelopes(self):
+        for container,expected in [({},'metadata_only'),({'listings':None},'metadata_only'),({'listings':{}},'parser_failure'),({'listings':[None]},'parser_failure'),({'listings':[]},'ok')]:
+            payload={'redux':{'data':{'fullEvents':{'events':{'e':{'event':{'id':'e'}}}}},'listings':container}}
+            page='window.__data='+json.dumps(payload)+' listings availableLots listingsResponse'
+            meta,items=c.parse_event_page(page)
+            self.assertEqual(c.page_outcome(page,meta),expected)
+        self.assertEqual(c.page_outcome('<p>listings listingsResponse availableLots</p>',{'event_id':'e'}),'parser_failure')
+
+    def test_incomplete_market_keeps_previous_inventory_sample(self):
+        writes=[]
+        with patch.object(c,'sb',side_effect=lambda method,path,body=None,prefer=None:writes.append((path,body)) or []):
+            event={'event_id':'e'};meta={'event_id':'e'}
+            c.record_event_market(event,meta,[listing()], '2026-10-11T00:00:00Z')
+            c.record_event_market(event,meta,[], '2026-10-11T00:01:00Z','metadata_only')
+            samples=[body[0] for path,body in writes if path.startswith('tix_event_market?')]
+            self.assertEqual(len(samples),1)
+            self.assertEqual(samples[0]['listing_count'],1)
+            self.assertEqual(samples[0]['checked_at'],'2026-10-11T00:00:00Z')
+            self.assertNotIn('hist',repr(samples))
+            c.record_event_market(event,meta,[], '2026-10-11T00:02:00Z')
+        samples=[body[0] for path,body in writes if path.startswith('tix_event_market?')]
+        self.assertEqual(samples[-1]['listing_count'],0)
+        self.assertTrue(samples[-1]['coverage']['complete'])
+
+    def test_extra_fields_saved_and_unknown_deal_never_alerts(self):
+        for minimum,deal,expected_reason,expect_send in [(None,None,None,True),('great',None,'deal_missing',False),('great','synthetic-tier','deal_ranking_unverified',False),(None,'synthetic-tier',None,True)]:
+            watch={'id':'w','kind':'event','match':{'event_ids':['e']},'clubs':[],'qty':2,'threshold_cents':15000,'alert_style':'first','active':True,'created_at':c.NOW.isoformat(),'criteria_version':3}
+            if minimum: watch['match']['min_deal']=minimum
+            item=listing();item['price'].update(prefee=12000,sales_tax=1000,pre_tax_total=14000)
+            if deal: item['deal']=deal
+            event={'event_id':'e','event_date':c.NOW.date().isoformat(),'url':'https://gametime.co/events/e'}
+            writes=[]
+            def db(method,path,body=None,prefer=None):
+                if path.startswith('tix_watches?'):return [watch]
+                if method!='GET':writes.append((path,body))
+                return []
+            with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'send_pending_confirmations',return_value=0),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'discovery_due',return_value=[]),patch.object(c,'fetch_provider_page',return_value=('ok',{'event_id':'e'},[item])),patch.object(c,'owner_email',return_value='offline@example.test'),patch.object(c,'send_sms',return_value=True) as send,patch.object(c,'write_state'),patch.object(c.time,'sleep'):
+                c.main()
+            self.assertEqual(send.called,expect_send)
+            price=next(body[0] for path,body in writes if path=='tix_prices')
+            self.assertEqual(price['sales_tax_cents'],1000)
+            self.assertEqual(price['prefee_cents'],12000)
+            self.assertEqual(price['lots'],[2,4])
+            self.assertEqual(price['criteria_version'],3)
+            scan=next(body[0] for path,body in writes if path.startswith('tix_scans'))
+            if expected_reason:self.assertIn(expected_reason,scan['detail']['reasons'])
+            if expect_send and deal:
+                self.assertTrue(send.call_args.args[1].endswith('Gametime deal: synthetic-tier.'))
+                self.assertEqual(next(body[0] for path,body in writes if path=='tix_alerts')['deal'],deal)
+
+    def test_missing_lots_main_records_incomplete_without_price_or_send(self):
+        watch={'id':'w','kind':'event','match':{},'clubs':[],'qty':2,'threshold_cents':15000,'alert_style':'first','active':True,'created_at':c.NOW.isoformat()}
+        item=listing();del item['availableLots']
+        event={'event_id':'e','event_date':c.NOW.date().isoformat(),'url':'https://gametime.co/events/e'}
+        writes=[]
+        def db(method,path,body=None,prefer=None):
+            if path.startswith('tix_watches?'):return [watch]
+            if method!='GET':writes.append((path,body))
+            return []
+        with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'send_pending_confirmations',return_value=0),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'discovery_due',return_value=[]),patch.object(c,'fetch_provider_page',return_value=('ok',{'event_id':'e'},[item])),patch.object(c,'send_sms') as send,patch.object(c,'write_state') as state,patch.object(c.time,'sleep'):
+            c.main()
+        send.assert_not_called()
+        self.assertFalse(any(path=='tix_prices' for path,_ in writes))
+        scan=next(body[0] for path,body in writes if path.startswith('tix_scans'))
+        self.assertEqual(scan['outcome'],'provider_incomplete')
+        self.assertEqual(state.call_args.args[1]['status'],'degraded')
+
+    def test_offline_fixture_entry_is_read_only(self):
+        with patch.object(c,'get_text',side_effect=AssertionError('network')),patch.object(c,'sb',side_effect=AssertionError('database')),patch.object(c,'send_sms',side_effect=AssertionError('send')):
+            for shape in ('camel','snake'):
+                result=c.offline_fixture(os.path.join(os.path.dirname(__file__),'fixtures',f'listing_{shape}.html'),2,'Club')
+                self.assertEqual(result['selected_price_cents'],15000)
+                self.assertEqual(result['fields']['basis'],'fees_included_tax_unknown')
 
     def test_successful_empty_provider_market_clears_old_get_in_price(self):
         event={'event_id':'abc','name':'A game','event_date':'2026-10-04','url':'https://gametime.co/events/abc'}
@@ -137,7 +265,7 @@ class CollectorTests(unittest.TestCase):
             {"price":{"total":20000},"seats":[1,2],"availableLots":[2]},
         ]
         spread = c.market_spreads(listings)["2"]
-        self.assertEqual(spread, {"low":10000,"typical":14000,"high":20000,"listings":3})
+        self.assertEqual(spread, {"low":10000,"typical":14000,"high":20000,"listings":3,"basis":"fees_included_tax_unknown"})
 
     def test_cents_not_rounded(self):
         self.assertEqual(c.fmt_money(10050),'$100.50');self.assertEqual(c.fmt_money(10000),'$100')
@@ -203,8 +331,11 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(c.check_interval_minutes(60,10500,10000),15)
     def test_parser_failure_is_distinct_from_zero_inventory(self):
         self.assertEqual(c.page_outcome('<html>changed markup</html>',None),'parser_failure')
-        self.assertEqual(c.page_outcome('<astro-island component-export="EventListings" props="listingsResponse"></astro-island>',{'event_id':'e'}),'ok')
-        self.assertEqual(c.page_outcome('window.__data={"fullEvents":{}}',{'event_id':'e'}),'metadata_only')
+        self.assertEqual(c.page_outcome('<astro-island component-export="EventListings" props="listingsResponse"></astro-island>',{'event_id':'e'}),'parser_failure')
+        payload={'redux':{'data':{'fullEvents':{'events':{'e':{'event':{'id':'e'}}}}}}}
+        page='window.__data='+json.dumps(payload)
+        meta,_=c.parse_event_page(page)
+        self.assertEqual(c.page_outcome(page,meta),'metadata_only')
     def test_provider_diagnostics_expose_structure_without_response_content(self):
         page='<html>window.__data={"listings":[],"availableLots":[]}</html>'
         shape=c.page_shape(page,{'event_id':'secret'},[])
