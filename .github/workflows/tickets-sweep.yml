@@ -1,0 +1,33 @@
+name: ticket price sweep
+on:
+  workflow_dispatch:
+    inputs:
+      event_ids:
+        description: '1-8 comma-separated public catalog event IDs (prices only; no alerts)'
+        type: string
+        required: true
+concurrency:
+  group: tickets-collector
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select the collector compatible with the deployed schema
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/tickets_release_gate.py
+      - name: Save prices for the requested events
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TIX_SWEEP_EVENT_IDS: ${{ inputs.event_ids }}
+        run: python scripts/tickets_sweep.py
