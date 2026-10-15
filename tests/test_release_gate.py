@@ -25,3 +25,12 @@ class ReleaseGateTests(unittest.TestCase):
         with patch.dict(os.environ,{'GITHUB_ACTIONS':'false'}),patch.object(gate,'schema_ready') as ready:
             with self.assertRaises(RuntimeError):gate.main()
             ready.assert_not_called()
+
+    def test_sitemap_refresh_preserves_provider_verified_college_categories(self):
+        source=open(os.path.join(os.path.dirname(__file__),'..','scripts','tickets_collect.py')).read()
+        patched=gate.preserve_college_categories(source)
+        compile(patched,'collector','exec')
+        self.assertIn("r['category'] = 'college-basketball'",patched)
+        self.assertIn('category=eq.college-basketball&select=event_id',patched)
+        self.assertEqual(gate.preserve_college_categories(patched),patched)
+        with self.assertRaises(RuntimeError): gate.preserve_college_categories('changed format')

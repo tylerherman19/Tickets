@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit
 import tickets_collect as collect
@@ -51,10 +52,11 @@ def team_pages(data):
         parts=urlsplit(url)
         if item.get('category')=='cbb' and parts.scheme=='https' and parts.netloc=='gametime.co' and re.fullmatch(r'/[^/]+/performers/cbb[a-z0-9]+',parts.path) and not parts.query and not parts.fragment:
             urls[parts.path.rsplit('/',1)[-1]]=url
-    # Seed at most seven team pages, prioritizing Syracuse.
+    # Follow the provider-identified college teams; never infer sport from a mascot.
     ordered=sorted(urls)
     if 'cbbsyr' in ordered: ordered.remove('cbbsyr');ordered.insert(0,'cbbsyr')
-    return [urls[key] for key in ordered[:7]]
+    if len(ordered)>400: raise ValueError('Unexpected college team directory size')
+    return [urls[key] for key in ordered]
 
 
 def main():
@@ -64,13 +66,20 @@ def main():
         with guard.capture(None,'catalog') if guard else contextlib.nullcontext():
             return page_data(fetch_once(url))
     directory=load('https://gametime.co/c/college-basketball')
-    rows={row['event_id']:row for row in catalog_rows(directory)}
-    for url in team_pages(directory):
-        for row in catalog_rows(load(url)): rows[row['event_id']]=row
-    if not rows: raise RuntimeError('No provider-identified college basketball events found')
-    values=list(rows.values())
-    for i in range(0,len(values),500):
-        collect.sb('POST','tix_catalog?on_conflict=event_id',values[i:i+500],prefer='resolution=merge-duplicates,return=minimal')
-    print(f'Imported {len(values)} college basketball events; saved prices preserved')
+    seen=set()
+    def save(data):
+        rows=catalog_rows(data)
+        for i in range(0,len(rows),500):
+            collect.sb('POST','tix_catalog?on_conflict=event_id',rows[i:i+500],prefer='resolution=merge-duplicates,return=minimal')
+        seen.update(row['event_id'] for row in rows)
+    save(directory)
+    pages=team_pages(directory)
+    print(f'Gametime college basketball directory: {len(pages)} team pages',flush=True)
+    for index,url in enumerate(pages,1):
+        save(load(url))
+        print(f'Team {index}/{len(pages)}: {len(seen)} college basketball events saved',flush=True)
+        time.sleep(1)
+    if not seen: raise RuntimeError('No provider-identified college basketball events found')
+    print(f'Imported {len(seen)} college basketball events; saved prices preserved',flush=True)
 
 if __name__=='__main__': main()

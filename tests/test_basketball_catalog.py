@@ -24,3 +24,13 @@ class BasketballCatalogTests(unittest.TestCase):
         with patch.dict(os.environ,{'GITHUB_ACTIONS':'false'}),patch.object(catalog,'fetch_once') as fetch:
             with self.assertRaises(RuntimeError): catalog.main()
             fetch.assert_not_called()
+
+    def test_directory_includes_all_linked_college_teams_and_excludes_other_sports(self):
+        teams=[{'category':'cbb','seoUrl':f'https://gametime.co/team-{n}-basketball-tickets/performers/cbb{n}'} for n in range(20)]
+        teams.append({'category':'nba','seoUrl':'https://gametime.co/lakers-tickets/performers/nbalal'})
+        self.assertEqual(len(catalog.team_pages(teams)),20)
+
+    def test_directory_data_decodes_without_executing_script(self):
+        data=catalog.page_data('window.__data={"value":undefined,"name":"undefined"};alert("bad")')
+        self.assertIsNone(data['value'])
+        self.assertEqual(data['name'],'undefined')

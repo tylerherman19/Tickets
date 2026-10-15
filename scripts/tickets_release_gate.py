@@ -32,10 +32,23 @@ def schema_ready():
         if error.code==404 and code=='PGRST202': return False
         raise RuntimeError(f'Capture preflight failed: HTTP {error.code}') from None
 
+def preserve_college_categories(source):
+    """Keep provider-verified college categories when the sitemap says sports."""
+    if 'college_category_ids = set()' in source: return source
+    anchor = '    rows = {}\n    for sm in SITEMAPS:'
+    replacement = "    rows = {}\n    college_category_ids = set()\n    offset = 0\n    while True:\n        existing = sb('GET', 'tix_catalog?category=eq.college-basketball&select=event_id&order=event_id&limit=1000&offset='+str(offset))\n        college_category_ids.update(row['event_id'] for row in existing)\n        if len(existing) < 1000: break\n        offset += len(existing)\n    for sm in SITEMAPS:"
+    row_anchor = '            if r: rows[r["event_id"]] = r'
+    row_replacement = "            if r:\n                if r['event_id'] in college_category_ids and r['category'] in ('sports','basketball'):\n                    r['category'] = 'college-basketball'\n                rows[r['event_id']] = r"
+    if source.count(anchor)!=1 or source.count(row_anchor)!=1:
+        raise RuntimeError('Collector catalog format changed; refusing an unsafe compatibility patch')
+    return source.replace(anchor,replacement).replace(row_anchor,row_replacement)
+
 def main():
     if os.environ.get('GITHUB_ACTIONS')!='true':
         raise RuntimeError('Release preflight is hosted-only')
     if schema_ready():
+        path=Path(__file__).with_name('tickets_collect.py')
+        path.write_text(preserve_college_categories(path.read_text()))
         print('Guarded schema available; using current collector.')
         return
     # Existing collection continues unchanged while schema/function deployment
@@ -43,7 +56,7 @@ def main():
     # admission automatically; the new feature never uses this fallback.
     subprocess.run(['git','fetch','--depth=1','origin',PREVIOUS_COLLECTOR],check=True)
     prior=subprocess.check_output(['git','show',PREVIOUS_COLLECTOR+':scripts/tickets_collect.py'])
-    Path(__file__).with_name('tickets_collect.py').write_bytes(prior)
+    Path(__file__).with_name('tickets_collect.py').write_text(preserve_college_categories(prior.decode()))
     print('Schema deployment pending; using pinned existing collector.')
 
 if __name__=='__main__':main()
