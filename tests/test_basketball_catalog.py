@@ -13,7 +13,7 @@ class BasketballCatalogTests(unittest.TestCase):
         date=datetime.now(timezone.utc).date()+timedelta(days=5)
         def url(category,eid):
             return f'https://gametime.co/{category}/duke-at-syracuse-tickets/{date.month}-{date.day}-{date.year}-syracuse-ny-jma-wireless-dome/events/{eid}'
-        source='<urlset>'+''.join('<url><loc>'+url(cat,eid)+'</loc></url>' for cat,eid in [('college-basketball','a'*24),('nba-basketball','b'*24),('college-football','c'*24)])+'</urlset>'
+        source={'events':[{'id':eid,'category':cat,'seoUrl':url('basketball',eid),'name':'Duke at Syracuse'} for cat,eid in [('cbb','a'*24),('nba','b'*24),('cfb','c'*24)]}
         rows=catalog.catalog_rows(source)
         self.assertEqual(len(rows),1)
         self.assertEqual(rows[0]['category'],'college-basketball')
