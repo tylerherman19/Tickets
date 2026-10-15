@@ -64,3 +64,27 @@ class BasketballCatalogTests(unittest.TestCase):
         self.assertEqual(db.call_count,2)
         self.assertNotIn('min_total',db.call_args_list[0].args[2][0])
         self.assertEqual(db.call_args_list[1].args[2][0]['min_total'],1200)
+
+    def test_coverage_prioritizes_missing_teams_then_oldest_check(self):
+        pages=['https://gametime.co/a/performers/cbba','https://gametime.co/b/performers/cbbb','https://gametime.co/c/performers/cbbc']
+        state={'teams':{'cbba':{'checked_at':'2026-10-15'},'cbbb':{'checked_at':'2026-10-01'}}}
+        self.assertEqual(catalog.scheduled_pages(pages,state,3),[pages[2],pages[1],pages[0]])
+        pages.append('https://gametime.co/new/performers/cbbnew')
+        self.assertIn(pages[-1],catalog.scheduled_pages(pages,state,2))
+
+    def test_failed_team_does_not_mark_coverage_complete_or_start_next_batch(self):
+        pages=[f'https://gametime.co/team/performers/cbb{n}' for n in range(8)]
+        attempted=[]
+        def load(url):
+            attempted.append(url)
+            if url==pages[1]: raise RuntimeError('provider blocked')
+            return {'id':url}
+        state={'teams':{}}
+        with patch.object(catalog.collect,'write_state') as save_state:
+            with self.assertRaisesRegex(RuntimeError,'blocked'):
+                catalog.import_pages(pages,load,state,lambda data:[],workers=4)
+        self.assertEqual(set(attempted),set(pages[:4]))
+        self.assertNotIn('cbb1',state['teams'])
+        self.assertEqual(set(state['teams']),{'cbb0','cbb2','cbb3'})
+        self.assertNotIn('bootstrap_completed_at',state)
+        save_state.assert_called_once()

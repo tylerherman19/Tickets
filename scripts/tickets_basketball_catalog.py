@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Import provider-identified college basketball events from public directory pages."""
 import contextlib
+import concurrent.futures
 import json
 import os
 import re
-import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit
 import tickets_collect as collect
@@ -77,13 +77,53 @@ def team_pages(data):
             urls[parts.path.rsplit('/',1)[-1]]=url
     # Follow the provider-identified college teams; never infer sport from a mascot.
     ordered=sorted(urls)
-    if 'cbbsyr' in ordered: ordered.remove('cbbsyr');ordered.insert(0,'cbbsyr')
     return [urls[key] for key in ordered]
 
 
 def team_batch(pages,cursor,limit=48):
     if not pages: return []
     return [pages[(cursor+i)%len(pages)] for i in range(min(limit,len(pages)))]
+
+def team_code(url):
+    return url.rsplit('/',1)[-1]
+
+
+def scheduled_pages(pages,coverage,limit):
+    # New teams go first; completion is tracked by provider ID rather than a
+    # shifting numeric offset, so directory additions cannot skip a team.
+    checked=coverage.get('teams',{})
+    return sorted(pages,key=lambda url:(checked.get(team_code(url),{}).get('checked_at',''),team_code(url)))[:limit]
+
+
+def read_coverage():
+    rows=collect.sb('GET','tix_state?k=eq.college_basketball_coverage&select=v&limit=1')
+    value=rows[0]['v'] if rows else {'teams':{}}
+    if isinstance(value,str): value=json.loads(value)
+    if not isinstance(value,dict) or not isinstance(value.get('teams'),dict):
+        raise ValueError('Invalid college basketball coverage state')
+    return value
+
+
+def import_pages(pages,load,coverage,save,workers=4):
+    # Four independent page fetches at most. Guarded deployments serialize so
+    # every attempt retains its shared lease/budget. No new work follows an error.
+    checked=coverage['teams']
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for offset in range(0,len(pages),workers):
+            urls=pages[offset:offset+workers]
+            futures=[pool.submit(load,url) for url in urls]
+            failure=None
+            for url,future in zip(urls,futures):
+                try:
+                    rows=save(future.result())
+                    checked[team_code(url)]={'checked_at':datetime.now(timezone.utc).isoformat(),
+                                            'events':len(rows),'priced':sum('min_total' in row for row in rows)}
+                except Exception as error:
+                    failure=failure or error
+            collect.write_state('college_basketball_coverage',coverage)
+            print(f'Provider team pages completed: {min(offset+workers,len(pages))}/{len(pages)}',flush=True)
+            if failure: raise failure
+
 
 def main():
     if os.environ.get('GITHUB_ACTIONS')!='true': raise RuntimeError('Catalog import is hosted-only')
@@ -99,25 +139,27 @@ def main():
         save_rows(rows)
         seen.update(row['event_id'] for row in rows)
         priced.update(row['event_id'] for row in rows if 'min_total' in row)
+        return rows
     save(directory)
     pages=team_pages(directory)
-    stored=collect.sb('GET','tix_state?k=eq.college_basketball_cursor&select=v&limit=1')
-    cursor=stored[0]['v'] if stored else 0
-    if isinstance(cursor,str): cursor=json.loads(cursor)
-    if type(cursor) is not int or cursor<0: raise ValueError('Invalid college basketball cursor')
+    coverage=read_coverage()
+    coverage['directory_teams']=len(pages)
     selected=os.environ.get('TIX_BASKETBALL_TEAM','').strip()
+    bootstrap=os.environ.get('TIX_BASKETBALL_BOOTSTRAP')=='true'
     if selected:
-        batch=[url for url in pages if url.endswith('/performers/'+selected)]
+        batch=[url for url in pages if team_code(url)==selected]
         if len(batch)!=1: raise ValueError('Requested college team is not in the provider directory')
     else:
-        batch=team_batch(pages,cursor)
-    print(f'Gametime college basketball directory: {len(pages)} team pages; processing {len(batch)} from cursor {cursor}',flush=True)
-    for index,url in enumerate(batch,1):
-        save(load(url))
-        if not selected: collect.write_state('college_basketball_cursor',(cursor+index)%len(pages))
-        print(f'Team {index}/{len(batch)}: {len(seen)} college basketball events saved',flush=True)
-        time.sleep(1)
+        batch=scheduled_pages(pages,coverage,len(pages) if bootstrap else 48)
+    print(f'Gametime directory: {len(pages)} team pages; processing {len(batch)}; bootstrap={bootstrap}',flush=True)
+    import_pages(batch,load,coverage,save,workers=1 if guard else 4)
+    covered=sum(team_code(url) in coverage['teams'] for url in pages)
+    coverage.update(covered_teams=covered,completed_at=datetime.now(timezone.utc).isoformat())
+    if bootstrap:
+        if covered!=len(pages): raise RuntimeError('Initial catalog coverage is incomplete')
+        coverage['bootstrap_completed_at']=coverage['completed_at']
+    collect.write_state('college_basketball_coverage',coverage)
     if not seen: raise RuntimeError('No provider-identified college basketball events found')
-    print(f'Imported {len(seen)} college basketball events; {len(priced)} provider get-in prices saved; absent prices preserved',flush=True)
+    print(f'Imported {len(seen)} events and {len(priced)} get-in prices; provider team coverage {covered}/{len(pages)}',flush=True)
 
 if __name__=='__main__': main()

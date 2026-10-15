@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: '40 * * * *'
   workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 'Complete the initial catalog across every provider-listed college team'
+        type: boolean
+        default: false
 concurrency:
   group: tickets-collector
   cancel-in-progress: false
@@ -11,7 +16,7 @@ permissions:
 jobs:
   import:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,4 +31,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TIX_BASKETBALL_BOOTSTRAP: ${{ inputs.bootstrap }}
         run: python scripts/tickets_basketball_catalog.py
