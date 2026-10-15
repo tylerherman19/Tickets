@@ -76,7 +76,7 @@ async function queuePriceChecks(rows,ctrl){
   }catch(e){if(e.name==='AbortError')return;status.textContent=e.message;}
  }
  if(!tracked.length){status.textContent=captureStateText({state:'beyond_horizon'});return;}
- if(!ids.length)status.textContent='Recent prices saved. History tracking is on; alerts remain a separate choice.';
+ if(!ids.length)status.textContent='Showing recently saved prices. Alerts are a separate choice.';
 }
 async function loadEvents(append=false){
  state.controller?.abort();const ctrl=state.controller=new AbortController();const box=$('#events');if(!append){box.innerHTML=loadingRows();const status=$('#price-request-status');if(status){status.hidden=true;status.textContent='';}}

@@ -6,6 +6,10 @@ on:
         description: '1-8 comma-separated public catalog event IDs (prices only; no alerts)'
         type: string
         required: false
+      college_team:
+        description: 'Optional linked college team code for targeted import, e.g. cbbsyr'
+        type: string
+        required: false
       catalog_category:
         description: 'Optional catalog import before pricing'
         type: choice
@@ -35,6 +39,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TIX_BASKETBALL_TEAM: ${{ inputs.college_team }}
         run: python scripts/tickets_basketball_catalog.py
       - name: Save prices for the requested events
         if: inputs.event_ids != ''

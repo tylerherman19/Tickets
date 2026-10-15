@@ -41,3 +41,26 @@ class BasketballCatalogTests(unittest.TestCase):
         self.assertEqual(set(catalog.team_batch(pages,0)+catalog.team_batch(pages,48)+catalog.team_batch(pages,96)),set(pages))
         self.assertEqual(catalog.team_batch([],0),[])
         self.assertEqual(catalog.team_batch(['one'],3),['one'])
+
+    def test_valid_directory_prices_are_saved_as_get_in_only_even_beyond_30_days(self):
+        date=datetime.now(timezone.utc).date()+timedelta(days=90)
+        url=f'https://gametime.co/basketball/duke-at-orange-tickets/{date.month}-{date.day}-{date.year}-syracuse-ny-dome/events/'+('a'*24)
+        for key in ('minPrice','min_price'):
+            rows=catalog.catalog_rows({'category':'cbb','id':'a'*24,'seoUrl':url,key:{'total':1200}})
+            self.assertEqual(rows[0]['min_total'],1200)
+            self.assertEqual(rows[0]['discovery_status'],'metadata_only')
+            self.assertTrue(rows[0]['price_checked_at'])
+            self.assertNotIn('by_qty',rows[0])
+
+    def test_unknown_zero_invalid_or_conflicting_prices_cannot_become_prices(self):
+        for value in (None,{},[],0,{'total':None},{'total':0},{'total':-1},{'total':True},{'total':12.5},{'total':'1200'}):
+            self.assertIsNone(catalog.get_in_price({'minPrice':value}))
+        self.assertIsNone(catalog.get_in_price({'minPrice':{'total':1200},'min_price':{'total':1800}}))
+
+    def test_mixed_price_batches_keep_identical_keys_without_erasing_saved_prices(self):
+        rows=[{'event_id':'a','name':'A'}, {'event_id':'b','name':'B','min_total':1200,'price_checked_at':'now','discovery_status':'metadata_only'}]
+        with patch.object(catalog.collect,'sb') as db:
+            catalog.save_rows(rows)
+        self.assertEqual(db.call_count,2)
+        self.assertNotIn('min_total',db.call_args_list[0].args[2][0])
+        self.assertEqual(db.call_args_list[1].args[2][0]['min_total'],1200)
