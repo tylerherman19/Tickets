@@ -88,3 +88,16 @@ class BasketballCatalogTests(unittest.TestCase):
         self.assertEqual(set(state['teams']),{'cbb0','cbb2','cbb3'})
         self.assertNotIn('bootstrap_completed_at',state)
         save_state.assert_called_once()
+
+    def test_transient_failure_is_recorded_and_success_clears_it(self):
+        import urllib.error
+        url='https://gametime.co/team/performers/cbbteam'
+        state={'teams':{}}
+        with patch.object(catalog.collect,'write_state'):
+            with self.assertRaises(urllib.error.HTTPError):
+                catalog.import_pages([url],lambda _:(_ for _ in ()).throw(urllib.error.HTTPError(url,502,'upstream',{},None)),state,lambda _:[],workers=1)
+            self.assertEqual(state['errors']['cbbteam']['status'],502)
+            self.assertNotIn('cbbteam',state['teams'])
+            catalog.import_pages([url],lambda _:{},state,lambda _:[],workers=1)
+            self.assertIn('cbbteam',state['teams'])
+            self.assertNotIn('cbbteam',state['errors'])

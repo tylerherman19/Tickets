@@ -116,9 +116,13 @@ def import_pages(pages,load,coverage,save,workers=4):
             for url,future in zip(urls,futures):
                 try:
                     rows=save(future.result())
+                    coverage.setdefault('errors',{}).pop(team_code(url),None)
                     checked[team_code(url)]={'checked_at':datetime.now(timezone.utc).isoformat(),
                                             'events':len(rows),'priced':sum('min_total' in row for row in rows)}
                 except Exception as error:
+                    code=team_code(url)
+                    coverage.setdefault('errors',{})[code]={'at':datetime.now(timezone.utc).isoformat(),'kind':type(error).__name__,'status':getattr(error,'code',None)}
+                    print(f'Provider team check failed: {code}; {type(error).__name__}; status={getattr(error,"code",None)}',flush=True)
                     failure=failure or error
             collect.write_state('college_basketball_coverage',coverage)
             print(f'Provider team pages completed: {min(offset+workers,len(pages))}/{len(pages)}',flush=True)
@@ -150,7 +154,8 @@ def main():
         batch=[url for url in pages if team_code(url)==selected]
         if len(batch)!=1: raise ValueError('Requested college team is not in the provider directory')
     else:
-        batch=scheduled_pages(pages,coverage,len(pages) if bootstrap else 48)
+        pending=[url for url in pages if team_code(url) not in coverage['teams']] if bootstrap else pages
+        batch=scheduled_pages(pending,coverage,len(pending) if bootstrap else 48)
     print(f'Gametime directory: {len(pages)} team pages; processing {len(batch)}; bootstrap={bootstrap}',flush=True)
     import_pages(batch,load,coverage,save,workers=1 if guard else 4)
     covered=sum(team_code(url) in coverage['teams'] for url in pages)
@@ -159,7 +164,7 @@ def main():
         if covered!=len(pages): raise RuntimeError('Initial catalog coverage is incomplete')
         coverage['bootstrap_completed_at']=coverage['completed_at']
     collect.write_state('college_basketball_coverage',coverage)
-    if not seen: raise RuntimeError('No provider-identified college basketball events found')
+    if not seen and covered!=len(pages): raise RuntimeError('No provider-identified college basketball events found')
     print(f'Imported {len(seen)} events and {len(priced)} get-in prices; provider team coverage {covered}/{len(pages)}',flush=True)
 
 if __name__=='__main__': main()
