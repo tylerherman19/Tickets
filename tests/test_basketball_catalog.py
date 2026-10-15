@@ -34,3 +34,10 @@ class BasketballCatalogTests(unittest.TestCase):
         data=catalog.page_data('window.__data={"value":undefined,"name":"undefined"};alert("bad")')
         self.assertIsNone(data['value'])
         self.assertEqual(data['name'],'undefined')
+
+    def test_batch_cursor_covers_the_whole_directory_and_wraps(self):
+        pages=list(range(120))
+        self.assertEqual(catalog.team_batch(pages,96),list(range(96,120))+list(range(24)))
+        self.assertEqual(set(catalog.team_batch(pages,0)+catalog.team_batch(pages,48)+catalog.team_batch(pages,96)),set(pages))
+        self.assertEqual(catalog.team_batch([],0),[])
+        self.assertEqual(catalog.team_batch(['one'],3),['one'])

@@ -55,9 +55,12 @@ def team_pages(data):
     # Follow the provider-identified college teams; never infer sport from a mascot.
     ordered=sorted(urls)
     if 'cbbsyr' in ordered: ordered.remove('cbbsyr');ordered.insert(0,'cbbsyr')
-    if len(ordered)>400: raise ValueError('Unexpected college team directory size')
     return [urls[key] for key in ordered]
 
+
+def team_batch(pages,cursor,limit=48):
+    if not pages: return []
+    return [pages[(cursor+i)%len(pages)] for i in range(min(limit,len(pages)))]
 
 def main():
     if os.environ.get('GITHUB_ACTIONS')!='true': raise RuntimeError('Catalog import is hosted-only')
@@ -74,10 +77,16 @@ def main():
         seen.update(row['event_id'] for row in rows)
     save(directory)
     pages=team_pages(directory)
-    print(f'Gametime college basketball directory: {len(pages)} team pages',flush=True)
-    for index,url in enumerate(pages,1):
+    stored=collect.sb('GET','tix_state?k=eq.college_basketball_cursor&select=v&limit=1')
+    cursor=stored[0]['v'] if stored else 0
+    if isinstance(cursor,str): cursor=json.loads(cursor)
+    if type(cursor) is not int or cursor<0: raise ValueError('Invalid college basketball cursor')
+    batch=team_batch(pages,cursor)
+    print(f'Gametime college basketball directory: {len(pages)} team pages; processing {len(batch)} from cursor {cursor}',flush=True)
+    for index,url in enumerate(batch,1):
         save(load(url))
-        print(f'Team {index}/{len(pages)}: {len(seen)} college basketball events saved',flush=True)
+        collect.write_state('college_basketball_cursor',(cursor+index)%len(pages))
+        print(f'Team {index}/{len(batch)}: {len(seen)} college basketball events saved',flush=True)
         time.sleep(1)
     if not seen: raise RuntimeError('No provider-identified college basketball events found')
     print(f'Imported {len(seen)} college basketball events; saved prices preserved',flush=True)
