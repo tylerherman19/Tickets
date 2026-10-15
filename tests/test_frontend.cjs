@@ -198,3 +198,23 @@ test('missing Edge route falls back to deployed discovery queue without hiding r
  responses.push({status:401,ok:false,text:async()=>JSON.stringify({code:'UNAUTHORIZED'})});
  await assert.rejects(run('captureEventPrice("college-game")'),/Could not refresh prices/);
 });
+vm.runInContext(app.slice(app.indexOf('const TEAM_NAMES='),app.indexOf('function selectionTitle(')),sandbox);
+test('team picker finds schools but keeps nickname slugs as the stored value',()=>{
+ const cbb='college-basketball';
+ const hit=(slug,q)=>run(`teamMatches("${cbb}","${slug}",${JSON.stringify(q)})`);
+ assert.equal(hit('orange','syracuse'),true);assert.equal(hit('orange','sy'),true);assert.equal(hit('orange','orange'),true);assert.equal(hit('orange','syc'),true);
+ assert.equal(run(`teamName("${cbb}","orange")`),'Syracuse Orange');
+ assert.equal(hit('tar-heels','north carolina'),true);assert.equal(hit('tar-heels','unc'),true);
+ assert.equal(hit('sycamores','syracuse'),false);assert.equal(hit('orange','duke'),false);
+ // Old behaviour is never narrowed: every nickname substring still matches, in every league.
+ assert.equal(hit('orange','ora'),true);assert.equal(hit('tar-heels','heels'),true);
+ assert.equal(run('teamMatches("nfl-football","minnesota-vikings","vik")'),true);assert.equal(run('teamMatches("nfl-football","minnesota-vikings","zzz")'),false);
+ assert.equal(run('teamName("nfl-football","orange")'),'Orange');assert.equal(run('teamMatches("nfl-football","orange","syracuse")'),false);
+ // Shared nicknames are never assigned to one school.
+ assert.equal(run(`teamName("${cbb}","blue-devils")`),'Blue Devils');
+ assert.equal(hit('blue-devils','duke'),true);assert.equal(hit('blue-devils','central connecticut'),true);
+ assert.match(run(`teamSub("${cbb}","bulldogs","gonzaga")`),/^Shared nickname: Gonzaga,/);
+ assert.equal(run(`teamSub("${cbb}","orange","")`),'');
+ assert.equal(run(`teamInfo("${cbb}","constructor")`),null);
+ assert.equal(run(`teamName("${cbb}","not-a-team")`),'Not A Team');
+});
