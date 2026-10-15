@@ -117,3 +117,20 @@ class BasketballCatalogTests(unittest.TestCase):
         self.assertEqual(len(state['teams']),7)
         self.assertNotIn('cbb1',state['teams'])
         self.assertEqual(state['errors']['cbb1']['status'],502)
+
+    def test_incomplete_body_is_isolated_but_http_blocking_stops_new_work(self):
+        import http.client
+        import urllib.error
+        pages=[f'https://gametime.co/team/performers/cbb{n}' for n in range(8)]
+        for error,expected in [(http.client.IncompleteRead(b'partial'),8),(urllib.error.HTTPError(pages[0],403,'blocked',{},None),4)]:
+            attempted=[]
+            def load(url):
+                attempted.append(url)
+                if url==pages[0]: raise error
+                return {}
+            with patch.object(catalog.collect,'write_state'):
+                if expected==4:
+                    with self.assertRaises(urllib.error.HTTPError): catalog.import_pages(pages,load,{'teams':{}},lambda _:[],workers=4)
+                else:
+                    catalog.import_pages(pages,load,{'teams':{}},lambda _:[],workers=4)
+            self.assertEqual(len(attempted),expected)
