@@ -29,7 +29,13 @@ def main():
         raise RuntimeError('Catalog import is hosted-only')
     guard = getattr(collect, 'GUARD', None)
     with guard.capture(None, 'catalog') if guard else contextlib.nullcontext():
-        rows = catalog_rows(fetch_once('https://gametime.co/sitemap/sport-events.xml'))
+        page = fetch_once('https://gametime.co/c/college-basketball')
+        print('Islands:', re.findall(r'component-export="([^"]+)"', page))
+        print('Event link samples:', re.findall(r'href="([^"]+/events/[0-9a-f]{24}[^"]*)"', page)[:3])
+        for marker in ['seoUrl', 'eventPath', 'category', 'fullEvents']:
+            offset = page.find(marker)
+            print(marker, page[max(0, offset-80):offset+300])
+        rows = []
     if not rows:
         raise RuntimeError('No upcoming college basketball catalog URLs found')
     for i in range(0, len(rows), 500):
