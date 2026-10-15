@@ -6,6 +6,10 @@ on:
         description: '1-8 comma-separated public catalog event IDs (prices only; no alerts)'
         type: string
         required: false
+      bootstrap:
+        description: 'Complete initial college basketball coverage across all linked teams'
+        type: boolean
+        default: false
       college_team:
         description: 'Optional linked college team code for targeted import, e.g. cbbsyr'
         type: string
@@ -23,7 +27,7 @@ permissions:
 jobs:
   sweep:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,6 +43,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TIX_BASKETBALL_BOOTSTRAP: ${{ inputs.bootstrap }}
           TIX_BASKETBALL_TEAM: ${{ inputs.college_team }}
         run: python scripts/tickets_basketball_catalog.py
       - name: Save prices for the requested events
