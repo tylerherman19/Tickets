@@ -139,3 +139,9 @@ These saved HTML pages are synthetic contract fixtures, not captured vendor sche
 ## Price capture and history rollout
 
 See [ROLLOUT.md](ROLLOUT.md) for the disabled-by-default migration, hosted Edge/Actions setup, conservative expiry, canary sequence and rollback. Tests: `npm ci && npm test` plus `python -m unittest discover -s tests -v`. History-only refresh never creates an alert or enables delivery.
+
+### Targeted price sweep
+
+Run **ticket price sweep** in GitHub Actions with up to eight comma-separated public catalog event IDs. It saves current catalog/get-in prices for upcoming events within one year, including events beyond the automatic discovery window. It shares collector concurrency, uses the deployed-schema compatibility gate and shared admission when available, makes one ordinary page request per event, and stops on errors or blocking. It has no notification credentials and does not create watches. Metadata-only results do not confirm exact ticket quantities.
+
+While the guarded backend remains undeployed, authenticated search refreshes fall back to `tix_request_price_check` only when Edge explicitly reports its route missing. The deployed legacy queue covers the next 30 days; later events require a targeted sweep. No UI message claims an immediate fetch or saved history from that fallback.

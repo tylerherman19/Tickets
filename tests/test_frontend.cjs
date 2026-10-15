@@ -187,3 +187,14 @@ test('opaque vendor history is never interpreted and own-history comparisons sha
  assert.equal(run('priceProof(proofRows,proofCurrent)'),'No history available');
  assert.equal(run('priceProof([],proofCurrent)'),'No history available');
 });
+
+test('missing Edge route falls back to deployed discovery queue without hiding real errors',async()=>{
+ const responses=[];
+ sandbox.accessToken=async()=> 'user';sandbox.IS_DEV=false;
+ sandbox.AbortSignal=AbortSignal;sandbox.fetch=async()=>responses.shift();
+ sandbox.sbPublicRpc=async(name,body)=>{assert.equal(name,'tix_request_price_check');assert.equal(body.p_event_id,'college-game');return true;};
+ responses.push({status:404,ok:false,text:async()=>JSON.stringify({code:'NOT_FOUND'})});
+ assert.equal((await run('captureEventPrice("college-game")')).state,'scheduled');
+ responses.push({status:401,ok:false,text:async()=>JSON.stringify({code:'UNAUTHORIZED'})});
+ await assert.rejects(run('captureEventPrice("college-game")'),/Could not refresh prices/);
+});
