@@ -3,6 +3,7 @@
 import contextlib
 import concurrent.futures
 import json
+import http.client
 import os
 import re
 import urllib.error
@@ -127,7 +128,9 @@ def import_pages(pages,load,coverage,save,workers=4):
                     # An unavailable team page must not suppress the rest of
                     # the league. Do not retry it in this run. Blocking/admission
                     # failures still stop all subsequent provider work.
-                    isolated=isinstance(error,urllib.error.HTTPError) and error.code in (404,410,500,502,503,504)
+                    isolated=(isinstance(error,urllib.error.HTTPError) and error.code in (404,410,500,502,503,504)
+                              or isinstance(error,(http.client.IncompleteRead,http.client.RemoteDisconnected,TimeoutError,ConnectionError))
+                              or isinstance(error,urllib.error.URLError) and not isinstance(error,urllib.error.HTTPError))
                     if not isolated: failure=failure or error
             collect.write_state('college_basketball_coverage',coverage)
             print(f'Provider team pages completed: {min(offset+workers,len(pages))}/{len(pages)}',flush=True)
