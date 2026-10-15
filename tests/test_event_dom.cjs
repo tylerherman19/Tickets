@@ -32,3 +32,33 @@ test('event page renders comparable history and escaped seat details; quantity c
  assert.equal(historyRequest.body.p_qty,4);assert.equal(historyRequest.body.p_basis,'fees_included_tax_reported');
  dom.window.close();
 });
+
+test('college football quick filter loads college games, syncs its URL, and links the selected event',async()=>{
+ const dom=new JSDOM('<body data-page="explore"><main id="main"></main></body>',{url:'https://example.test/index.html',runScripts:'outside-only'});
+ const w=dom.window,requests=[];
+ w.mockGet=async path=>{
+  requests.push(path);
+  const category=new URL(path,'https://example.test').searchParams.get('category');
+  return category==='eq.college-football'?[{event_id:'college-game',name:'Badgers at Gophers',category:'college-football',event_date:'2026-11-28',city:'Minneapolis',state:'MN',venue:'Huntington Bank Stadium',min_total:null,price_checked_at:null}]:[];
+ };
+ w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;const IS_DEV=true,session=null;'+app);
+ await new Promise(r=>setImmediate(r));
+ const d=w.document,button=d.querySelector('[data-category="college-football"]');
+ assert.ok(button);assert.equal(button.textContent,'College football');
+ button.click();await new Promise(r=>setImmediate(r));
+ assert.equal(button.getAttribute('aria-pressed'),'true');
+ assert.equal(d.querySelector('[data-category="nfl-football"]').getAttribute('aria-pressed'),'false');
+ assert.equal(d.querySelector('#category').value,'college-football');
+ assert.equal(new URL(w.location.href).searchParams.get('category'),'college-football');
+ assert.equal(new URL(requests.at(-1),'https://example.test').searchParams.get('category'),'eq.college-football');
+ assert.equal(d.querySelector('.event-category').textContent,'College football');
+ assert.match(d.querySelector('.event-info h3 a').href,/event.html\?event=college-game$/);
+ assert.match(d.querySelector('.alert-button').href,/new.html\?event=college-game$/);
+ assert.equal(d.querySelector('.event-price').textContent,'Price not checked');
+ d.querySelector('#category').value='nfl-football';
+ d.querySelector('#category').dispatchEvent(new w.Event('change'));
+ await new Promise(r=>setImmediate(r));
+ assert.equal(button.getAttribute('aria-pressed'),'false');
+ assert.equal(new URL(requests.at(-1),'https://example.test').searchParams.get('category'),'eq.nfl-football');
+ dom.window.close();
+});
