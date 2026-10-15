@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 import os
 import re
+import urllib.error
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit
 import tickets_collect as collect
@@ -123,7 +124,11 @@ def import_pages(pages,load,coverage,save,workers=4):
                     code=team_code(url)
                     coverage.setdefault('errors',{})[code]={'at':datetime.now(timezone.utc).isoformat(),'kind':type(error).__name__,'status':getattr(error,'code',None)}
                     print(f'Provider team check failed: {code}; {type(error).__name__}; status={getattr(error,"code",None)}',flush=True)
-                    failure=failure or error
+                    # An unavailable team page must not suppress the rest of
+                    # the league. Do not retry it in this run. Blocking/admission
+                    # failures still stop all subsequent provider work.
+                    isolated=isinstance(error,urllib.error.HTTPError) and error.code in (404,410,500,502,503,504)
+                    if not isolated: failure=failure or error
             collect.write_state('college_basketball_coverage',coverage)
             print(f'Provider team pages completed: {min(offset+workers,len(pages))}/{len(pages)}',flush=True)
             if failure: raise failure

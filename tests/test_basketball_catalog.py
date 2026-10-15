@@ -94,10 +94,26 @@ class BasketballCatalogTests(unittest.TestCase):
         url='https://gametime.co/team/performers/cbbteam'
         state={'teams':{}}
         with patch.object(catalog.collect,'write_state'):
-            with self.assertRaises(urllib.error.HTTPError):
-                catalog.import_pages([url],lambda _:(_ for _ in ()).throw(urllib.error.HTTPError(url,502,'upstream',{},None)),state,lambda _:[],workers=1)
+            catalog.import_pages([url],lambda _:(_ for _ in ()).throw(urllib.error.HTTPError(url,502,'upstream',{},None)),state,lambda _:[],workers=1)
             self.assertEqual(state['errors']['cbbteam']['status'],502)
             self.assertNotIn('cbbteam',state['teams'])
             catalog.import_pages([url],lambda _:{},state,lambda _:[],workers=1)
             self.assertIn('cbbteam',state['teams'])
             self.assertNotIn('cbbteam',state['errors'])
+
+    def test_one_upstream_team_failure_does_not_hide_other_teams(self):
+        import urllib.error
+        pages=[f'https://gametime.co/team/performers/cbb{n}' for n in range(8)]
+        attempted=[]
+        def load(url):
+            attempted.append(url)
+            if url==pages[1]: raise urllib.error.HTTPError(url,502,'upstream',{},None)
+            return {}
+        state={'teams':{}}
+        with patch.object(catalog.collect,'write_state'):
+            catalog.import_pages(pages,load,state,lambda _:[],workers=4)
+        self.assertEqual(len(attempted),8)
+        self.assertEqual(attempted.count(pages[1]),1)
+        self.assertEqual(len(state['teams']),7)
+        self.assertNotIn('cbb1',state['teams'])
+        self.assertEqual(state['errors']['cbb1']['status'],502)
