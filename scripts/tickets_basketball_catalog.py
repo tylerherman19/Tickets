@@ -51,7 +51,7 @@ def team_pages(data):
         parts=urlsplit(url)
         if item.get('category')=='cbb' and parts.scheme=='https' and parts.netloc=='gametime.co' and re.fullmatch(r'/[^/]+/performers/cbb[a-z0-9]+',parts.path) and not parts.query and not parts.fragment:
             urls[parts.path.rsplit('/',1)[-1]]=url
-    # One bounded rotation per run; prioritize Syracuse on the initial import.
+    # Seed at most seven team pages, prioritizing Syracuse.
     ordered=sorted(urls)
     if 'cbbsyr' in ordered: ordered.remove('cbbsyr');ordered.insert(0,'cbbsyr')
     return [urls[key] for key in ordered[:7]]
