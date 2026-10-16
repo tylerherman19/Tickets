@@ -25,8 +25,13 @@ NOW = datetime.now(timezone.utc)
 FAST_WINDOW_DAYS = 7          # events this close get checked every run
 SLOW_CHECK_MINUTES = 60       # farther out: at most one check per hour
 MAX_EVENT_FETCHES = 60
-DISCOVERY_NEAR_FETCHES = 20
-DISCOVERY_LATER_FETCHES = 8
+# Background discovery shares the 5,000/day budget with team/artist page
+# sweeps, which price many events per request. Tracked (opened) events and
+# one-off requested checks are foreground and come first.
+DISCOVERY_NEAR_FETCHES = 12
+DISCOVERY_LATER_FETCHES = 4
+TRACKED_FETCHES = 40
+BACKGROUND_PAUSE_SECONDS = 2
 DISCOVERY_SEED_CITIES = (('Minneapolis','MN'),('Milwaukee','WI'))
 DISCOVERY_SEED_CATEGORIES = ('mlb-baseball','nfl-football','nba-basketball','nhl-hockey')
 CLUB_RE = re.compile(r"club", re.I)
@@ -70,6 +75,28 @@ def get_text(url, tries=1, timeout=25):
     if os.environ.get('GITHUB_ACTIONS') != 'true':
         raise RuntimeError('Provider requests are hosted-only')
     return GUARD.text(url,UA,min(timeout,25))
+
+# Team, artist and show pages list many events with a get-in price each. Paths
+# are harvested from pages already fetched; college basketball team pages are
+# imported separately with their category.
+PERFORMER_RE = re.compile(r'''(?:(?<=gametime\.co)|(?<=["'=\s(;>]))((?:/[a-z0-9-]{1,80}){1,2}/performers/[a-z0-9]{2,40})(?=["'?#&\\\s<]|$)''')
+PERFORMERS = set()
+
+def performer_paths(page, limit=100):
+    out = []
+    for path in PERFORMER_RE.findall(page.replace('\\/','/')):
+        if '/performers/cbb' not in path and path not in out:
+            out.append(path)
+            if len(out) >= limit: break
+    return out
+
+def note_performers():
+    paths = sorted(PERFORMERS)
+    PERFORMERS.clear()
+    added = 0
+    for i in range(0, len(paths), 200):
+        added += sb('POST','rpc/tix_note_performers',{'p_paths':paths[i:i+200]}) or 0
+    return added
 
 # ---------- gametime parsing ----------
 def _decode_astro(value):
@@ -294,6 +321,7 @@ def page_shape(page, meta, listings):
 def fetch_provider_page(url, discovery=False):
     """One admitted public-page request. Metadata-only is not empty inventory."""
     page = get_text(url)
+    PERFORMERS.update(performer_paths(page))
     meta,listings = parse_event_page(page)
     outcome = page_outcome(page,meta)
     if outcome != 'ok':
@@ -324,11 +352,15 @@ def rendered_quantity_listings(url, quantities):
             blocked = []
             def route_request(route):
                 request = route.request
+                host = urlsplit(request.url).hostname or ''
                 # No redirects, third-party trackers, images, fonts or media.
-                if request.redirected_from or urlsplit(request.url).hostname not in ('gametime.co','www.gametime.co') or request.resource_type in ('image','font','media'):
+                if request.redirected_from or not (host == 'gametime.co' or host.endswith('.gametime.co')) or request.resource_type in ('image','font','media'):
                     route.abort(); return
                 try:
-                    GUARD.admit()
+                    # The page budget counts page and data requests. Scripts and
+                    # styles are static assets needed to render the cards.
+                    if request.resource_type not in ('script','stylesheet'):
+                        GUARD.admit()
                     route.continue_()
                 except Exception as error:
                     blocked.append(error)
@@ -464,6 +496,15 @@ def parse_catalog_url(u):
 def _refresh_catalog():
     print("catalog: refreshing from sitemaps")
     rows = {}
+    # Sitemaps label college basketball as generic sports; keep the category
+    # verified by the provider's college basketball directory.
+    college_category_ids = set()
+    offset = 0
+    while True:
+        existing = sb('GET', 'tix_catalog?category=eq.college-basketball&select=event_id&order=event_id&limit=1000&offset='+str(offset))
+        college_category_ids.update(row['event_id'] for row in existing)
+        if len(existing) < 1000: break
+        offset += len(existing)
     for sm in SITEMAPS:
         try:
             xml = get_text(f"https://gametime.co/sitemap/{sm}.xml")
@@ -471,7 +512,10 @@ def _refresh_catalog():
             print(f"catalog: {sm} fetch failed: {e}"); continue
         for u in re.findall(r"<loc>(https://gametime\.co/[^<]+/events/[0-9a-f]{24})</loc>", xml):
             r = parse_catalog_url(u)
-            if r: rows[r["event_id"]] = r
+            if r:
+                if r['event_id'] in college_category_ids and r['category'] in ('sports','basketball'):
+                    r['category'] = 'college-basketball'
+                rows[r['event_id']] = r
         print(f"catalog: {sm} -> {len(rows)} cumulative")
     if not rows: raise RuntimeError("No catalog events could be fetched")
     today = NOW.date().isoformat()
@@ -720,9 +764,18 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
            'updated_at':checked_at}],prefer='resolution=merge-duplicates,return=minimal')
     return groups, len(changes)
 
+def note_deferral(health, error):
+    """Count guard deferrals; a provider-blocking pause is an error to surface."""
+    reasons = health.setdefault('deferred',{})
+    reasons[error.reason] = reasons.get(error.reason,0)+1
+    health['guard_deferred'] = health.get('guard_deferred',0)+1
+    if getattr(error,'state',None) == 'suspended':
+        health['provider_paused'] = error.reason
+        if error.reason != 'rollout_disabled': health['status'] = 'error'
+
 def discovery_due():
     out = []
-    tracked=sb('POST','rpc/tix_requested_discovery',{'p_limit':8})
+    tracked=sb('POST','rpc/tix_capture_due',{'p_limit':TRACKED_FETCHES})
     for row in tracked: row['_history_requested']=True
     out.extend(tracked)
     today = NOW.date().isoformat()
@@ -915,7 +968,7 @@ def main():
                              'reasons':sorted(reasons)})
             health["checked_events"] += 1
         except CaptureDeferred as e:
-            health['guard_deferred']=health.get('guard_deferred',0)+1
+            note_deferral(health,e)
         except Exception as e:
             health["failed_events"] += 1
             print(f"check {eid} failed: {type(e).__name__}: {e}", file=sys.stderr)
@@ -946,28 +999,31 @@ def main():
     for cat in discovery:
         eid = cat['event_id']
         if eid in events: continue
+        # Opened events and requested checks are foreground history checks;
+        # everything else is background coverage that yields to searches.
+        tracked = bool(cat.get('_history_requested'))
         checked_at = datetime.now(timezone.utc).isoformat()
-        capture_context=GUARD.capture(eid,'collector')
         try:
-            capture_context.__enter__()
-            provider_status,meta,listings = fetch_provider_page(cat['url'],discovery=True)
-            if provider_status == 'parser_failure':
-                raise ValueError('parser_failure: provider event/listing data missing')
-            if not meta or meta.get('event_id') != eid:
-                raise ValueError('event_unavailable: event ID changed or removed')
-            if provider_status=='metadata_only' and cat.get('_history_requested'):
-                richer=rendered_quantity_listings(cat['url'],{2})
-                if richer:
-                    listings=richer
-                    provider_status='partial' if any(l.get('verified_quantity') for l in richer) else 'ok'
-            _,change_count = record_event_market(cat,meta,listings,checked_at,provider_status)
+            with GUARD.capture(eid,'tracked' if tracked else 'discovery'):
+                provider_status,meta,listings = fetch_provider_page(cat['url'],discovery=True)
+                if provider_status == 'parser_failure':
+                    raise ValueError('parser_failure: provider event/listing data missing')
+                if not meta or meta.get('event_id') != eid:
+                    raise ValueError('event_unavailable: event ID changed or removed')
+                _,change_count = record_event_market(cat,meta,listings,checked_at,provider_status)
             health['event_changes'] = health.get('event_changes',0)+change_count
             health['discovery_checked'] += 1
+            if tracked: health['tracked_checked'] = health.get('tracked_checked',0)+1
+            # A get-in price without listings is the provider's normal public
+            # page today; it is counted, not treated as a degraded run.
             if provider_status == 'metadata_only':
                 health['discovery_metadata_only'] = health.get('discovery_metadata_only',0)+1
-                if health['status'] == 'ok': health['status'] = 'degraded'
-        except CaptureDeferred:
-            health['guard_deferred']=health.get('guard_deferred',0)+1
+        except CaptureDeferred as e:
+            note_deferral(health,e)
+            # Budget reached or provider paused: later events would only be
+            # refused too. Busy or cached events are simply skipped.
+            if e.state == 'suspended' or e.reason == 'request_limit': break
+            continue
         except Exception as e:
             outcome = ('parser_failure' if 'parser_failure' in str(e) else
                        'event_unavailable' if 'event_unavailable' in str(e) or
@@ -977,9 +1033,11 @@ def main():
             print(f'discovery {eid} failed: {outcome}: {type(e).__name__}',file=sys.stderr)
             sb('PATCH',f'tix_catalog?event_id=eq.{eid}',
                {'discovery_attempt_at':checked_at,'discovery_status':outcome})
-        finally:
-            capture_context.__exit__(None,None,None)
-        time.sleep(1)
+        time.sleep(1 if tracked else BACKGROUND_PAUSE_SECONDS)
+    try:
+        health['performers_added'] = note_performers()
+    except Exception as e:
+        print(f'performer links not saved: {type(e).__name__}',file=sys.stderr)
     if health.get('discovery_outcomes',{}).get('parser_failure',0) >= 3:
         health['status'] = 'error'
     elif health['discovery_failed'] and health['status'] == 'ok':

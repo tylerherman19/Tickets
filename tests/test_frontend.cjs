@@ -53,11 +53,15 @@ test('price discovery can fall back to real catalog events without claiming an u
  assert.match(fallback,/category=eq\.mlb-baseball/);
  assert.match(fallback,/order=event_date,event_id&limit=13&offset=0/);
 });
-test('searches refresh only three real stale event prices within the year',()=>{
- const now=new Date().toISOString(),future=new Date(Date.now()+35*86400000).toISOString().slice(0,10),past='2020-01-01';
- const rows=[{event_id:'a',event_date:future,price_checked_at:null},{event_id:'a',event_date:future,price_checked_at:null},{event_id:'b',event_date:future,price_checked_at:null},{event_id:'c',event_date:future,price_checked_at:null},{event_id:'d',event_date:future,price_checked_at:null},{event_id:'old',event_date:past,price_checked_at:null},{event_id:'fresh',event_date:future,price_checked_at:now}];
+test('searches price every visible stale or unpriced result within the year, once each',()=>{
+ const now=new Date().toISOString(),old=new Date(Date.now()-3600000).toISOString(),future=new Date(Date.now()+35*86400000).toISOString().slice(0,10),past='2020-01-01',far=new Date(Date.now()+400*86400000).toISOString().slice(0,10);
+ const rows=[{event_id:'a',event_date:future,price_checked_at:null},{event_id:'a',event_date:future,price_checked_at:null},{event_id:'b',event_date:future,min_total:900,price_checked_at:old},{event_id:'c',event_date:future,min_total:null,price_checked_at:now},{event_id:'old',event_date:past,price_checked_at:null},{event_id:'far',event_date:far,price_checked_at:null},{event_id:'fresh',event_date:future,min_total:1200,price_checked_at:now}];
+ for(let n=0;n<20;n++)rows.push({event_id:'x'+n,event_date:future,price_checked_at:null});
  sandbox.priceRows=rows;
- assert.deepEqual(Array.from(run('priceCheckCandidates(priceRows)')),['a','b','c']);
+ const ids=Array.from(run('priceCheckCandidates(priceRows)'));
+ assert.deepEqual(ids.slice(0,3),['a','b','c']);
+ assert.equal(ids.length,12);
+ assert.ok(!ids.includes('fresh')&&!ids.includes('old')&&!ids.includes('far'));
 });
 test('watch prices stay isolated even for the same event',()=>{run(`state.prices=[{watch_id:'other',event_id:'e',club:'Any section',price_cents:100,qty:2,checked_at:new Date().toISOString()},{watch_id:'mine',event_id:'e',club:'Any section',price_cents:200,qty:2,checked_at:new Date().toISOString(),basis:'fees_included_tax_unknown',criteria_version:1}];state.scans=[{watch_id:'mine',event_id:'e',outcome:'ok',criteria_version:1,checked_at:new Date().toISOString()}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,criteria_version:1,created_at:'2020-01-01'})[0].price_cents`),200);});
 test('an unavailable latest scan hides an older listing',()=>{run(`state.scans=[{watch_id:'mine',event_id:'e',outcome:'unavailable',checked_at:new Date().toISOString(),criteria_version:1}]`);assert.equal(run(`watchLatest({id:'mine',qty:2,criteria_version:1,created_at:'2020-01-01'}).length`),0);});
@@ -188,11 +192,29 @@ test('opaque vendor history is never interpreted and own-history comparisons sha
  assert.equal(run('priceProof([],proofCurrent)'),'No history available');
 });
 
+test('search summary reports fresh, queued, limited and failed prices honestly',()=>{
+ sandbox.summaryRows=[{state:'metadata_only'},{state:'cached'},{state:'queued'},{state:'failed'},{state:'scheduled'}];
+ assert.equal(run('searchPriceSummary(summaryRows)'),'2 live prices updated · 1 queued for the next scheduled check · 1 waiting on the request limit · 1 could not be checked (saved prices shown).');
+ assert.match(run("searchPriceSummary([{state:'suspended'},{state:'metadata_only'}])"),/paused/);
+ assert.match(run("searchPriceSummary([{state:'sign_in_required'}])"),/Sign in/);
+ assert.equal(run('searchPriceSummary([])'),'Showing saved prices.');
+});
+test('a search sends one batch without tracking; opening an event tracks it',async()=>{
+ const bodies=[];
+ sandbox.accessToken=async()=> 'user';sandbox.IS_DEV=false;sandbox.AbortSignal=AbortSignal;
+ sandbox.fetch=async(url,options)=>{bodies.push(JSON.parse(options.body));const ids=JSON.parse(options.body).event_ids;return {status:200,ok:true,text:async()=>JSON.stringify({results:ids.map(event_id=>({event_id,state:'metadata_only',min_total:1500}))})};};
+ const results=await run('captureEventPrices(["a","b"])');
+ assert.deepEqual(bodies[0],{event_ids:['a','b'],track:false});assert.equal(results.length,2);
+ assert.equal((await run('captureEventPrice("a")')).min_total,1500);
+ assert.deepEqual(bodies[1],{event_ids:['a'],track:true});
+ sandbox.fetch=async()=>({status:200,ok:true,text:async()=>JSON.stringify({results:[{event_id:'a',state:'failed'}]})});
+ await assert.rejects(run('captureEventPrice("a")'),/saved price is still available/);
+});
 test('missing Edge route falls back to deployed discovery queue without hiding real errors',async()=>{
  const responses=[];
  sandbox.accessToken=async()=> 'user';sandbox.IS_DEV=false;
  sandbox.AbortSignal=AbortSignal;sandbox.fetch=async()=>responses.shift();
- sandbox.sbPublicRpc=async(name,body)=>{assert.equal(name,'tix_request_price_check');assert.equal(body.p_event_id,'college-game');return true;};
+ sandbox.sbPublicRpc=async(name,body,options)=>{assert.equal(name,'tix_request_price_check');assert.equal(body.p_event_id,'college-game');assert.equal(options.token,'user');return true;};
  responses.push({status:404,ok:false,text:async()=>JSON.stringify({code:'NOT_FOUND'})});
  assert.equal((await run('captureEventPrice("college-game")')).state,'scheduled');
  responses.push({status:401,ok:false,text:async()=>JSON.stringify({code:'UNAUTHORIZED'})});

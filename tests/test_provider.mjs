@@ -21,3 +21,12 @@ test('Unsafe URLs and blocking signals fail closed',()=>{
  assert.deepEqual(blockingSignals(429,'OK'),['HTTP_429']);
  assert.deepEqual(blockingSignals(200,'<title>Access denied</title>'),['challenge_or_denial']);
 });
+test('Team and artist page links are harvested as safe provider paths only',async()=>{
+ const {performerPaths}=await import('../supabase/functions/_shared/provider.mjs');
+ const html='<a href="https://gametime.co/minnesota-vikings-tickets/performers/nflmin">V</a>'+
+  '<astro-island props="{&quot;u&quot;:&quot;https:\\/\\/gametime.co\\/nba-basketball\\/lakers-tickets\\/performers\\/nbalal&quot;}"></astro-island>'+
+  '<a href="/hamilton-tickets/performers/hamilton">H</a><a href="/syracuse-orange-tickets/performers/cbbsyr">S</a>'+
+  ' /a/b/c/performers/deep https://evil.test/x-tickets/performers/bad <a href="https://gametime.co/minnesota-vikings-tickets/performers/nflmin">dup</a>';
+ assert.deepEqual(performerPaths(html),['/minnesota-vikings-tickets/performers/nflmin','/nba-basketball/lakers-tickets/performers/nbalal','/hamilton-tickets/performers/hamilton']);
+ assert.equal(performerPaths(html,1).length,1);
+});

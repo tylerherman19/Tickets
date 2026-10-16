@@ -17,10 +17,16 @@ class ReleaseGateTests(unittest.TestCase):
         error=urllib.error.HTTPError('https://database.invalid',401,'auth',{},io.BytesIO(b'{"code":"bad_auth"}'))
         with patch.dict(os.environ,{'SUPABASE_URL':'https://database.invalid','SUPABASE_SERVICE_KEY':'fixture'}),patch('urllib.request.urlopen',side_effect=error):
             with self.assertRaisesRegex(RuntimeError,'HTTP 401'):gate.schema_ready()
-    def test_existing_disabled_guard_uses_current_collector(self):
+    def test_fast_search_schema_uses_current_collector(self):
+        for guard_enabled in (False,True):
+            response=io.BytesIO(json.dumps({'guard_enabled':guard_enabled,'schema':20261016}).encode())
+            with patch.dict(os.environ,{'SUPABASE_URL':'https://database.invalid','SUPABASE_SERVICE_KEY':'fixture'}),patch('urllib.request.urlopen',return_value=response):
+                self.assertTrue(gate.schema_ready())
+    def test_older_guarded_schema_keeps_existing_collector(self):
+        # 20261012 without 20261016 lacks the RPCs the current collector calls.
         response=io.BytesIO(json.dumps({'guard_enabled':False}).encode())
         with patch.dict(os.environ,{'SUPABASE_URL':'https://database.invalid','SUPABASE_SERVICE_KEY':'fixture'}),patch('urllib.request.urlopen',return_value=response):
-            self.assertTrue(gate.schema_ready())
+            self.assertFalse(gate.schema_ready())
     def test_local_preflight_cannot_use_service_credentials(self):
         with patch.dict(os.environ,{'GITHUB_ACTIONS':'false'}),patch.object(gate,'schema_ready') as ready:
             with self.assertRaises(RuntimeError):gate.main()

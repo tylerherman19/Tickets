@@ -1,0 +1,38 @@
+name: team and artist prices
+on:
+  schedule:
+    - cron: '25 * * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Team/artist pages to check this run (1-200)'
+        type: string
+        default: '60'
+# The database guard admits every provider request across all workflows and
+# the Edge function, so this sweep does not need the collector's queue. A
+# separate group also keeps it from cancelling a pending alert check.
+concurrency:
+  group: tickets-performers
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select the collector compatible with the deployed schema
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/tickets_release_gate.py
+      - name: Save get-in prices from team, artist and show pages
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TIX_PERFORMER_LIMIT: ${{ inputs.limit }}
+        run: python scripts/tickets_performers.py

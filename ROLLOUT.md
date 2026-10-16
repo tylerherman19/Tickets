@@ -1,4 +1,31 @@
-# Guarded price capture and history release
+# Fast search prices: deploy checklist (October 16)
+
+Production check on October 16: the guarded schema (`20261012`) and the `ticketline-prices` Edge function were never deployed, so every collector run used the pinned October 11 collector and searches could only queue a check for the next 15-minute run (events within 30 days only). This release turns the guarded path on at the owner-approved budget of **5,000 provider page requests per day** (40/minute, 420/hour) and makes a signed-in search price its results right away.
+
+Do the steps in this order. Each step is safe on its own; the collector and frontend fall back until the next step lands.
+
+1. **Merge this PR.** Pages publishes the frontend. Until the SQL lands, the collector keeps using the pinned collector and the search fallback uses the signed-in token (the `20261012` migration removes anonymous access to that fallback).
+2. **Apply the SQL** in the Supabase dashboard (SQL Editor), one file at a time: `scripts/20261012_guarded_history.sql`, then `scripts/20261016_fast_search.sql`. Both are idempotent and additive. The second one enables the guard at the 5,000/day budget with catalog refresh on, expiry left off.
+3. **Deploy the Edge function** from the repo root (it reads `supabase/config.toml` for `verify_jwt` and bundles `supabase/functions/_shared`):
+   ```sh
+   npx supabase login
+   npx supabase functions deploy ticketline-prices --project-ref aahqagqztanltejsqjom
+   ```
+   Deploy it after step 2: it calls RPCs that only exist once the SQL is applied.
+4. **Verify.**
+   - `select public.tix_event_capture_status('x');` returns `"schema": 20261016` and `"guard_enabled": true`.
+   - Signed in on the live site, search a team: rows show "Checking live price..." and fill in within a few seconds; the status line reads "N live prices updated."
+   - The next `tickets` run logs "Guarded schema available; using current collector." Run **team and artist prices** once by hand (Actions, Run workflow) and check its summary line.
+   - Budget use: `select count(*) filter (where at>now()-interval '1 hour') as last_hour, count(*) as last_day from public.tix_provider_http where at>now()-interval '1 day';`
+   - Health: `select k,v from public.tix_state where k in ('collector_health','performer_sweep');`
+
+**Budget.** Foreground work (signed-in searches, opened events, alerts, targeted sweeps) may use the whole budget. Background coverage (sitemaps, discovery, team/artist pages, college basketball) stops at `background_share` (75%) of every window, so a search always has headroom. Change limits with `update public.tix_provider_guard set day_limit=..., hour_limit=..., minute_limit=... where id;` (caps: 10,000/day, 1,000/hour, 60/minute).
+
+**Provider blocking.** A 403, 429 or challenge page pauses every check (search, collector, sweeps). Runs then fail with "Provider checks are paused", and the site says live checks are paused. Saved prices stay available. Resume only after reviewing why: `update public.tix_provider_guard set suspended_at=null,suspension_reason=null where id;`. Stop everything: `update public.tix_provider_guard set enabled=false where id;`.
+
+**Storage.** Team/artist page prices add at most one history point per event per 20 hours, only for events within 30 days or opened by someone. Opened events add a point on each check. Enable expiry after a backup so past events stop accumulating: `update public.tix_provider_guard set expiry_enabled=true where id;`.
+
+# Guarded price capture and history release (October 12)
 
 This PR is staged for review. It does not apply SQL, deploy Edge, change production secrets, enable capture/cleanup, send test alerts, or merge itself. The original request requires a separate merge go-ahead. The scheduled workflow checks schema readiness and uses the pinned pre-PR collector only when PostgREST explicitly reports the new status RPC missing; this preserves existing collection if backend deployment is unavailable at merge. Once the RPC exists, every collector run uses the shared guards. Auth/network errors never trigger the fallback. The temporary feasibility probe remains disabled.
 

@@ -13,6 +13,8 @@ import urllib.error
 import urllib.request
 
 PREVIOUS_COLLECTOR = 'c035c809ed8ab933cde61d8bc6305e5c8bb8181c'
+# The current collector, performer sweep and Edge search need this migration.
+REQUIRED_SCHEMA = 20261016
 
 def schema_ready():
     base=os.environ['SUPABASE_URL'].rstrip('/')
@@ -25,7 +27,8 @@ def schema_ready():
             result=json.load(response)
         if not isinstance(result,dict) or type(result.get('guard_enabled')) is not bool:
             raise RuntimeError('Unexpected capture schema response')
-        return True
+        # 20261012 alone predates the RPCs the current collector calls.
+        return type(result.get('schema')) is int and result['schema']>=REQUIRED_SCHEMA
     except urllib.error.HTTPError as error:
         try: code=json.load(error).get('code')
         except (ValueError,AttributeError): code=None

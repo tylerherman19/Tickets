@@ -46,6 +46,12 @@ def save_rows(rows):
         for offset in range(0,len(group),500):
             collect.sb('POST','tix_catalog?on_conflict=event_id',group[offset:offset+500],prefer='resolution=merge-duplicates,return=minimal')
 
+def record_history(rows):
+    # Guarded deployments also keep a bounded get-in history for these prices.
+    priced=[{'event_id':row['event_id'],'min_total':row['min_total']} for row in rows if 'min_total' in row]
+    for offset in range(0,len(priced),500):
+        collect.sb('POST','rpc/tix_apply_get_in_prices',{'p_rows':priced[offset:offset+500],'p_source':'catalog'})
+
 def catalog_rows(data):
     rows={}
     checked=datetime.now(timezone.utc)
@@ -149,6 +155,7 @@ def main():
     def save(data):
         rows=catalog_rows(data)
         save_rows(rows)
+        if guard: record_history(rows)
         seen.update(row['event_id'] for row in rows)
         priced.update(row['event_id'] for row in rows if 'min_total' in row)
         return rows
@@ -163,7 +170,9 @@ def main():
         if len(batch)!=1: raise ValueError('Requested college team is not in the provider directory')
     else:
         pending=[url for url in pages if team_code(url) not in coverage['teams']] if bootstrap else pages
-        batch=scheduled_pages(pending,coverage,len(pending) if bootstrap else 48)
+        # 32 team pages an hour revisits every team about twice a day within
+        # the shared background budget; other sports use the performer sweep.
+        batch=scheduled_pages(pending,coverage,len(pending) if bootstrap else 32)
     print(f'Gametime directory: {len(pages)} team pages; processing {len(batch)}; bootstrap={bootstrap}',flush=True)
     import_pages(batch,load,coverage,save,workers=1 if guard else 4)
     covered=sum(team_code(url) in coverage['teams'] for url in pages)
