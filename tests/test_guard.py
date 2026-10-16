@@ -1,10 +1,12 @@
 import contextlib
+import io
 import sys
 import os
 import unittest
+import urllib.error
 from unittest.mock import patch
 sys.path.insert(0,os.path.join(os.path.dirname(__file__),'..','scripts'))
-from ticketline_guard import Guard,CaptureDeferred
+from ticketline_guard import Guard,CaptureDeferred,moved_event_url
 import tickets_collect as collect
 
 class GuardTests(unittest.TestCase):
@@ -16,6 +18,8 @@ class GuardTests(unittest.TestCase):
             if name=='tix_claim_capture': return {'state':'checking','token':'lease'}
             if name=='tix_admit_provider_http': return {'allowed':self.admitted,'reason':'request_limit'}
             if name=='tix_finish_capture': return 'observation'
+            if name=='tix_note_redirect': return self.redirect_result(body)
+        self.redirect_result=lambda body:{'state':'queued','reason':'url_moved'} if body['p_location'] else {'state':'failed','reason':'redirected'}
         self.guard=Guard(rpc)
     def test_denied_admission_never_opens_socket_and_releases(self):
         self.admitted=False
@@ -39,6 +43,48 @@ class GuardTests(unittest.TestCase):
             handler=opener.call_args[0][0]
             self.assertIsNone(handler.redirect_request(None,None,None,None,None,None))
             self.assertEqual(opener.return_value.open.call_count,1)
+    def redirect(self, event_id, location, source='collector'):
+        url='https://gametime.co/nfl-football/bills-at-vikings-tickets/11-9-2026-minneapolis-mn-u-s-bank-stadium/events/'+str(event_id)
+        error=urllib.error.HTTPError(url,301,'Moved',{'Location':location} if location else {},io.BytesIO(b''))
+        with patch('urllib.request.build_opener') as opener:
+            opener.return_value.open.side_effect=error
+            with self.guard.capture(event_id,source):
+                self.guard.text(url,{})
+            self.assertEqual(opener.return_value.open.call_count,1)
+    def test_same_event_redirect_saves_link_and_defers_without_following(self):
+        with self.assertRaises(CaptureDeferred) as raised:
+            self.redirect('event','/nfl-football/bills-at-vikings-tickets/11-8-2026-minneapolis-mn-u-s-bank-stadium/events/event')
+        self.assertEqual((raised.exception.reason,raised.exception.state),('url_moved','queued'))
+        self.assertIn(('tix_note_redirect',{'p_token':'lease','p_location':'https://gametime.co/nfl-football/bills-at-vikings-tickets/11-8-2026-minneapolis-mn-u-s-bank-stadium/events/event'}),self.calls)
+        self.assertFalse(any(n=='tix_release_capture' for n,b in self.calls))
+    def test_redirect_elsewhere_backs_off_and_stays_a_failed_check(self):
+        for location in ['https://evil.test/events/event','/minnesota-vikings-tickets/performers/nflmin','/x/events/other',None]:
+            self.calls.clear()
+            with self.assertRaises(urllib.error.HTTPError):
+                self.redirect('event',location)
+            self.assertIn(('tix_note_redirect',{'p_token':'lease','p_location':None}),self.calls)
+            self.assertFalse(any(n=='tix_release_capture' for n,b in self.calls))
+    def test_redirect_before_database_step_fails_as_before(self):
+        def missing(body): raise urllib.error.HTTPError('https://database.test',404,'missing',{},io.BytesIO(b''))
+        self.redirect_result=missing
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.redirect('event','/x/events/event')
+        self.assertEqual(raised.exception.code,301)
+        self.assertEqual(self.calls[-1],('tix_release_capture',{'p_token':'lease','p_reason':'capture_failed'}))
+    def test_redirected_catalog_page_is_not_an_event_move(self):
+        with self.assertRaises(urllib.error.HTTPError):
+            self.redirect(None,'/nfl-football/minnesota-vikings-tickets/performers/nflmin','catalog')
+        self.assertFalse(any(n=='tix_note_redirect' for n,b in self.calls))
+    def test_moved_event_url_accepts_only_the_same_event_on_the_provider(self):
+        url='https://gametime.co/a-tickets/11-9-2026-x-mn-y/events/'+'a'*24
+        to='https://gametime.co/a-tickets/11-8-2026-x-mn-y/events/'+'a'*24
+        self.assertEqual(moved_event_url(to,url,'a'*24),to)
+        self.assertEqual(moved_event_url('/a-tickets/11-8-2026-x-mn-y/events/'+'a'*24,url,'a'*24),to)
+        for location in [None,'',url,'https://evil.test/events/'+'a'*24,'//evil.test/events/'+'a'*24,'http://gametime.co/events/'+'a'*24,
+                         'https://gametime.co:8443/events/'+'a'*24,'https://u@gametime.co/events/'+'a'*24,to+'?q=1',to+'#x',
+                         to.replace('a'*24,'b'*24),'https://gametime.co/x/../events/'+'a'*24]:
+            self.assertIsNone(moved_event_url(location,url,'a'*24),location)
+        self.assertIsNone(moved_event_url(to,url,None))
     def test_finish_releases_atomically_without_second_release(self):
         with self.guard.capture('event','detail'):
             self.assertEqual(self.guard.finish({'state':'complete'}),'observation')

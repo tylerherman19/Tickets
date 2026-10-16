@@ -4,7 +4,19 @@ import re
 import time
 import urllib.request
 import urllib.error
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
+
+# Same rule as the database: an absolute gametime.co link with plain path segments.
+SAFE_PROVIDER_URL = re.compile(r'https://gametime\.co(/[A-Za-z0-9._~%-]+)+')
+
+def moved_event_url(location, url, event_id):
+    """A redirect's target when it is the same event's page on the provider."""
+    if not location or not event_id: return None
+    target = urljoin(url, location.strip())
+    if (len(target) <= 500 and SAFE_PROVIDER_URL.fullmatch(target) and target != url
+            and not re.search(r'/\.\.?(/|$)', target) and target.endswith('/events/'+event_id)):
+        return target
+    return None
 
 class CaptureDeferred(RuntimeError):
     def __init__(self, reason, state='queued'):
@@ -93,7 +105,23 @@ class Guard:
                 return text
         except urllib.error.HTTPError as error:
             self.inspect(error.code,error.read().decode('utf-8','replace'))
+            if 300 <= error.code < 400:
+                self.redirected(url, error.headers.get('Location') if error.headers else None)
             raise
+
+    def redirected(self, url, location):
+        """Never followed. A move to the same event's page saves the new link for
+        the next check (deferred, not failed); anything else backs off and the
+        HTTP error stays a failed check."""
+        if not self.event_id: return
+        try:
+            result = self.rpc('tix_note_redirect', {'p_token':self.token,
+                              'p_location':moved_event_url(location, url, self.event_id)})
+        except Exception:
+            return  # Not deployed yet: the capture is released as failed, as before.
+        self.token = None
+        if isinstance(result, dict) and result.get('state') == 'queued':
+            raise CaptureDeferred(result.get('reason') or 'url_moved')
 
     def finish(self, capture):
         result = self.rpc('tix_finish_capture', {'p_token':self.token,'p_capture':capture})

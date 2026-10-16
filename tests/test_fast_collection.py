@@ -233,6 +233,15 @@ class PerformerSweepTests(unittest.TestCase):
                 else: performers.main()
             self.assertEqual(len(calls),2)
             self.assertEqual(state_write.call_args.args[1]['deferred'],reason)
+    def test_directories_are_providers_own_category_links(self):
+        # Gametime's menu links WNBA at /c/wnba and has no /c/ page for concerts.
+        self.assertIn('wnba',performers.DIRECTORIES)
+        for dead in ('wnba-basketball','concerts'): self.assertNotIn(dead,performers.DIRECTORIES)
+    def test_redirected_page_is_skipped_but_blocking_is_not(self):
+        for code in (301,302,307,308):
+            self.assertTrue(performers.isolated(urllib.error.HTTPError('https://gametime.co/x',code,'moved',{},None)))
+        for code in (403,429):
+            self.assertFalse(performers.isolated(urllib.error.HTTPError('https://gametime.co/x',code,'blocked',{},None)))
     def test_backoff_schedule(self):
         self.assertEqual(performers.next_check(5),timedelta(hours=18))
         self.assertEqual(performers.next_check(0),timedelta(days=7))

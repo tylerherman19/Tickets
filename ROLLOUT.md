@@ -1,3 +1,17 @@
+# Moved event links and category pages: deploy checklist (October 17)
+
+The first live run on October 16 found Gametime answering some saved event links with a redirect (4 of 12 Vikings results) and two dead category pages (`/c/concerts`, `/c/wnba-basketball`). Redirects are still never followed. A redirect to the same event's page on gametime.co now saves the new link, and the search's automatic retry prices the event with it. Any other redirect backs off (6 hours, doubling to 7 days) so searches and alert checks stop spending requests on it; a new link from the sitemap refresh clears the back-off. The budget, blocking pause and request limits are unchanged.
+
+Each step is safe on its own: until the SQL and the new Edge code are both live, a redirect fails exactly as before.
+
+1. **Merge this PR.** The collector and team/artist sweep pick up the change on their next run. The sweep now uses `/c/wnba` and no longer requests the concerts page.
+2. **Apply the SQL** in the SQL Editor: `scripts/20261017_moved_events.sql` (idempotent, additive).
+3. **Redeploy the Edge function** `ticketline-prices`, the same way as on October 16 (dashboard editor, one combined file: `supabase/functions/_shared/provider.mjs` with `export function` changed to `function`, then `supabase/functions/ticketline-prices/index.ts` without its provider import line, `// @ts-nocheck` on top). Leave the JWT setting as it is.
+4. **Verify.**
+   - `select count(*) from pg_proc where proname='tix_note_redirect';` returns 1.
+   - Signed in, search "Vikings": moved events show a price (or "Live check queued") instead of "Live check failed". Edge logs show one `ticketline_redirect` line per redirect, with where it pointed.
+   - `select event_id,reason,redirects,next_attempt_at from public.tix_capture_jobs where reason in ('url_moved','redirected');`
+
 # Fast search prices: deploy checklist (October 16)
 
 Production check on October 16: the guarded schema (`20261012`) and the `ticketline-prices` Edge function were never deployed, so every collector run used the pinned October 11 collector and searches could only queue a check for the next 15-minute run (events within 30 days only). This release turns the guarded path on at the owner-approved budget of **5,000 provider page requests per day** (40/minute, 420/hour) and makes a signed-in search price its results right away.

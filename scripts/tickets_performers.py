@@ -22,8 +22,10 @@ PAGE_LIMIT = 60
 # Category pages link to the teams, artists and shows in that category. They
 # are visited once a day; unavailable ones are recorded and skipped.
 # College basketball is imported by its own workflow with its category.
+# Slugs are the /c/ links in Gametime's own menu. The menu has no /c/ page for
+# concerts (it lists music by genre); artist pages are still found from event pages.
 DIRECTORIES = ('nfl-football','nba-basketball','nhl-hockey','mlb-baseball','college-football',
-               'mls-soccer','wnba-basketball','concerts','comedy','theater')
+               'mls-soccer','wnba','comedy','theater')
 DIRECTORY_INTERVAL = timedelta(hours=24)
 EVENT_ID = re.compile(r'[0-9a-f]{24}')
 
@@ -79,8 +81,9 @@ def next_check(priced, failures=0):
 
 
 def isolated(error):
-    """A missing or broken page must not stop the sweep; blocking always does."""
-    return (isinstance(error,urllib.error.HTTPError) and error.code in (404,410,500,502,503,504)
+    """A missing, moved or broken page must not stop the sweep; blocking always
+    does. Redirects are never followed, so a moved page backs off like a missing one."""
+    return (isinstance(error,urllib.error.HTTPError) and error.code in (301,302,303,307,308,404,410,500,502,503,504)
             or isinstance(error,(http.client.IncompleteRead,http.client.RemoteDisconnected,TimeoutError,ConnectionError))
             or isinstance(error,urllib.error.URLError) and not isinstance(error,urllib.error.HTTPError)
             or isinstance(error,ValueError))
