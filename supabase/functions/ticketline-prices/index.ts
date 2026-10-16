@@ -1,4 +1,4 @@
-import { captureFromPage, blockingSignals, validEventUrl } from '../_shared/provider.mjs';
+import { captureFromPage, blockingSignals, validEventUrl, performerPaths } from '../_shared/provider.mjs';
 
 declare const EdgeRuntime: {waitUntil(work:Promise<unknown>):void};
 const base = Deno.env.get('SUPABASE_URL')!;
@@ -6,6 +6,10 @@ const adminKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const publicKey = Deno.env.get('SUPABASE_ANON_KEY')!;
 const origins = new Set((Deno.env.get('TIX_ALLOWED_ORIGINS') || 'https://tylerherman19.github.io').split(','));
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36';
+// One search page shows 12 results. Four page requests at a time keeps a
+// search to a few seconds; the database guard still admits every request.
+const MAX_EVENTS = 12, CONCURRENCY = 4;
+type Result = Record<string, unknown> & {event_id:string,state:string};
 async function rpc(name: string, body: unknown, key = adminKey, authorization = `Bearer ${adminKey}`) {
   const response = await fetch(`${base}/rest/v1/rpc/${name}`, {method:'POST',redirect:'error',
     headers:{apikey:key,Authorization:authorization,'Content-Type':'application/json'},
@@ -13,11 +17,11 @@ async function rpc(name: string, body: unknown, key = adminKey, authorization = 
   if (!response.ok) throw new Error(`database_${response.status}`);
   return response.json();
 }
-async function catalog(id: string) {
-  const r = await fetch(`${base}/rest/v1/tix_events_v?event_id=eq.${id}&select=*&limit=1`,{
+async function catalog(ids: string[]) {
+  const r = await fetch(`${base}/rest/v1/tix_events_v?event_id=in.(${ids.join(',')})&select=event_id,url`,{
     headers:{apikey:adminKey,Authorization:`Bearer ${adminKey}`},redirect:'error',signal:AbortSignal.timeout(5000)});
   if (!r.ok) throw new Error('catalog_unavailable');
-  return (await r.json())[0];
+  return new Map<string,{url:string}>((await r.json()).map((row:{event_id:string,url:string}) => [row.event_id,row]));
 }
 // Dispatch contains only an event ID; this workflow never sends notifications.
 // A repo-scoped Actions-write token is an optional release secret. Scheduled
@@ -32,39 +36,20 @@ async function dispatchDetail(id: string) {
     body:JSON.stringify({ref:'main',inputs:{event_id:id}})});
   return r.ok?'dispatched':'scheduled';
 }
-export async function handleRequest(req:Request) {
-  const requestStarted=performance.now();
-  const origin = req.headers.get('origin') || '';
-  const cors: Record<string,string> = origins.has(origin)?{'Access-Control-Allow-Origin':origin,'Vary':'Origin',
-    'Access-Control-Allow-Headers':'authorization,apikey,content-type','Access-Control-Allow-Methods':'POST,OPTIONS'}:{};
-  const reply = (body: unknown,status=200) => Response.json(body,{status,headers:{...cors,'Cache-Control':'no-store'}});
-  if (origin && !origins.has(origin)) return reply({error:'origin_not_allowed'},403);
-  if (req.method==='OPTIONS') return new Response(null,{status:204,headers:cors});
-  if (req.method!=='POST') return reply({error:'POST_required'},405);
+// One admitted provider request per event, saved before it is reported.
+async function captureOne(id: string, event: {url:string}|undefined, performers: Set<string>): Promise<Result> {
   let lease: string|null=null;
+  // Events outside the public catalog view never take a lease or a request.
+  if (!event || !validEventUrl(event.url,id)) return {event_id:id,state:'failed',reason:'invalid_event'};
   try {
-    const authorization = req.headers.get('authorization') || '';
-    const user = await fetch(`${base}/auth/v1/user`,{headers:{apikey:publicKey,Authorization:authorization},
-      redirect:'error',signal:AbortSignal.timeout(5000)});
-    if (!user.ok || !(await user.json()).id) return reply({error:'sign_in_required'},401);
-    if (Number(req.headers.get('content-length') || 0)>1024) return reply({error:'request_too_large'},413);
-    const text=await req.text();if(text.length>1024)return reply({error:'request_too_large'},413);
-    const body=JSON.parse(text),id=body.event_id;
-    if (!/^[a-f0-9]{24}$/.test(id||'')) return reply({error:'invalid_event'},400);
-    const requested=await rpc('tix_request_capture',{p_event_id:id,p_details:true},publicKey,authorization);
-    if (['expired','beyond_horizon','failed'].includes(requested.state)||requested.reason==='queue_full') return reply(requested);
     const claim=await rpc('tix_claim_capture',{p_event_id:id,p_source:'edge'});
-    if (claim.state!=='checking') {
-      if(claim.state==='cached') EdgeRuntime.waitUntil(dispatchDetail(id).catch(()=>{}));
-      return reply({...claim,detail_worker:'scheduled'});
-    }
+    if (claim.state!=='checking') return {event_id:id,state:claim.state,reason:claim.reason,min_total:claim.min_total,
+      checked_at:claim.checked_at,next_attempt_at:claim.next_attempt_at,observation_id:claim.observation_id};
     lease=claim.token;
-    const event=await catalog(id);
-    if (!event || !validEventUrl(event.url,id)) throw new Error('invalid_catalog_url');
     const admission=await rpc('tix_admit_provider_http',{p_token:lease});
     if (!admission.allowed) {
       await rpc('tix_release_capture',{p_token:lease,p_reason:admission.reason});lease=null;
-      return reply({state:'queued',reason:admission.reason,next_attempt_at:admission.next_attempt_at});
+      return {event_id:id,state:'queued',reason:admission.reason,next_attempt_at:admission.next_attempt_at};
     }
     const start=performance.now();
     const response=await fetch(event.url,{redirect:'manual',signal:AbortSignal.timeout(15000),headers:{'User-Agent':UA}});
@@ -75,19 +60,70 @@ export async function handleRequest(req:Request) {
     }
     if (!response.ok) throw new Error(response.status>=300&&response.status<400?'redirect_not_followed':`provider_http_${response.status}`);
     const capture=captureFromPage(page,id);
+    for (const path of performerPaths(page)) performers.add(path);
     const fetch_parse_ms=Math.round(performance.now()-start);
     const observation_id=await rpc('tix_finish_capture',{p_token:lease,p_capture:capture});lease=null;
-    // Rich browser collection may take a minute or longer once a runner starts.
-    // It never holds up the fast price response and its actual state is polled.
-    let detail_worker='not_needed';
-    if (capture.state==='metadata_only'||capture.state==='partial') {
-      EdgeRuntime.waitUntil(dispatchDetail(id).catch(()=>{}));detail_worker='queued';
-    }
-    return reply({state:capture.state,event_id:id,min_total:capture.min_total,observation_id,
-      checked_at:new Date().toISOString(),listing_count:capture.listings.length,detail_worker,
-      fetch_parse_ms,total_ms:Math.round(performance.now()-requestStarted)});
+    return {event_id:id,state:capture.state,min_total:capture.min_total,observation_id,
+      checked_at:new Date().toISOString(),listing_count:capture.listings.length,fetch_parse_ms};
   } catch(error) {
-    if(lease)await rpc('tix_release_capture',{p_token:lease,p_reason:String(error).includes('provider_suspended')?'provider_suspended':'capture_failed'}).catch(()=>{});
+    const suspended=String(error).includes('provider_suspended');
+    if(lease)await rpc('tix_release_capture',{p_token:lease,p_reason:suspended?'provider_suspended':'capture_failed'}).catch(()=>{});
+    console.error('ticketline_capture_failed',String(error).replace(/Bearer\s+\S+/g,'<redacted>'));
+    return {event_id:id,state:suspended?'suspended':'failed',reason:suspended?'provider_suspended':'capture_failed'};
+  }
+}
+export async function handleRequest(req:Request) {
+  const requestStarted=performance.now();
+  const origin = req.headers.get('origin') || '';
+  const cors: Record<string,string> = origins.has(origin)?{'Access-Control-Allow-Origin':origin,'Vary':'Origin',
+    'Access-Control-Allow-Headers':'authorization,apikey,content-type','Access-Control-Allow-Methods':'POST,OPTIONS'}:{};
+  const reply = (body: unknown,status=200) => Response.json(body,{status,headers:{...cors,'Cache-Control':'no-store'}});
+  if (origin && !origins.has(origin)) return reply({error:'origin_not_allowed'},403);
+  if (req.method==='OPTIONS') return new Response(null,{status:204,headers:cors});
+  if (req.method!=='POST') return reply({error:'POST_required'},405);
+  try {
+    const authorization = req.headers.get('authorization') || '';
+    const user = await fetch(`${base}/auth/v1/user`,{headers:{apikey:publicKey,Authorization:authorization},
+      redirect:'error',signal:AbortSignal.timeout(5000)});
+    if (!user.ok || !(await user.json()).id) return reply({error:'sign_in_required'},401);
+    if (Number(req.headers.get('content-length') || 0)>2048) return reply({error:'request_too_large'},413);
+    const text=await req.text();if(text.length>2048)return reply({error:'request_too_large'},413);
+    const body=JSON.parse(text);
+    // {event_id} is the original single-event request; it also tracks the event.
+    const single=typeof body.event_id==='string'&&body.event_ids===undefined;
+    const ids:unknown[]=single?[body.event_id]:Array.isArray(body.event_ids)?[...new Set(body.event_ids)]:[];
+    if (!ids.length||ids.length>MAX_EVENTS||ids.some(id=>typeof id!=='string'||!/^[a-f0-9]{24}$/.test(id))) return reply({error:'invalid_event'},400);
+    const eventIds=ids as string[];
+    const track=(single||body.track===true)&&eventIds.length===1;
+    if (track) {
+      // Tracking is the signed-in owner's own choice; it never blocks the price check.
+      const requested=await rpc('tix_request_capture',{p_event_id:eventIds[0],p_details:false},publicKey,authorization).catch(()=>null);
+      if (requested&&['expired','beyond_horizon'].includes(requested.state)) return reply(single?requested:{results:[{event_id:eventIds[0],...requested}]});
+    }
+    const events=await catalog(eventIds);
+    const performers=new Set<string>(),results:Result[]=new Array(eventIds.length);
+    let next=0,stopped=false;
+    await Promise.all(Array.from({length:Math.min(CONCURRENCY,eventIds.length)},async()=>{
+      for(let i;(i=next++)<eventIds.length;){
+        // Provider blocking suspends everything; do not send further requests.
+        results[i]=stopped?{event_id:eventIds[i],state:'suspended',reason:'provider_suspended'}:await captureOne(eventIds[i],events.get(eventIds[i]),performers);
+        if(results[i].state==='suspended')stopped=true;
+      }
+    }));
+    if (performers.size) EdgeRuntime.waitUntil(rpc('tix_note_performers',{p_paths:[...performers].slice(0,200)}).catch(()=>{}));
+    let detail_worker='not_needed';
+    if (track&&['metadata_only','partial','cached'].includes(results[0].state)) {
+      // Rich browser collection may take a minute or longer once a runner starts.
+      EdgeRuntime.waitUntil(dispatchDetail(eventIds[0]).catch(()=>{}));
+      detail_worker=results[0].state==='cached'?'scheduled':'queued';
+    }
+    const total_ms=Math.round(performance.now()-requestStarted);
+    if (!single) return reply({results,tracked:track,total_ms});
+    const result=results[0];
+    if (result.state==='failed') return reply({state:'failed',reason:'capture_failed'},503);
+    if (result.state==='suspended') return reply({state:'failed',reason:'capture_failed'},503);
+    return reply({...result,detail_worker,total_ms});
+  } catch(error) {
     console.error('ticketline_capture_failed',String(error).replace(/Bearer\s+\S+/g,'<redacted>'));
     return reply({state:'failed',reason:'capture_failed'},503);
   }

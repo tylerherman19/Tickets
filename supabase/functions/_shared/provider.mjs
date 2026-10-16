@@ -114,3 +114,14 @@ export function captureFromPage(page, id) {
         meta: { ...p.event, event_id: p.event.id }, min_total: cents(p.event.minPrice?.total, true) ?? (prices.length ? Math.min(...prices) : null),
         listings, coverage, by_qty, groups: Object.values(groups).sort((a, b) => a.cheapest - b.cheapest) };
 }
+// Team, artist and show page paths linked from a provider page. One of these
+// pages lists many events with their get-in price. College basketball team
+// pages are imported separately (with their category), so they are skipped.
+export function performerPaths(page, limit = 100) {
+    const out = new Set(), text = String(page).replace(/\\\//g, '/');
+    for (const m of text.matchAll(/(?:(?<=gametime\.co)|(?<=["'=\s(;>]))((?:\/[a-z0-9-]{1,80}){1,2}\/performers\/[a-z0-9]{2,40})(?=["'?#&\\\s<]|$)/g)) {
+        if (!/\/performers\/cbb/.test(m[1])) out.add(m[1]);
+        if (out.size >= limit) break;
+    }
+    return [...out];
+}

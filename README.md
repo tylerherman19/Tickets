@@ -153,3 +153,14 @@ College basketball directory imports now save positive integer-cent get-in price
 Run the college basketball catalog workflow with `bootstrap=true` to reconcile the initial directory in one hosted run. It records completion per provider team ID and only declares bootstrap completion after all current directory entries were checked. Legacy deployments fetch at most four independent pages at once; guarded deployments serialize through shared admission. A failed page stops subsequent work while preserving successful data and coverage, and missing price fields preserve previous prices.
 
 Individual upstream 404/410/5xx team-page failures are recorded and skipped for the rest of that run so one broken source cannot suppress other teams. They are not marked as successful coverage. Provider blocking or shared admission failures still stop further requests. A bootstrap with unresolved teams remains incomplete and can resume from the verified checkpoints.
+
+
+## October 16: prices on search, tracking and coverage
+
+Deploy steps, budget controls and the blocking runbook are in [ROLLOUT.md](ROLLOUT.md). This supersedes the earlier per-run discovery counts and the three-check search limit above.
+
+- **Search.** A signed-in search prices every visible result without a price from the last 15 minutes (up to 12) in one Edge call, four page requests at a time. Rows fill in as results return. A result held by the per-minute limit is retried once automatically. Search results are not tracked. Signed-out visitors see saved prices only.
+- **Tracking.** Opening an event while signed in prices it immediately and tracks it. Tracked events are re-checked every 15 minutes within 2 days of the event, hourly to 14 days, every 3 hours to 60 days, then every 12 hours. Each check is saved to the event's price history. The 200 most recently opened events per person stay tracked; older ones roll off. Alerts keep their own cadence.
+- **Coverage.** The hourly **team and artist prices** workflow reads team, artist and show pages, each of which lists many events with a get-in price, and saves those prices on existing catalog events. Pages are found from links on pages already fetched and from category pages once a day; unavailable pages back off. College basketball keeps its own importer (32 team pages an hour).
+- **Budget.** 5,000 provider page requests a day, shared by everything through the database guard. Background work stops at 75% of each window, so searches, opened events and alerts always have headroom. A short per-minute wait is retried; hourly or daily limits defer work to the next run.
+- **Health.** A get-in-only public page is the provider's normal format now and no longer marks the collector degraded. A provider-blocking pause marks it as an error.

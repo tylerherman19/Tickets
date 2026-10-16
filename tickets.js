@@ -131,31 +131,54 @@ async function sbGet(path, {signal}={}) {
  if(!r.ok) throw new Error(r.status===401||r.status===403 ? 'Your session could not access this data. Please reload and try again.' : 'Could not load ticket data. Check your connection and try again.');
  return (await readJson(r)) ?? [];
 }
-async function sbPublicRpc(name,body,{signal}={}) {
+async function sbPublicRpc(name,body,{signal,token}={}) {
  if(IS_DEV) return false;
- const r=await fetchWithRetry(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:H,body:JSON.stringify(body)},{signal,timeout:10000,tries:2});
+ const r=await fetchWithRetry(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:token?{...H,Authorization:'Bearer '+token}:H,body:JSON.stringify(body)},{signal,timeout:10000,tries:2});
  if(!r.ok) throw new Error('Could not request a price check.');
  return readJson(r);
 }
-// One request only: a timed-out capture may already have committed history.
-async function captureEventPrice(eventId,{signal}={}) {
- if(IS_DEV)return {state:'suspended',reason:'preview'};
- const token=await accessToken();if(!token)return {state:'sign_in_required'};
- const r=await fetch(SB_URL+'/functions/v1/ticketline-prices',{method:'POST',headers:{...H,Authorization:'Bearer '+token},body:JSON.stringify({event_id:eventId}),signal:signal||AbortSignal.timeout(25000)});
+// One request per call: a timed-out capture may already have committed history.
+// A search prices up to 12 events in one call without tracking them; opening
+// an event (track) also keeps its price history going.
+async function captureEventPrices(eventIds,{signal,track=false}={}) {
+ if(IS_DEV)return eventIds.map(event_id=>({event_id,state:'suspended',reason:'preview'}));
+ const token=await accessToken();if(!token)return eventIds.map(event_id=>({event_id,state:'sign_in_required'}));
+ const r=await fetch(SB_URL+'/functions/v1/ticketline-prices',{method:'POST',headers:{...H,Authorization:'Bearer '+token},body:JSON.stringify({event_ids:eventIds,track}),signal:signal?withTimeout(45000,signal):AbortSignal.timeout(45000)});
  const result=await readJson(r);
  // Older deployments have the discovery queue but no Edge capture route.
  // Fall back only for the explicit missing-route response, never auth or provider errors.
  if(r.status===404&&result?.code==='NOT_FOUND'){
-   const queued=await sbPublicRpc('tix_request_price_check',{p_event_id:eventId},{signal});
-   return {state:queued?'scheduled':'saved_only'};
+   const out=[];
+   for(const event_id of eventIds.slice(0,3)){const queued=await sbPublicRpc('tix_request_price_check',{p_event_id:event_id},{signal,token});out.push({event_id,state:queued?'scheduled':'saved_only'});}
+   return out;
  }
  if(!r.ok)throw new Error(result?.reason==='capture_failed'?'Price check failed. The saved price is still available.':'Could not refresh prices.');
+ return Array.isArray(result?.results)?result.results:[];
+}
+async function captureEventPrice(eventId,{signal}={}) {
+ const [result]=await captureEventPrices([eventId],{signal,track:true});
+ if(!result)throw new Error('Could not refresh prices.');
+ if(result.state==='failed')throw new Error('Price check failed. The saved price is still available.');
  return result;
 }
 function captureStateText(result) {
  if(result.guard_enabled===false||result.reason==='rollout_disabled')return 'Live refresh is paused during rollout. Saved prices remain available.';
  if(result.suspended||result.state==='suspended')return 'Live checks are paused. Saved prices remain available.';
- return {scheduled:'Price check requested for the scheduled collector. Refresh this page after the next sweep.',saved_only:'No new check was queued. A request may already be pending, or the event may be outside the older 30-day queue. Available saved prices are shown below.',sign_in_required:'Sign in to refresh prices and save history. Saving history does not enable alerts.',cached:'Using a recent saved price.',queued:'Check queued. Seat details may take a minute or longer, subject to request limits.',checking:'Checking prices. Seat details will follow when available.',metadata_only:'Get-in price saved. Seat details are queued; exact quantities are not confirmed yet.',complete:'Prices and seat details saved.',partial:'Available seat details saved. Coverage is partial.',empty:'The provider returned an empty listing set.',failed:'The check failed. The last saved price is still available.',expired:'This event has passed.',beyond_horizon:'Live checks cover events up to one year ahead.',not_checked:'No price check has completed yet.'}[result.state]||'Waiting for the next check.';
+ if(result.state==='queued'&&result.reason==='request_limit')return 'Live checks are at their request limit. This price will refresh automatically shortly.';
+ return {scheduled:'Price check requested for the scheduled collector. Refresh this page after the next sweep.',saved_only:'No new check was queued. A request may already be pending. Available saved prices are shown below.',sign_in_required:'Sign in to refresh prices and save history. Saving history does not enable alerts.',cached:'Price checked in the last 15 minutes.',queued:'Check queued. It will run shortly, subject to request limits.',checking:'Checking prices…',metadata_only:'Get-in price saved just now. Exact quantities are not confirmed.',complete:'Prices and seat details saved.',partial:'Available seat details saved. Coverage is partial.',empty:'The provider returned an empty listing set.',failed:'The check failed. The last saved price is still available.',expired:'This event has passed.',beyond_horizon:'Live checks cover events up to one year ahead.',not_checked:'No price check has completed yet.'}[result.state]||'Waiting for the next check.';
+}
+// One line for a whole search: how many prices are fresh and what is left.
+function searchPriceSummary(results) {
+ const count=states=>results.filter(r=>states.includes(r.state)).length;
+ if(results.some(r=>r.state==='suspended'))return captureStateText({state:'suspended'});
+ if(results.length&&results.every(r=>r.state==='sign_in_required'))return captureStateText({state:'sign_in_required'});
+ const fresh=count(['metadata_only','complete','partial','empty','cached']),scheduled=count(['scheduled']),waiting=count(['queued']),failed=count(['failed']);
+ const parts=[];
+ if(fresh)parts.push(`${fresh} live ${fresh===1?'price':'prices'} updated`);
+ if(scheduled)parts.push(`${scheduled} queued for the next scheduled check`);
+ if(waiting)parts.push(`${waiting} waiting on the request limit`);
+ if(failed)parts.push(`${failed} could not be checked (saved prices shown)`);
+ return parts.length?parts.join(' · ')+'.':'Showing saved prices.';
 }
 async function sbWrite(method,path,body,prefer='return=representation') {
  if(IS_DEV) throw new Error('Local preview is read-only. Sign in on the live site to save an alert.');

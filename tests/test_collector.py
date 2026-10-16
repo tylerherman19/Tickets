@@ -208,8 +208,8 @@ class CollectorTests(unittest.TestCase):
         with patch.object(c,'sb',return_value=[]) as db:
             c.discovery_due()
         self.assertEqual(db.call_count,9)
-        self.assertEqual(db.call_args_list[0].args[1],'rpc/tix_requested_discovery')
-        self.assertEqual(db.call_args_list[0].args[2],{'p_limit':8})
+        self.assertEqual(db.call_args_list[0].args[1],'rpc/tix_capture_due')
+        self.assertEqual(db.call_args_list[0].args[2],{'p_limit':c.TRACKED_FETCHES})
         self.assertIn('city=eq.Minneapolis',db.call_args_list[1].args[1])
         self.assertIn('city=eq.Milwaukee',db.call_args_list[2].args[1])
         self.assertIn('category=eq.mlb-baseball',db.call_args_list[3].args[1])

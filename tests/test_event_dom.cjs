@@ -92,3 +92,85 @@ test('college basketball quick filter loads college games, syncs its URL, and li
  assert.equal(new URL(requests.at(-1),'https://example.test').searchParams.get('category'),'eq.nfl-football');
  dom.window.close();
 });
+
+function explorePage(rows,{session=null,capture}={}){
+ const dom=new JSDOM('<body data-page="explore"><main id="main"></main></body>',{url:'https://example.test/index.html?q=vikings&category=all',runScripts:'outside-only'});
+ const w=dom.window;w.mockGet=async()=>rows.map(r=>({...r}));w.mockCapture=capture;w.session=session;
+ w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;captureEventPrices=window.mockCapture;const IS_DEV=false,session=window.session;'+app);
+ return w;
+}
+const soon=new Date(Date.now()+5*86400000).toISOString().slice(0,10);
+const searchRows=[
+ {event_id:'fresh',name:'Packers at Vikings',category:'nfl-football',event_date:soon,city:'Minneapolis',state:'MN',venue:'Stadium',min_total:9900,price_checked_at:new Date().toISOString(),discovery_status:'metadata_only'},
+ {event_id:'unpriced',name:'Bears at Vikings',category:'nfl-football',event_date:soon,city:'Minneapolis',state:'MN',venue:'Stadium',min_total:null,price_checked_at:null},
+ {event_id:'limited',name:'Lions at Vikings',category:'nfl-football',event_date:soon,city:'Minneapolis',state:'MN',venue:'Stadium',min_total:7000,price_checked_at:new Date(Date.now()-86400000).toISOString(),discovery_status:'metadata_only'}];
+test('a signed-in search prices its results right away and retries a rate-limited one once',async()=>{
+ const calls=[];
+ const w=explorePage(searchRows,{session:{user:{}},capture:async ids=>{
+  calls.push([...ids]);
+  if(calls.length===1)return [{event_id:'unpriced',state:'metadata_only',min_total:4500,checked_at:new Date().toISOString()},{event_id:'limited',state:'queued',reason:'request_limit',next_attempt_at:new Date(Date.now()+20).toISOString()}];
+  return [{event_id:'limited',state:'metadata_only',min_total:6100,checked_at:new Date().toISOString()}];
+ }});
+ await new Promise(r=>setTimeout(r,250));
+ const d=w.document,cell=id=>d.getElementById('price-'+id).textContent;
+ // Nothing is checked during the short grace period after a search renders.
+ assert.equal(calls.length,0);
+ assert.match(cell('unpriced'),/Price not checked/);
+ await new Promise(r=>setTimeout(r,300));
+ assert.deepEqual(calls[0],['unpriced','limited']);
+ assert.match(cell('unpriced'),/\$45.*Get-in only just now/);
+ assert.match(cell('limited'),/Checking live price/);
+ assert.match(cell('fresh'),/\$99/);
+ await new Promise(r=>setTimeout(r,1300));
+ assert.deepEqual(calls[1],['limited']);
+ assert.match(cell('limited'),/\$61.*just now/);
+ assert.doesNotMatch(cell('limited'),/Checking|queued/);
+ assert.equal(d.querySelector('#price-request-status').textContent,'2 live prices updated.');
+ w.close();
+});
+test('signed-out searches show saved prices and never start a live check',async()=>{
+ let called=false;
+ const w=explorePage(searchRows,{capture:async()=>{called=true;return [];}});
+ await new Promise(r=>setTimeout(r,550));
+ assert.equal(called,false);
+ assert.match(w.document.querySelector('#price-request-status').textContent,/Sign in to load live prices/);
+ assert.match(w.document.getElementById('price-unpriced').textContent,/Price not checked/);
+ w.close();
+});
+test('rows left unanswered by a fallback queue settle back to their saved price',async()=>{
+ const w=explorePage(searchRows,{session:{user:{}},capture:async ids=>[{event_id:ids[0],state:'scheduled'}]});
+ await new Promise(r=>setTimeout(r,550));
+ const d=w.document;
+ assert.match(d.getElementById('price-unpriced').textContent,/Live check queued/);
+ assert.match(d.getElementById('price-limited').textContent,/\$70/);
+ assert.doesNotMatch(d.getElementById('price-limited').textContent,/Checking/);
+ assert.match(d.querySelector('#price-request-status').textContent,/1 queued for the next scheduled check/);
+ w.close();
+});
+test('opening an event while signed in prices it now and says it is tracked',async()=>{
+ const dom=new JSDOM('<main id="main"></main>',{url:'http://localhost/event.html?event=fixture',runScripts:'outside-only'});
+ const w=dom.window,captured=[];
+ const prelude=`const main=document.querySelector('#main'),query=new URLSearchParams(location.search),session={user:{}};const IS_DEV=false;
+ ${app.slice(app.indexOf('function layout('),app.indexOf('function stadiumArt'))}`;
+ w.mockGet=async path=> path.includes('tix_events_v')?[{event_id:'fixture',name:'Fixture event',venue:'Arena',event_date:'2026-11-15',min_total:1200,price_checked_at:new Date(Date.now()-86400000).toISOString(),url:'https://gametime.co/events/fixture'}]:[];
+ w.mockRpc=async()=>[];
+ w.mockCapture=async id=>{captured.push(id);return {event_id:id,state:'metadata_only',min_total:1350,detail_worker:'not_needed'};};
+ w.downloadICS=()=>{};w.googleCalendarUrl=()=> 'https://calendar.google.com/';
+ w.eval(fs.readFileSync('tickets.js','utf8')+prelude+';sbGet=window.mockGet;sbPublicRpc=window.mockRpc;captureEventPrice=window.mockCapture;'+eventCode+';eventDetail()');
+ await new Promise(r=>setTimeout(r,30));
+ const d=w.document;
+ assert.deepEqual(captured,['fixture']);
+ assert.equal(d.querySelector('.detail-prices strong').textContent,'$13.50');
+ assert.match(d.querySelector('.detail-prices > div > span').textContent,/Checked just now · get-in only/);
+ assert.match(d.querySelector('#capture-status').textContent,/tracked/);
+ dom.window.close();
+});
+test('a search replaced during the grace period never starts live checks',async()=>{
+ const calls=[];
+ const w=explorePage(searchRows,{session:{user:{}},capture:async ids=>{calls.push(ids);return [];}});
+ await new Promise(r=>setTimeout(r,100));
+ const d=w.document;d.querySelector('#category').value='nba-basketball';d.querySelector('#category').dispatchEvent(new w.Event('change'));
+ await new Promise(r=>setTimeout(r,650));
+ assert.equal(calls.length,1,'only the latest search is checked');
+ w.close();
+});

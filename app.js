@@ -52,31 +52,65 @@ function catalogQuery(limit=13,includeUnpriced=state.catalogFallback){
  if(state.place){const p=clean(state.place);q+=p.length===2?'&state=eq.'+encodeURIComponent(p.toUpperCase()):'&city=ilike.'+encodeURIComponent('*'+p+'*');}
  return q;
 }
-function priceCheckCandidates(rows){const horizon=todayISO(new Date(Date.now()+365*86400000));return [...new Set(rows.filter(e=>e.event_date>=todayISO()&&e.event_date<=horizon&&(!e.price_checked_at||ageMinutes(e.price_checked_at)>15)).map(e=>e.event_id))].slice(0,3);}
+// Every visible upcoming result without a price from the last 15 minutes.
+function priceCheckCandidates(rows){const horizon=todayISO(new Date(Date.now()+365*86400000));return [...new Set(rows.filter(e=>e.event_date>=todayISO()&&e.event_date<=horizon&&(!e.min_total||!e.price_checked_at||ageMinutes(e.price_checked_at)>15)).map(e=>e.event_id))].slice(0,12);}
+function eventPriceCell(e,note=''){
+ const label={checking:'Checking live price…',queued:'Live check queued',failed:'Live check failed'}[note]||'';
+ if(e.min_total)return `<strong>${money(e.min_total)}</strong><small>${ageMinutes(e.price_checked_at)>15?'Stale · ':''}${e.discovery_status==='metadata_only'?'Get-in only':'Checked'} ${ago(e.price_checked_at).toLowerCase()}</small>${label?`<small class="price-note">${label}</small>`:''}`;
+ if(label)return `<span>${label}</span>`;
+ return e.price_checked_at?'<span>Price unavailable at last check</span>':'<span>Price not checked</span>';
+}
+// Fold one live result into the shown row; a failed check keeps the saved price.
+function applyPriceResult(result,final=true){
+ const e=state.events.find(x=>x.event_id===result.event_id),el=document.getElementById('price-'+result.event_id);
+ if(!e)return;
+ if(Number.isInteger(result.min_total)&&result.min_total>0&&['metadata_only','complete','partial','cached'].includes(result.state)){
+  e.min_total=result.min_total;e.price_checked_at=result.checked_at||new Date().toISOString();
+  // Only a listing set confirms more than the provider's get-in price.
+  e.discovery_status=['complete','partial'].includes(result.state)?'ok':'metadata_only';
+ } else if(result.state==='empty'){e.min_total=null;e.price_checked_at=result.checked_at||new Date().toISOString();}
+ const note=result.state==='failed'?'failed':result.state==='queued'||result.state==='scheduled'?(final?'queued':'checking'):'';
+ if(el)el.innerHTML=eventPriceCell(e,note);
+}
+// Results the visitor clicks straight past are not checked: live checks start
+// after a short pause, and a newer search cancels them.
+const PRICE_CHECK_GRACE_MS=400;
 async function queuePriceChecks(rows,ctrl){
  const status=$('#price-request-status');if(IS_DEV||!status)return;
- status.hidden=false;
- if(!session){status.textContent=captureStateText({state:'sign_in_required'});return;}
- // Tracking all displayed events is a database-only write, separate from
- // the three bounded fast requests. Never create a notification watch.
- const tracked=rows.filter(e=>e.event_date>=todayISO()&&e.event_date<=todayISO(new Date(Date.now()+365*86400000)));
- await Promise.allSettled(tracked.map(e=>sbRpc('tix_request_capture',{p_event_id:e.event_id,p_details:true})));
  const ids=priceCheckCandidates(rows);
- for(const id of ids){
-  if(ctrl!==state.controller||ctrl.signal.aborted)return;
-  status.textContent=captureStateText({state:'checking'});
-  try{
-   const result=await captureEventPrice(id,{signal:ctrl.signal});
-   if(ctrl!==state.controller)return;
-   status.textContent=captureStateText(result);
-   if(result.min_total){
-    const el=document.getElementById('price-'+id);
-    if(el)el.innerHTML=`<strong>${money(result.min_total)}</strong><small>${result.state==='metadata_only'?'Get-in only':'Checked'} just now</small>`;
+ if(!ids.length){status.hidden=true;return;}
+ status.hidden=false;
+ if(!session){status.textContent='Sign in to load live prices for these results. Saved prices are shown.';return;}
+ await new Promise(resolve=>setTimeout(resolve,PRICE_CHECK_GRACE_MS));
+ if(ctrl!==state.controller||ctrl.signal.aborted)return;
+ for(const id of ids){const e=state.events.find(x=>x.event_id===id),el=document.getElementById('price-'+id);if(e&&el)el.innerHTML=eventPriceCell(e,'checking');}
+ status.textContent=`Checking live prices for ${ids.length} ${ids.length===1?'event':'events'}…`;
+ const latest=new Map();
+ // Any row without an answer (replaced search, fallback limit) shows its saved price again.
+ const settle=()=>{for(const id of ids){const r=latest.get(id);if(!r)applyPriceResult({event_id:id,state:'unchanged'});else if(r.state==='queued')applyPriceResult(r,true);}};
+ try{
+  let pending=ids;
+  for(let round=0;round<2&&pending.length;round++){
+   if(round){
+    // Wait for the request window (at most about a minute), then retry once.
+    const waitMs=Math.min(65000,Math.max(...pending.map(id=>new Date(latest.get(id)?.next_attempt_at||Date.now()).getTime()-Date.now()),1000));
+    status.textContent=searchPriceSummary([...latest.values()])+` Retrying ${pending.length} shortly…`;
+    await new Promise((resolve,reject)=>{const t=setTimeout(resolve,waitMs);ctrl.signal.addEventListener('abort',()=>{clearTimeout(t);reject(new DOMException('Aborted','AbortError'));},{once:true});});
+    if(ctrl.signal.aborted)throw new DOMException('Aborted','AbortError');
    }
-  }catch(e){if(e.name==='AbortError')return;status.textContent=e.message;}
+   const results=await captureEventPrices(pending,{signal:ctrl.signal});
+   pending=results.filter(r=>r.state==='queued'&&r.next_attempt_at&&new Date(r.next_attempt_at).getTime()-Date.now()<70000).map(r=>r.event_id);
+   const last=round===1||!pending.length;
+   for(const r of results){latest.set(r.event_id,r);applyPriceResult(r,last||!pending.includes(r.event_id));}
+   if(ctrl!==state.controller){settle();return;}
+  }
+  settle();
+  status.textContent=searchPriceSummary([...latest.values()]);
+ }catch(e){
+  if(e.name==='AbortError'||ctrl!==state.controller){settle();return;}
+  for(const id of ids)if(!latest.has(id))applyPriceResult({event_id:id,state:'failed'});
+  status.textContent=e.message;
  }
- if(!tracked.length){status.textContent=captureStateText({state:'beyond_horizon'});return;}
- if(!ids.length)status.textContent='Showing recently saved prices. Alerts are a separate choice.';
 }
 async function loadEvents(append=false){
  state.controller?.abort();const ctrl=state.controller=new AbortController();const box=$('#events');if(!append){box.innerHTML=loadingRows();const status=$('#price-request-status');if(status){status.hidden=true;status.textContent='';}}
@@ -92,7 +126,7 @@ async function loadEvents(append=false){
   if(!append)box.innerHTML='';
   if(!state.events.length){const heading=state.date?`No ${state.category?esc(leagueName(state.category))+' ':''}events listed for ${esc(whenShort(state.date))}.`:state.date>todayISO(new Date(Date.now()+365*86400000))?'Live checks cover events up to one year ahead.':'No upcoming events match these filters.';box.innerHTML=`<div class="empty-state">${icon('search')}<h3>${heading}</h3><p>${state.date?'Try another date or see upcoming events.':'Try another category, city, or date.'}</p>${state.date?'<button class="button secondary" id="empty-upcoming">Show upcoming events</button>':''}<button class="button secondary" id="empty-reset">Clear filters</button></div>`;}
   if(state.catalogFallback&&!append)box.innerHTML=`<div class="notice subtle" role="status"><strong>No recently checked prices match these filters.</strong><p>Showing real upcoming events. An event without a price has not been confirmed cheap${Number(state.maxPrice)>0?' or under your budget':''}.</p></div>`+box.innerHTML;
-  rows.forEach(e=>{const el=document.createElement('article');el.className='event-row';el.innerHTML=`${dateBadge(e.event_date)}<div class="event-info"><span class="event-category">${esc(leagueName(e.category))}</span><h3><a href="./event.html?event=${encodeURIComponent(e.event_id)}">${esc(cap(e.name))}</a></h3><p>${esc(e.venue||cap(e.venue_slug))}<span class="event-place">${esc(e.city)}, ${esc(e.state)}</span></p>${marketLinks(e.name)}</div><div class="event-price" id="price-${esc(e.event_id)}">${e.min_total?`<strong>${money(e.min_total)}</strong><small>${ageMinutes(e.price_checked_at)>15?'Stale · ':''}${e.discovery_status==='metadata_only'?'Get-in only':'Checked'} ${ago(e.price_checked_at).toLowerCase()}</small>`:e.price_checked_at?'<span>Price unavailable at last check</span>':'<span>Price not checked</span>'}</div><a class="button alert-button" href="./new.html?event=${encodeURIComponent(e.event_id)}">${icon('bell')}<span>Set alert</span><span class="sr-only"> for ${esc(cap(e.name))}</span></a>`;box.appendChild(el);});
+  rows.forEach(e=>{const el=document.createElement('article');el.className='event-row';el.innerHTML=`${dateBadge(e.event_date)}<div class="event-info"><span class="event-category">${esc(leagueName(e.category))}</span><h3><a href="./event.html?event=${encodeURIComponent(e.event_id)}">${esc(cap(e.name))}</a></h3><p>${esc(e.venue||cap(e.venue_slug))}<span class="event-place">${esc(e.city)}, ${esc(e.state)}</span></p>${marketLinks(e.name)}</div><div class="event-price" id="price-${esc(e.event_id)}">${eventPriceCell(e)}</div><a class="button alert-button" href="./new.html?event=${encodeURIComponent(e.event_id)}">${icon('bell')}<span>Set alert</span><span class="sr-only"> for ${esc(cap(e.name))}</span></a>`;box.appendChild(el);});
   $('#results-count').textContent=state.events.length?`${state.events.length}${moreAvailable?'+':''} upcoming events${state.place?' in '+state.place:''}${state.catalogFallback?' · prices pending':''}`:state.date?'No events on this date':'No upcoming matches';
   if(more){more.hidden=!moreAvailable;more.disabled=false;more.textContent='Show more events';}
   if($('#empty-reset'))$('#empty-reset').onclick=()=>$('#clear-filters').click();
@@ -257,7 +291,7 @@ function teamPriceSummary(rows,now=Date.now()){
  return {total:rows.length,count:prices.length,low:prices.length?Math.min(...prices):null,
    average:prices.length?Math.round(prices.reduce((sum,p)=>sum+p,0)/prices.length):null};
 }
-async function loadTeamPriceReference(){
+async function loadTeamPriceReference(refreshed=false){
  const box=$('#price-reference');if(!box||state.kind!=='team'||!state.selected?.team)return;
  const selected=state.selected,token=state.priceReferenceToken=(state.priceReferenceToken||0)+1;
  box.innerHTML='<div class="reference-price team-market" role="status">Checking recent game prices…</div>';
@@ -266,7 +300,13 @@ async function loadTeamPriceReference(){
   if(token!==state.priceReferenceToken||state.selected!==selected||!box.isConnected||state.step!==2)return;
   const prices=teamPriceSummary(rows),games=state.homeAway==='any'?'home and away':state.homeAway;
   box.innerHTML=`<div class="reference-price team-market"><div class="team-market-heading"><strong>Current get-in prices</strong><span>Next 30 days · ${esc(games)} games</span></div>${prices.count?`<div class="team-market-values"><div><span>Lowest</span><strong>${money(prices.low)}</strong></div><div><span>Average</span><strong>${money(prices.average)}</strong></div></div>`:'<p>No recent get-in prices for these games yet.</p>'}<p>${prices.count} of ${prices.total} upcoming ${prices.total===1?'game':'games'} checked recently. Provider get-in per ticket; tax, exact quantity and section are unconfirmed.</p></div>`;
-  if(!IS_DEV&&prices.count<prices.total)Promise.allSettled(priceCheckCandidates(rows).map(id=>sbRpc('tix_request_capture',{p_event_id:id,p_details:true})));
+  // Price the unchecked games now (no tracking), then redraw once with them.
+  if(!IS_DEV&&!refreshed&&prices.count<prices.total){
+   const ids=priceCheckCandidates(rows);
+   if(ids.length)captureEventPrices(ids).then(results=>{
+    if(results.some(r=>Number.isInteger(r.min_total))&&token===state.priceReferenceToken&&state.selected===selected&&box.isConnected)loadTeamPriceReference(true);
+   }).catch(()=>{});
+  }
  }catch{
   if(token===state.priceReferenceToken&&box.isConnected)box.innerHTML='<div class="reference-price team-market" role="status">Recent team prices could not load. Your alert settings are still available.</div>';
  }
@@ -396,7 +436,7 @@ async function eventDetail(){
      $('#detail-quantity').innerHTML=quantities.map(n=>`<p>${esc(marketQuantityText(venue,n,event.discovery_status==='metadata_only'))}</p>`).join('');
    };
    layout(esc(event.name),`${esc(event.venue||cap(event.venue_slug)||'Venue to be confirmed')} · ${esc([event.city,event.state].filter(Boolean).join(', '))}`,
-     `<div class="event-detail"><section class="settings-panel"><p class="event-date-line">${esc(whenShort(event.event_date))}${event.datetime_local?' · '+esc(event.datetime_local.slice(11,16))+' venue local time':''}</p>${changes.length?`<div class="notice error" role="status"><strong>Event details changed</strong><p>${changes.map(c=>`${esc(c.field.replace('_',' '))}: ${esc(c.old_value||'unknown')} → ${esc(c.new_value||'unknown')}`).join('<br>')}</p></div>`:''}<div class="detail-prices"><div><small>Get-in price</small><strong>${event.min_total?money(event.min_total):'—'}</strong><span>${event.price_checked_at?`${stale?'Last recorded':'Checked'} ${ago(event.price_checked_at)}`:'Not checked yet'}</span></div><div><label class="field-label" for="detail-qty">Tickets together</label><select id="detail-qty">${Array.from({length:8},(_,i)=>`<option value="${i+1}" ${(watches[0]?.qty||2)===i+1?'selected':''}>${i+1}</option>`).join('')}</select>${lotFilterMarkup('detail-lot-filter')}<div id="detail-quantity"></div></div></div>${venue?`<p class="field-help">${event.discovery_status==='metadata_only'?'Provider get-in price checked; seller lot details were unavailable.':`${venue.listing_count} marketplace listings checked ${ago(venue.checked_at)}.`} Prices and availability can change at checkout.</p>`:''}<div class="detail-actions"><a class="button primary" href="./new.html?event=${encodeURIComponent(id)}">${icon('bell')} Create alert</a>${gametime?`<a class="button secondary" href="${esc(gametime)}" target="_blank" rel="noopener">View Gametime</a>`:''}</div>${marketLinks(event.name)}<div class="detail-actions"><button id="refresh-history" class="button secondary">Refresh and save history</button></div><p id="capture-status" role="status"></p></section><aside class="settings-panel"><h2>Seat areas</h2>${groups.length?`<ul class="seat-breakdown">${groups.map(g=>`<li><span>${esc(g.group)}</span><strong>${money(g.cheapest)}</strong><small>${g.listings} listings</small></li>`).join('')}</ul>`:'<p>No section breakdown has been recorded yet.</p>'}<h2>Your alerts</h2>${watches.length?`<ul>${watches.map(w=>`<li><a href="./new.html?edit=${encodeURIComponent(w.id)}">${esc(w.label)} · ${money(w.threshold_cents)} target</a></li>`).join('')}</ul>`:'<p>Sign in and create an alert to track this event.</p>'}<h2>Add to calendar</h2><p>Calendar entries use the event date; confirm the local start time with the venue.</p><div class="detail-actions"><button class="button secondary" id="download-ics">Apple / ICS</button><a class="button secondary" id="google-calendar" target="_blank" rel="noopener">Google Calendar</a></div></aside></div><section class="settings-panel"><h2>Price history</h2><label for="history-basis">Compare the same price basis</label><select id="history-basis"><option value="getin">Get-in price · quantity and tax unconfirmed</option><option value="fees_included_tax_reported">Selected quantity · tax reported</option><option value="fees_included_tax_unknown">Selected quantity · tax unknown</option></select><div id="event-history"></div><h2>Recorded listings</h2><p>Exact seller lot sizes and seat details when supplied. DOM-only results may have no seat numbers.</p><div id="event-listings"></div><button class="button secondary" id="more-listings" hidden>More listings</button></section>`);
+     `<div class="event-detail"><section class="settings-panel"><p class="event-date-line">${esc(whenShort(event.event_date))}${event.datetime_local?' · '+esc(event.datetime_local.slice(11,16))+' venue local time':''}</p>${changes.length?`<div class="notice error" role="status"><strong>Event details changed</strong><p>${changes.map(c=>`${esc(c.field.replace('_',' '))}: ${esc(c.old_value||'unknown')} → ${esc(c.new_value||'unknown')}`).join('<br>')}</p></div>`:''}<div class="detail-prices"><div><small>Get-in price</small><strong>${event.min_total?money(event.min_total):'—'}</strong><span>${event.price_checked_at?`${stale?'Last recorded':'Checked'} ${ago(event.price_checked_at)}`:'Not checked yet'}</span></div><div><label class="field-label" for="detail-qty">Tickets together</label><select id="detail-qty">${Array.from({length:8},(_,i)=>`<option value="${i+1}" ${(watches[0]?.qty||2)===i+1?'selected':''}>${i+1}</option>`).join('')}</select>${lotFilterMarkup('detail-lot-filter')}<div id="detail-quantity"></div></div></div>${venue?`<p class="field-help">${event.discovery_status==='metadata_only'?'Provider get-in price checked; seller lot details were unavailable.':`${venue.listing_count} marketplace listings checked ${ago(venue.checked_at)}.`} Prices and availability can change at checkout.</p>`:''}<div class="detail-actions"><a class="button primary" href="./new.html?event=${encodeURIComponent(id)}">${icon('bell')} Create alert</a>${gametime?`<a class="button secondary" href="${esc(gametime)}" target="_blank" rel="noopener">View Gametime</a>`:''}</div>${marketLinks(event.name)}<div class="detail-actions"><button id="refresh-history" class="button secondary">Refresh price now</button></div><p id="capture-status" role="status"></p></section><aside class="settings-panel"><h2>Seat areas</h2>${groups.length?`<ul class="seat-breakdown">${groups.map(g=>`<li><span>${esc(g.group)}</span><strong>${money(g.cheapest)}</strong><small>${g.listings} listings</small></li>`).join('')}</ul>`:'<p>No section breakdown has been recorded yet.</p>'}<h2>Your alerts</h2>${watches.length?`<ul>${watches.map(w=>`<li><a href="./new.html?edit=${encodeURIComponent(w.id)}">${esc(w.label)} · ${money(w.threshold_cents)} target</a></li>`).join('')}</ul>`:'<p>Sign in and create an alert to track this event.</p>'}<h2>Add to calendar</h2><p>Calendar entries use the event date; confirm the local start time with the venue.</p><div class="detail-actions"><button class="button secondary" id="download-ics">Apple / ICS</button><a class="button secondary" id="google-calendar" target="_blank" rel="noopener">Google Calendar</a></div></aside></div><section class="settings-panel"><h2>Price history</h2><label for="history-basis">Compare the same price basis</label><select id="history-basis"><option value="getin">Get-in price · quantity and tax unconfirmed</option><option value="fees_included_tax_reported">Selected quantity · tax reported</option><option value="fees_included_tax_unknown">Selected quantity · tax unknown</option></select><div id="event-history"></div><h2>Recorded listings</h2><p>Exact seller lot sizes and seat details when supplied. DOM-only results may have no seat numbers.</p><div id="event-listings"></div><button class="button secondary" id="more-listings" hidden>More listings</button></section>`);
    let listingOffset=0,recordedLoad=0;
    const loadRecorded=async(append=false)=>{
     const loadId=++recordedLoad;
@@ -415,13 +455,25 @@ async function eventDetail(){
    };
    $('#history-basis').onchange=()=>loadRecorded();
    $('#more-listings').onclick=()=>{listingOffset+=50;loadRecorded(true);};
-   $('#refresh-history').onclick=async()=>{
+   // Opening an event while signed in prices it now and tracks it, so its
+   // price keeps being re-checked and saved to history.
+   const refresh=async()=>{
     const button=$('#refresh-history');button.disabled=true;$('#capture-status').textContent=captureStateText({state:'checking'});
-    try{const result=await captureEventPrice(id);$('#capture-status').textContent=captureStateText(result);await loadRecorded();
-     if(result.min_total){const price=$('.detail-prices strong');price.textContent=money(result.min_total);$('.detail-prices > div > span').textContent='Saved just now'+(result.state==='metadata_only'?' · get-in only':'');}
+    try{
+     let result=await captureEventPrice(id);
+     if(result.state==='queued'&&result.next_attempt_at&&new Date(result.next_attempt_at).getTime()-Date.now()<70000){
+      $('#capture-status').textContent=captureStateText(result);
+      await new Promise(resolve=>setTimeout(resolve,Math.max(1000,new Date(result.next_attempt_at).getTime()-Date.now())));
+      if(!button.isConnected)return;
+      result=await captureEventPrice(id);
+     }
+     $('#capture-status').textContent=captureStateText(result)+(['scheduled','saved_only'].includes(result.state)?'':' This event is tracked: its price is re-checked automatically and saved to history.');
+     await loadRecorded();
+     if(result.min_total){const price=$('.detail-prices strong');price.textContent=money(result.min_total);$('.detail-prices > div > span').textContent=(result.state==='cached'&&result.checked_at?'Checked '+ago(result.checked_at):'Checked just now')+(result.state==='metadata_only'?' · get-in only':'');}
      if(['complete','empty'].includes(result.state)){await eventDetail();return;}
-     // Poll database state only; polling never starts another provider fetch.
-     for(let i=0;i<12&&['queued','checking','metadata_only','partial'].includes(result.state);i++){
+     // Poll database state only while a check or detail worker is pending;
+     // polling never starts another provider fetch.
+     for(let i=0;i<12&&(['queued','checking'].includes(result.state)||result.detail_worker==='queued');i++){
       await new Promise(resolve=>setTimeout(resolve,5000));if(!button.isConnected)break;
       const status=await sbPublicRpc('tix_event_capture_status',{p_event_id:id});$('#capture-status').textContent=captureStateText(status);
       if(['complete','empty'].includes(status.state)){await eventDetail();break;}
@@ -429,8 +481,10 @@ async function eventDetail(){
      }
     }catch(e){$('#capture-status').textContent=e.message;}finally{button.disabled=false;}
    };
+   $('#refresh-history').onclick=refresh;
    loadRecorded();
-   sbPublicRpc('tix_event_capture_status',{p_event_id:id}).then(s=>{if(s&&$('#capture-status'))$('#capture-status').textContent=captureStateText(s);}).catch(()=>{});
+   if(session&&!IS_DEV)refresh();
+   else sbPublicRpc('tix_event_capture_status',{p_event_id:id}).then(s=>{if(s&&$('#capture-status'))$('#capture-status').textContent=session?captureStateText(s):'Sign in to load the live price and keep this event\'s price history.';}).catch(()=>{});
    $('#detail-qty').onchange=()=>{$('#detail-lot-filter').value='any';renderQty();loadRecorded();};$('#detail-lot-filter').onchange=e=>{if(e.target.value!=='any')$('#detail-qty').value=e.target.value;renderQty();loadRecorded();};renderQty();
    $('#download-ics').onclick=()=>downloadICS(event,alertLink);
    $('#google-calendar').href=googleCalendarUrl(event,alertLink);
