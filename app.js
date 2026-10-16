@@ -48,9 +48,24 @@ function catalogQuery(limit=13,includeUnpriced=state.catalogFallback){
  if(priceOnly){q+='&min_total=not.is.null&price_checked_at=gte.'+encodeURIComponent(new Date(now.getTime()-72*3600000).toISOString());}
  // Strip PostgREST filter syntax, then quote each server-side search pattern.
  const clean=s=>s.replace(/[%*(),"\\]/g,' ').trim();
- if(state.search){const term=clean(state.search);if(term)q+='&or='+encodeURIComponent(`(name.ilike."*${term}*",slug.ilike."*${term.replace(/\s+/g,'-')}*")`);}
- if(state.place){const p=clean(state.place);q+=p.length===2?'&state=eq.'+encodeURIComponent(p.toUpperCase()):'&city=ilike.'+encodeURIComponent('*'+p+'*');}
+ // A full state name in the search box also finds events held in that state.
+ if(state.search){const term=clean(state.search),st=stateCode(term,false);if(term)q+='&or='+encodeURIComponent(`(name.ilike."*${term}*",slug.ilike."*${term.replace(/\s+/g,'-')}*"${st?',state.eq.'+st:''})`);}
+ if(state.place)q+=placeFilter(state.place);
  return q;
+}
+const US_STATES={alabama:'AL',alaska:'AK',arizona:'AZ',arkansas:'AR',california:'CA',colorado:'CO',connecticut:'CT',delaware:'DE','district of columbia':'DC','washington dc':'DC',florida:'FL',georgia:'GA',hawaii:'HI',idaho:'ID',illinois:'IL',indiana:'IN',iowa:'IA',kansas:'KS',kentucky:'KY',louisiana:'LA',maine:'ME',maryland:'MD',massachusetts:'MA',michigan:'MI',minnesota:'MN',mississippi:'MS',missouri:'MO',montana:'MT',nebraska:'NE',nevada:'NV','new hampshire':'NH','new jersey':'NJ','new mexico':'NM','new york':'NY','north carolina':'NC','north dakota':'ND',ohio:'OH',oklahoma:'OK',oregon:'OR',pennsylvania:'PA','rhode island':'RI','south carolina':'SC','south dakota':'SD',tennessee:'TN',texas:'TX',utah:'UT',vermont:'VT',virginia:'VA',washington:'WA','west virginia':'WV',wisconsin:'WI',wyoming:'WY'};
+// "Wisconsin" or "WI" -> "WI". Two-letter codes only when allowCode, so a
+// search like "LA" or "IN" stays a name search.
+function stateCode(s,allowCode=true){const t=String(s||'').replace(/\./g,'').replace(/\s+/g,' ').trim().toLowerCase();if(US_STATES[t])return US_STATES[t];const u=t.toUpperCase();return allowCode&&Object.values(US_STATES).includes(u)?u:'';}
+// The city/state box: "WI", "Wisconsin", "Madison", "Madison, WI" or "Green Bay Wisconsin".
+function placeFilter(raw){
+ const words=raw.replace(/[%*(),"\\]/g,' ').replace(/\s+/g,' ').trim();
+ if(!words)return '';
+ if(words.length===2)return '&state=eq.'+encodeURIComponent(words.toUpperCase());
+ const whole=stateCode(words);if(whole)return '&state=eq.'+whole;
+ const parts=words.split(' ');
+ for(let k=Math.min(3,parts.length-1);k>=1;k--){const st=stateCode(parts.slice(-k).join(' '));if(st)return '&state=eq.'+st+'&city=ilike.'+encodeURIComponent('*'+parts.slice(0,-k).join(' ')+'*');}
+ return '&city=ilike.'+encodeURIComponent('*'+words+'*');
 }
 // Every visible upcoming result without a price from the last 15 minutes.
 function priceCheckCandidates(rows){const horizon=todayISO(new Date(Date.now()+365*86400000));return [...new Set(rows.filter(e=>e.event_date>=todayISO()&&e.event_date<=horizon&&(!e.min_total||!e.price_checked_at||ageMinutes(e.price_checked_at)>15)).map(e=>e.event_id))].slice(0,12);}
@@ -124,13 +139,15 @@ async function loadEvents(append=false){
   }
   const moreAvailable=rows.length>12;rows.length=Math.min(rows.length,12);state.events=append?[...state.events,...rows]:rows;
   if(!append)box.innerHTML='';
-  if(!state.events.length){const heading=state.date?`No ${state.category?esc(leagueName(state.category))+' ':''}events listed for ${esc(whenShort(state.date))}.`:state.date>todayISO(new Date(Date.now()+365*86400000))?'Live checks cover events up to one year ahead.':'No upcoming events match these filters.';box.innerHTML=`<div class="empty-state">${icon('search')}<h3>${heading}</h3><p>${state.date?'Try another date or see upcoming events.':'Try another category, city, or date.'}</p>${state.date?'<button class="button secondary" id="empty-upcoming">Show upcoming events</button>':''}<button class="button secondary" id="empty-reset">Clear filters</button></div>`;}
+  // A short range (the cheap view starts at 7 days) is the usual reason for no results; say so.
+  if(!state.events.length){const days=!state.date&&(state.within||state.cheapOnly)&&state.within!=='all'?Number(state.within||7):0;const heading=state.date?`No ${state.category?esc(leagueName(state.category))+' ':''}events listed for ${esc(whenShort(state.date))}.`:days?`Nothing in the next ${days} days matches.`:'No upcoming events match these filters.';box.innerHTML=`<div class="empty-state">${icon('search')}<h3>${heading}</h3><p>${state.date?'Try another date or see upcoming events.':days?`Only the next ${days} days are searched right now.`:'Try another category, city, or date.'}</p>${state.date?'<button class="button secondary" id="empty-upcoming">Show upcoming events</button>':''}${days?'<button class="button secondary" id="empty-year">Search the next year</button>':''}<button class="button secondary" id="empty-reset">Clear filters</button></div>`;}
   if(state.catalogFallback&&!append)box.innerHTML=`<div class="notice subtle" role="status"><strong>No recently checked prices match these filters.</strong><p>Showing real upcoming events. An event without a price has not been confirmed cheap${Number(state.maxPrice)>0?' or under your budget':''}.</p></div>`+box.innerHTML;
   rows.forEach(e=>{const el=document.createElement('article');el.className='event-row';el.innerHTML=`${dateBadge(e.event_date)}<div class="event-info"><span class="event-category">${esc(leagueName(e.category))}</span><h3><a href="./event.html?event=${encodeURIComponent(e.event_id)}">${esc(cap(e.name))}</a></h3><p>${esc(e.venue||cap(e.venue_slug))}<span class="event-place">${esc(e.city)}, ${esc(e.state)}</span></p>${marketLinks(e.name)}</div><div class="event-price" id="price-${esc(e.event_id)}">${eventPriceCell(e)}</div><a class="button alert-button" href="./new.html?event=${encodeURIComponent(e.event_id)}">${icon('bell')}<span>Set alert</span><span class="sr-only"> for ${esc(cap(e.name))}</span></a>`;box.appendChild(el);});
   $('#results-count').textContent=state.events.length?`${state.events.length}${moreAvailable?'+':''} upcoming events${state.place?' in '+state.place:''}${state.catalogFallback?' · prices pending':''}`:state.date?'No events on this date':'No upcoming matches';
   if(more){more.hidden=!moreAvailable;more.disabled=false;more.textContent='Show more events';}
   if($('#empty-reset'))$('#empty-reset').onclick=()=>$('#clear-filters').click();
   if($('#empty-upcoming'))$('#empty-upcoming').onclick=()=>{state.date='';state.offset=0;$('#event-date').value='';loadEvents();};
+  if($('#empty-year'))$('#empty-year').onclick=()=>{state.within='all';state.offset=0;$('#within').value='all';loadEvents();};
   queuePriceChecks(rows,ctrl).catch(()=>{});
  }catch(e){if(e.name==='AbortError')return;if(ctrl!==state.controller)return;box.innerHTML=errorBox(e.message);$('#retry').onclick=()=>loadEvents();$('#results-count').textContent='Events could not load';if(more)more.hidden=true;}
 }
