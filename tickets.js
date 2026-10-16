@@ -45,7 +45,7 @@ const dateObj = iso => new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso||'') ? iso+'T12:0
 const whenShort = iso => iso ? dateObj(iso).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : 'Date to be confirmed';
 const cap = s => String(s||'').replace(/-/g,' ').replace(/\b\w/g, c=>c.toUpperCase()).replace(/\bAt\b/g,'at').replace(/U S Bank/g,'U.S. Bank').replace(/49 Ers/g,'49ers');
 const ageMinutes = ts => ts ? Math.max(0,(Date.now()-new Date(ts).getTime())/60000) : Infinity;
-const ago = ts => { const m=ageMinutes(ts); return !Number.isFinite(m) ? 'Not checked yet' : m<1 ? 'Just now' : m<60 ? `${Math.floor(m)} min ago` : m<1440 ? `${Math.floor(m/60)} hr ago` : `${Math.floor(m/1440)} days ago`; };
+const ago = ts => { const m=ageMinutes(ts); return !Number.isFinite(m) ? 'Not checked yet' : m<1 ? 'Just now' : m<60 ? `${Math.floor(m)} min ago` : m<1440 ? `${Math.floor(m/60)} hr ago` : Math.floor(m/1440)===1 ? '1 day ago' : `${Math.floor(m/1440)} days ago`; };
 const safeUrl = raw => { if(typeof raw!=='string'||!raw.trim())return ''; try { const u=new URL(raw,'https://gametime.co'); return u.protocol==='https:' && (u.hostname==='gametime.co'||u.hostname.endsWith('.gametime.co')) ? u.href : ''; } catch {return '';} };
 const eventSearchUrl = (market,label) => {
  const q=encodeURIComponent(String(label||'').trim());

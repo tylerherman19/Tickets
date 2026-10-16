@@ -9,6 +9,7 @@ test('total budget maps to a seller-supported per-ticket threshold without overs
  assert.equal(run('perTicketTargetCents("100",4,"per")'),10000);
 });
 test('listing links reject script and unrelated hosts',()=>{for(const s of ['javascript:alert(1)','https://evil.example/','https://gametime.co.evil.example',''])assert.equal(run(`safeUrl(${JSON.stringify(s)})`),'');assert.equal(run('safeUrl("/events/abc")'),'https://gametime.co/events/abc');});
+test('check ages read naturally',()=>{const at=d=>JSON.stringify(new Date(Date.now()-d*86400000).toISOString());assert.equal(run(`ago(${at(1.5)})`),'1 day ago');assert.equal(run(`ago(${at(3.2)})`),'3 days ago');});
 test('date-only events keep their calendar date',()=>{assert.equal(run('dateObj("2026-09-13").getDate()'),13);});
 test('phone numbers normalize and format safely',()=>{assert.equal(run('normalizeUSPhone("+1 (612) 555-0148")'),'6125550148');assert.equal(run('formatPhone("6125550148")'),'(612) 555-0148');assert.equal(run('normalizeUSPhone("123")'),'');});
 test('Xfinity Mobile has a dedicated carrier label',()=>{assert.equal(run('carrierName("xfinity")'),'Xfinity Mobile');});
@@ -52,6 +53,24 @@ test('price discovery can fall back to real catalog events without claiming an u
  assert.doesNotMatch(fallback,/price_checked_at=/);
  assert.match(fallback,/category=eq\.mlb-baseball/);
  assert.match(fallback,/order=event_date,event_id&limit=13&offset=0/);
+});
+test('the city/state box understands state names, codes and "City, ST"',()=>{
+ const place=s=>decodeURIComponent(run(`placeFilter(${JSON.stringify(s)})`));
+ assert.equal(place('Wisconsin'),'&state=eq.WI');
+ assert.equal(place('wi'),'&state=eq.WI');
+ assert.equal(place('new  york'),'&state=eq.NY');
+ assert.equal(place('Madison, WI'),'&state=eq.WI&city=ilike.*Madison*');
+ assert.equal(place('Green Bay Wisconsin'),'&state=eq.WI&city=ilike.*Green Bay*');
+ assert.equal(place('Kansas City'),'&city=ilike.*Kansas City*');
+ assert.equal(place('Kansas City, Missouri'),'&state=eq.MO&city=ilike.*Kansas City*');
+ assert.equal(place('St. Paul'),'&city=ilike.*St. Paul*');
+ assert.equal(place('(*)'),'');
+});
+test('a state name in the search box also finds events in that state; short words stay name searches',()=>{
+ run('Object.assign(state,{cheapOnly:false,category:"",date:"",within:"",maxPrice:"",place:"",offset:0})');
+ run('state.search="Wisconsin"');assert.match(decodeURIComponent(run('catalogQuery()')),/&or=\(name\.ilike\."\*Wisconsin\*",slug\.ilike\."\*Wisconsin\*",state\.eq\.WI\)/);
+ for(const s of ['LA','in','Vikings']){run(`state.search=${JSON.stringify(s)}`);assert.doesNotMatch(run('catalogQuery()'),/state\.eq/);}
+ run('state.search=""');
 });
 test('searches price every visible stale or unpriced result within the year, once each',()=>{
  const now=new Date().toISOString(),old=new Date(Date.now()-3600000).toISOString(),future=new Date(Date.now()+35*86400000).toISOString().slice(0,10),past='2020-01-01',far=new Date(Date.now()+400*86400000).toISOString().slice(0,10);
