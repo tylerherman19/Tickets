@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {captureFromPage,validEventUrl,blockingSignals} from '../supabase/functions/_shared/provider.mjs';
+import {captureFromPage,validEventUrl,blockingSignals,movedEventUrl} from '../supabase/functions/_shared/provider.mjs';
 for(const shape of ['camel','snake'])test('Embedded '+shape+' captures preserve all fields and exact lots',()=>{
  const capture=captureFromPage(fs.readFileSync('tests/fixtures/listing_'+shape+'.html','utf8'),'fixture');
  assert.equal(capture.state,'complete');assert.equal(capture.by_qty[2].low,15000);
@@ -29,4 +29,14 @@ test('Team and artist page links are harvested as safe provider paths only',asyn
   ' /a/b/c/performers/deep https://evil.test/x-tickets/performers/bad <a href="https://gametime.co/minnesota-vikings-tickets/performers/nflmin">dup</a>';
  assert.deepEqual(performerPaths(html),['/minnesota-vikings-tickets/performers/nflmin','/nba-basketball/lakers-tickets/performers/nbalal','/hamilton-tickets/performers/hamilton']);
  assert.equal(performerPaths(html,1).length,1);
+});
+test('Only a redirect to the same event page on the provider replaces the saved link',()=>{
+ const id='a'.repeat(24),from='https://gametime.co/nfl-football/bills-at-vikings-tickets/11-9-2026-minneapolis-mn-u-s-bank-stadium/events/'+id;
+ const to='https://gametime.co/nfl-football/bills-at-vikings-tickets/11-8-2026-minneapolis-mn-u-s-bank-stadium/events/'+id;
+ assert.equal(movedEventUrl(to,from,id),to);
+ assert.equal(movedEventUrl(new URL(to).pathname,from,id),to);
+ for(const location of [null,'',from,'https://evil.test/events/'+id,'//evil.test/events/'+id,'http://gametime.co/events/'+id,
+  'https://gametime.co:8443/events/'+id,'https://user@gametime.co/events/'+id,to+'?quantity=2',to+'#x',
+  to.replace(id,'b'.repeat(24)),'/nfl-football/minnesota-vikings-tickets/performers/nflmin','javascript:alert(1)'])
+  assert.equal(movedEventUrl(location,from,id),null,String(location));
 });

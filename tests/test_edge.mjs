@@ -11,7 +11,9 @@ const ids=Array.from({length:6},(_,n)=>String(n+1).repeat(24).slice(0,24).replac
 function request(body={event_id:id},headers={}){return new Request('https://edge.invalid',{method:'POST',headers:{authorization:'Bearer user','Content-Type':'application/json',origin:'https://tylerherman19.github.io',...headers},body:JSON.stringify(body)});}
 const response=(body,status=200)=>Response.json(body,{status});
 const page=eventId=>'window.__data='+JSON.stringify({redux:{data:{fullEvents:{events:{[eventId]:{event:{id:eventId,minPrice:{total:1234},performers:[{seoUrl:'https://gametime.co/minnesota-vikings-tickets/performers/nflmin'}]}}}}}}});
-function mockFetch({user=true,claim=()=>({state:'checking',token:'lease'}),admitted=()=>true,providerStatus=()=>200}={}){
+const moved=eventId=>'https://gametime.co/nfl-football/bills-at-vikings-tickets/11-8-2026-minneapolis-mn-u-s-bank-stadium/events/'+eventId;
+function mockFetch({user=true,claim=()=>({state:'checking',token:'lease'}),admitted=()=>true,providerStatus=()=>200,providerHeaders=()=>({}),
+ noteRedirect=body=>response(body.p_location?{state:'queued',reason:'url_moved',next_attempt_at:'2026-10-16T00:00:00Z'}:{state:'failed',reason:'redirected',next_attempt_at:'2026-10-16T06:00:00Z'})}={}){
  const calls=[];let inFlight=0;calls.maxInFlight=0;
  globalThis.fetch=async(url,options)=>{
   calls.push({url,options});
@@ -22,11 +24,12 @@ function mockFetch({user=true,claim=()=>({state:'checking',token:'lease'}),admit
   if(url.includes('/tix_events_v')){const list=decodeURIComponent(url).match(/in\.\(([^)]*)\)/)[1].split(',');return response(list.map(e=>({event_id:e,url:'https://gametime.co/events/'+e})));}
   if(url.includes('/rpc/tix_admit_provider_http'))return response(admitted(body.p_token)?{allowed:true}:{allowed:false,reason:'request_limit',next_attempt_at:'2026-10-16T00:01:00Z'});
   if(url.includes('/rpc/tix_finish_capture'))return response('observation');
+  if(url.includes('/rpc/tix_note_redirect'))return noteRedirect(body);
   if(url.includes('/rpc/'))return response(null);
   if(url.startsWith('https://gametime.co/')){
    const eventId=url.split('/').at(-1);inFlight++;calls.maxInFlight=Math.max(calls.maxInFlight,inFlight);
    await new Promise(r=>setTimeout(r,5));inFlight--;
-   return new Response(page(eventId),{status:providerStatus(eventId)});
+   return new Response(page(eventId),{status:providerStatus(eventId),headers:providerHeaders(eventId)});
   }
   throw Error('Unexpected network destination '+url);
  };return calls;
@@ -109,4 +112,45 @@ test('events outside the public catalog never take a lease or a provider request
  assert.deepEqual(result.results.map(r=>[r.state,r.reason]),[['failed','invalid_event']]);
  assert.equal(calls.some(c=>c.url.includes('tix_claim_capture')),false);
  assert.equal(providerCalls(calls).length,0);
+});
+test('a redirect to the same event saves the new link and asks for a re-check, never following it',async()=>{
+ const calls=mockFetch({providerStatus:e=>e===ids[1]?301:200,providerHeaders:e=>e===ids[1]?{location:new URL(moved(e)).pathname}:{}});
+ const result=await (await handleRequest(request({event_ids:ids.slice(0,3)}))).json();
+ assert.deepEqual(result.results.map(r=>[r.state,r.reason??null]),[['metadata_only',null],['queued','url_moved'],['metadata_only',null]]);
+ assert.ok(result.results[1].next_attempt_at,'the site retries a queued result shortly');
+ const provider=providerCalls(calls);
+ assert.equal(provider.length,3);assert.ok(provider.every(c=>c.options.redirect==='manual'));
+ assert.equal(provider.some(c=>c.url===moved(ids[1])),false,'the new link is not fetched in the same call');
+ const noted=calls.filter(c=>c.url.endsWith('tix_note_redirect')).map(c=>JSON.parse(c.options.body));
+ assert.deepEqual(noted,[{p_token:'lease-'+ids[1],p_location:moved(ids[1])}]);
+ assert.equal(calls.some(c=>c.url.endsWith('tix_release_capture')),false);
+});
+test('a redirect anywhere else backs off without saving a link or another request',async()=>{
+ for(const location of ['https://evil.test/events/'+id,'/nfl-football/minnesota-vikings-tickets/performers/nflmin',moved('b'.repeat(24)),
+  moved(id)+'?quantity=2','//evil.test/events/'+id,'https://gametime.co:8443/events/'+id,null]){
+  const calls=mockFetch({providerStatus:()=>302,providerHeaders:()=>location?{location}:{}});
+  const result=await (await handleRequest(request({event_ids:[id]}))).json();
+  assert.deepEqual(result.results.map(r=>[r.state,r.reason]),[['failed','redirected']],String(location));
+  assert.equal(providerCalls(calls).length,1);
+  const noted=calls.filter(c=>c.url.endsWith('tix_note_redirect')).map(c=>JSON.parse(c.options.body));
+  assert.deepEqual(noted,[{p_token:'lease-'+id,p_location:null}],String(location));
+  assert.equal(calls.some(c=>c.url.endsWith('tix_suspend_provider')||c.url.endsWith('tix_finish_capture')),false);
+ }
+});
+test('before the database step is deployed a redirect fails as it did before',async()=>{
+ const calls=mockFetch({providerStatus:()=>301,providerHeaders:()=>({location:moved(id)}),noteRedirect:()=>response({code:'PGRST202'},404)});
+ const result=await (await handleRequest(request({event_ids:[id]}))).json();
+ assert.deepEqual(result.results.map(r=>[r.state,r.reason]),[['failed','capture_failed']]);
+ const released=calls.filter(c=>c.url.endsWith('tix_release_capture')).map(c=>JSON.parse(c.options.body));
+ assert.deepEqual(released,[{p_token:'lease-'+id,p_reason:'capture_failed'}]);
+ assert.equal(providerCalls(calls).length,1);
+});
+test('a blocking page is still detected first, even on a redirect status',async()=>{
+ const calls=mockFetch({providerStatus:()=>302,providerHeaders:()=>({location:moved(id)})});
+ const original=globalThis.fetch;
+ globalThis.fetch=async(url,options)=>url.startsWith('https://gametime.co/')?(calls.push({url,options}),new Response('<title>Just a moment...</title>',{status:302,headers:{location:moved(id)}})):original(url,options);
+ const result=await (await handleRequest(request({event_ids:[id]}))).json();
+ assert.deepEqual(result.results.map(r=>r.state),['suspended']);
+ assert.ok(calls.some(c=>c.url.endsWith('tix_suspend_provider')));
+ assert.equal(calls.some(c=>c.url.endsWith('tix_note_redirect')),false);
 });

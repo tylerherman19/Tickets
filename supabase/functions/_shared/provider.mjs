@@ -77,6 +77,20 @@ export function validEventUrl(raw, id) {
         return false;
     }
 }
+// A redirect's target when it is the same event's page on the provider, else
+// null. Redirects are never followed; this only decides whether the saved link
+// is replaced so the next check uses it.
+export function movedEventUrl(location, from, id) {
+    if (!location)
+        return null;
+    try {
+        const u = new URL(location, from);
+        return !u.port && validEventUrl(u.href, id) && u.href !== from ? u.href : null;
+    }
+    catch {
+        return null;
+    }
+}
 export function blockingSignals(status, page) {
     const out = [];
     if ([403, 429].includes(status))

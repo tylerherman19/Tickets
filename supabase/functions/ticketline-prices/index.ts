@@ -1,4 +1,4 @@
-import { captureFromPage, blockingSignals, validEventUrl, performerPaths } from '../_shared/provider.mjs';
+import { captureFromPage, blockingSignals, validEventUrl, movedEventUrl, performerPaths } from '../_shared/provider.mjs';
 
 declare const EdgeRuntime: {waitUntil(work:Promise<unknown>):void};
 const base = Deno.env.get('SUPABASE_URL')!;
@@ -58,7 +58,15 @@ async function captureOne(id: string, event: {url:string}|undefined, performers:
       await rpc('tix_suspend_provider',{p_token:lease,p_reason:blocking.join(',')});
       throw new Error('provider_suspended');
     }
-    if (!response.ok) throw new Error(response.status>=300&&response.status<400?'redirect_not_followed':`provider_http_${response.status}`);
+    if (response.status>=300&&response.status<400) {
+      // Never followed. A move to the same event's page saves the new link and
+      // the event is re-checked with it; anything else backs off.
+      const location=response.headers.get('location');
+      const moved=await rpc('tix_note_redirect',{p_token:lease,p_location:movedEventUrl(location,event.url,id)});lease=null;
+      console.warn('ticketline_redirect',id,response.status,moved.reason,String(location).replace(/[?#].*/,'').slice(0,200));
+      return {event_id:id,state:moved.state,reason:moved.reason,next_attempt_at:moved.next_attempt_at};
+    }
+    if (!response.ok) throw new Error(`provider_http_${response.status}`);
     const capture=captureFromPage(page,id);
     for (const path of performerPaths(page)) performers.add(path);
     const fetch_parse_ms=Math.round(performance.now()-start);
