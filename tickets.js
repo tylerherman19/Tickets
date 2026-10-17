@@ -108,6 +108,19 @@ function coverageMarkup(health){
  const collectorMessage=health.collector_state==='stale'?'Price checks are delayed. Saved prices remain available.':health.collector_state==='failed'?'The last price sweep failed. Saved prices remain available.':health.collector_state!=='fresh'?'Price-sweep status is unknown. Saved prices remain available.':Number(health.failed_checks)>0||Number(health.teams_failed)>0?'Some checks need attention. Saved prices remain available while checks retry.':'Collection is running.';
  return `<p class="coverage-state ${health.provider_paused||health.collector_state!=='fresh'?'attention':''}" role="status">${health.provider_paused?'Live checks are paused. Saved prices remain available.':collectorMessage} Coverage includes the next ${number(health.horizon_days||365)} days.</p><dl class="coverage-grid">${metrics.map(([label,value])=>`<div><dt>${label}</dt><dd>${number(value)}</dd></div>`).join('')}</dl><p class="field-help">${health.last_catalog_at?'Schedules updated '+esc(ago(health.last_catalog_at).toLowerCase())+'. ':''}${health.last_collector_at?'Last price sweep '+esc(ago(health.last_collector_at).toLowerCase())+'. ':''}A listed event can have an unknown price. Saved get-in prices do not confirm exact ticket quantities.</p>`;
 }
+// An alert can have a separate series for every event and seat area. Read
+// every page within one snapshot instead of silently accepting the REST cap.
+async function readAlertHistory(watchId,range='7d'){
+ const pageSize=1000,maxPages=10,snapshot=new Date().toISOString(),rows=[],seen=new Set();
+ const base=`rpc/tix_alert_history?p_watch_id=${encodeURIComponent(watchId)}&p_range=${encodeURIComponent(range)}&checked_at=lte.${encodeURIComponent(snapshot)}&order=checked_at.desc,event_id.asc,qty.asc,club.asc,basis.asc,criteria_version.desc&limit=${pageSize}`;
+ for(let page=0;page<maxPages;page++){
+  const batch=await sbGet(base+'&offset='+(page*pageSize));
+  if(!Array.isArray(batch))throw new Error('Price history could not load. Try again shortly.');
+  for(const row of batch){const key=JSON.stringify([row.checked_at,row.event_id,row.qty,row.club,row.basis]);if(!seen.has(key)){seen.add(key);rows.push(row);}}
+  if(batch.length<pageSize)return rows;
+ }
+ throw new Error('This alert has too much price history to display completely. Choose a shorter time range.');
+}
 async function readComparableEventHistory(body){
  try{const rows=await sbPublicRpc('tix_event_comparable_history',body);if(Array.isArray(rows))return rows;}catch{}
  if(body.p_section)throw new Error('History for this section is unavailable. Choose Any section to view saved comparable prices.');

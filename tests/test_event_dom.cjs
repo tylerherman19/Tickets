@@ -271,3 +271,32 @@ test('quantity budget visibility is re-applied after price refresh in both direc
  assert.equal(w.document.querySelector('#max-price').placeholder,'Per ticket under $');
  await new Promise(r=>setImmediate(r));w.close();
 });
+
+test('pro team picker preserves the legacy schedule fallback when the identity RPC is unavailable',async()=>{
+ const dom=new JSDOM('<body data-page="new"><main id="main"></main></body>',{url:'https://example.test/new.html?kind=team&category=nfl-football',runScripts:'outside-only'});
+ const w=dom.window,requests=[];w.requireSession=async()=>true;w.scrollTo=()=>{};
+ w.mockRpc=async()=>{throw new Error('RPC not deployed');};
+ w.mockGet=async path=>{requests.push(path);return path.startsWith('tix_teams_v')?[{team:'minnesota-vikings',events:2}]:[];};
+ w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;const IS_DEV=false,session=null;'+app);
+ await new Promise(r=>setImmediate(r));
+ const choice=w.document.querySelector('[data-source-team]');
+ assert.ok(choice);assert.match(choice.textContent,/Minnesota Vikings/);assert.match(choice.textContent,/schedule match/);
+ assert.ok(requests.some(path=>path.startsWith('tix_teams_v')));
+ choice.click();await new Promise(r=>setImmediate(r));
+ const watch=w.makeWatch();assert.equal(watch.match.slug,'minnesota-vikings');assert.equal(watch.match.team_id,undefined);
+ assert.ok(w.document.querySelector('#price-form'));w.close();
+});
+
+test('college team picker explains missing identity service and keeps ambiguous nickname fallback disabled',async()=>{
+ const dom=new JSDOM('<body data-page="new"><main id="main"></main></body>',{url:'https://example.test/new.html?kind=team&category=college-basketball',runScripts:'outside-only'});
+ const w=dom.window,requests=[];w.requireSession=async()=>true;
+ w.mockRpc=async()=>{throw new Error('RPC not deployed');};
+ w.mockGet=async path=>{requests.push(path);return [{team:'bulldogs',events:9}];};
+ w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;const IS_DEV=false,session=null;'+app);
+ await new Promise(r=>setImmediate(r));
+ assert.equal(w.document.querySelectorAll('[data-source-team]').length,0);
+ assert.match(w.document.querySelector('#team-options').textContent,/directory is unavailable/);
+ assert.match(w.document.querySelector('#team-options').textContent,/confirmed school identity/);
+ assert.ok(w.document.querySelector('#team-options a[href*="index.html"]'));
+ assert.ok(!requests.some(path=>path.startsWith('tix_teams_v')));w.close();
+});

@@ -244,12 +244,12 @@ async function watches(){
  const [ws,intelligence,health]=await Promise.all([sbGet('tix_watches?select=*&order=created_at.desc'),sbGet('tix_alert_intelligence_v?select=*'),getHealth()]);
  state.watches=ws;state.intelligence=intelligence;
  state.scans=intelligence.filter(x=>x.last_checked_at).map(x=>({watch_id:x.watch_id,outcome:x.scan_outcome,checked_at:x.last_checked_at,detail:x.scan_detail,criteria_version:x.criteria_version}));
- // One history call per watch: run at most four at a time and skip the
+ // Read complete paginated history for at most four watches at a time; skip the
  // archived ones, so a long alert list doesn't fan out dozens of requests.
  const histories=[],queue=ws.filter(w=>!w.match?.archived_at&&!w.purchased_at);
  await Promise.all(Array.from({length:Math.min(4,queue.length)},async()=>{
    for(let w;(w=queue.shift());){
-     try{const rows=await sbGet(`rpc/tix_alert_history?p_watch_id=${encodeURIComponent(w.id)}&p_range=7d`);
+     try{const rows=await readAlertHistory(w.id,'7d');
        histories.push(...rows.map(r=>({...r,watch_id:w.id})));}
      catch(e){reportError(e,'watch history');}
    }
@@ -374,13 +374,14 @@ async function teamPicker(){
  const draw=async()=>{
   const id=++request,filter=$('#team-search').value.trim(),box=$('#team-options');box.innerHTML=loadingRows(2);
   try{
-   let teams=await sbPublicRpc('tix_resolve_teams',{p_query:filter,p_category:category,p_limit:100});
+   let teams=[],directoryUnavailable=false;
+   try{teams=await sbPublicRpc('tix_resolve_teams',{p_query:filter,p_category:category,p_limit:100});}catch{directoryUnavailable=true;}
    if(id!==request||category!==state.category||!box.isConnected)return;
    // Preserve the existing pro-team picker while its source directory fills.
    if(!teams?.length&&!category.startsWith('college-')){const old=await sbGet('tix_teams_v?category=eq.'+encodeURIComponent(category)+'&select=team,events&order=team');teams=old.filter(t=>teamMatches(category,t.team,filter)).map(t=>({label:teamName(category,t.team),team:t.team,event_count:t.events}));}
    if(id!==request||category!==state.category||!box.isConnected)return;
    state.teams=teams||[];
-   box.innerHTML=state.teams.length?state.teams.map((t,i)=>`<button class="team-option" data-source-team="${i}">${icon('ball')}<span>${esc(t.label)}<small>${Number(t.event_count)||0} listed games · ${t.team_id?'source team confirmed':'schedule match'}</small></span>${icon('arrow')}</button>`).join(''):'<p class="muted">No source team matches yet. Try the full school name or <a href="./index.html?category='+encodeURIComponent(category)+'">choose an individual game</a>.</p>';
+   box.innerHTML=state.teams.length?state.teams.map((t,i)=>`<button class="team-option" data-source-team="${i}">${icon('ball')}<span>${esc(t.label)}<small>${Number(t.event_count)||0} listed games · ${t.team_id?'source team confirmed':'schedule match'}</small></span>${icon('arrow')}</button>`).join(''):directoryUnavailable?'<p class="muted">The source team directory is unavailable. College teams need a confirmed school identity; <a href="./index.html?category='+encodeURIComponent(category)+'">choose an individual game</a> or try again shortly.</p>':'<p class="muted">No source team matches yet. Try the full school name or <a href="./index.html?category='+encodeURIComponent(category)+'">choose an individual game</a>.</p>';
    $$('[data-source-team]').forEach(button=>button.onclick=()=>{const t=state.teams[Number(button.dataset.sourceTeam)];state.selected={team:t.team||t.team_id,team_id:t.team_id||null,label:t.label};state.step=2;renderBuilder();loadClubs();});
   }catch{if(id===request&&box.isConnected)box.innerHTML='<p class="muted">The team directory could not load. Try another league or <a href="./index.html">select an individual game</a>.</p>';}
  };
@@ -494,7 +495,7 @@ async function activity(){
        if($('#activity-watch'))$('#activity-watch').onchange=e=>{selected=e.target.value;draw();};
        if($('#activity-range'))$('#activity-range').onchange=e=>{range=e.target.value;draw();};
        if(!selected){box.innerHTML='<div class="empty-state"><h2>No price history yet.</h2></div>';return;}
-       const rows=await sbGet(`rpc/tix_alert_history?p_watch_id=${encodeURIComponent(selected)}&p_range=${range}`);
+       const rows=await readAlertHistory(selected,range);
        if(!rows.length){box.innerHTML='<div class="empty-state"><h2>No prices in this range.</h2></div>';return;}
        rows.sort((a,b)=>new Date(a.checked_at)-new Date(b.checked_at));
        const series=comparableHistoryGroups(rows);

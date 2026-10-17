@@ -325,3 +325,22 @@ test('comparable alert history excludes observations with unknown price basis',(
  assert.equal(run('comparableHistoryGroups(unknownBasisSamples).length'),1);
  assert.equal(run('comparableHistoryGroups(unknownBasisSamples)[0].samples.length'),1);
 });
+
+test('alert history reads beyond the REST row cap with a stable watch, range and snapshot',async()=>{
+ const requests=[],stamp=new Date().toISOString();
+ const first=Array.from({length:1000},(_,i)=>({checked_at:stamp,event_id:'game-'+i,qty:2,club:'Club',basis:'fees_included_tax_unknown',price_cents:2000+i}));
+ const older={checked_at:new Date(Date.now()-86400000).toISOString(),event_id:'older-game',qty:2,club:'Club',basis:'fees_included_tax_unknown',price_cents:1800};
+ sandbox.sbGet=async path=>{requests.push(new URL(path,'https://example.test/'));return requests.length===1?first:[first[0],older];};
+ const rows=await run('readAlertHistory("private watch/id","30d")');
+ assert.equal(rows.length,1001);assert.equal(rows[0].event_id,'game-0');assert.equal(rows.at(-1).event_id,'older-game');
+ assert.equal(requests.length,2);
+ for(const u of requests){assert.equal(u.searchParams.get('p_watch_id'),'private watch/id');assert.equal(u.searchParams.get('p_range'),'30d');assert.equal(u.searchParams.get('limit'),'1000');assert.match(u.searchParams.get('order'),/^checked_at.desc,event_id.asc/);}
+ assert.equal(requests[0].searchParams.get('offset'),'0');assert.equal(requests[1].searchParams.get('offset'),'1000');
+ assert.equal(requests[0].searchParams.get('checked_at'),requests[1].searchParams.get('checked_at'));
+ assert.match(requests[0].searchParams.get('checked_at'),/^lte\./);
+});
+test('alert history refuses a truncated result after ten full pages',async()=>{
+ let calls=0;sandbox.sbGet=async()=>{calls++;return Array.from({length:1000},(_,i)=>({checked_at:new Date().toISOString(),event_id:'g'+calls+'-'+i,qty:2,club:'Club',basis:'fees_included_tax_unknown',price_cents:2000}));};
+ await assert.rejects(run('readAlertHistory("mine","all")'),/too much price history.*Choose a shorter time range/);
+ assert.equal(calls,10);
+});
