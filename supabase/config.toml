@@ -1,2 +1,11 @@
 [functions.ticketline-prices]
 verify_jwt = true
+
+# CLI development settings. Hosted projects apply these same files in Auth > Emails.
+[auth.email.template.magic_link]
+subject = "Your Ticketline sign-in link"
+content_path = "./supabase/templates/magic-link.html"
+
+[auth.email.template.confirmation]
+subject = "Welcome to Ticketline — confirm your email"
+content_path = "./supabase/templates/confirmation.html"

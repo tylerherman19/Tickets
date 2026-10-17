@@ -259,3 +259,69 @@ test('team picker finds schools but keeps nickname slugs as the stored value',()
  assert.equal(run(`teamInfo("${cbb}","constructor")`),null);
  assert.equal(run(`teamName("${cbb}","not-a-team")`),'Not A Team');
 });
+
+test('exact search prices require an observed seller lot and known price basis',()=>{
+ sandbox.exactRow={price_cents:2200,basis:'fees_included_tax_unknown',checked_at:new Date().toISOString(),state:'partial'};
+ assert.equal(run('exactSearchPrice(exactRow,4).price_cents'),2200);
+ assert.equal(run('exactSearchPrice({...exactRow,state:"unconfirmed"},4)'),null);
+ assert.equal(run('exactSearchPrice({...exactRow,basis:null},4)'),null);
+ assert.equal(run('exactSearchPrice({...exactRow,price_cents:null},4)'),null);
+ assert.equal(run('exactSearchPrice(null,4)'),null);
+ assert.equal(run('exactSearchPrice({...exactRow,checked_at:null},4)'),null);
+});
+test('game chart preserves unknowns and exposes dates, games and check times in a table',()=>{
+ sandbox.games=[{event_id:'a',name:'Visitors <A> at Wisconsin',event_date:'2027-01-03',min_total:1500,price_checked_at:new Date().toISOString()},{event_id:'b',name:'Visitors B at Wisconsin',event_date:'2027-01-05',min_total:null,price_checked_at:null}];
+ const html=run('schedulePriceChart(games,{label:"Wisconsin"})');
+ assert.equal((html.match(/class="schedule-bar"/g)||[]).length,1);
+ assert.equal((html.match(/class="schedule-unknown"/g)||[]).length,1);
+ assert.match(html,/Visitors &lt;A&gt; at Wisconsin/);assert.match(html,/Not confirmed/);assert.match(html,/Last check/);
+ assert.doesNotMatch(html,/<A>/);
+ assert.match(run('schedulePriceChart(games,{label:"Wisconsin",qty:4})'),/verified 4-ticket/);
+ assert.equal((run('schedulePriceChart(games,{qty:4})').match(/class="schedule-bar"/g)||[]).length,0);
+});
+test('coverage does not fabricate zeros when the coverage response is absent',()=>{
+ assert.match(run('coverageMarkup(null)'),/unavailable/);
+ assert.match(run('coverageMarkup({events:null})'),/unavailable/);
+ const html=run('coverageMarkup({events:18,priced:12,unpriced:6,horizon_days:365,provider_paused:true})');
+ assert.match(html,/Live checks are paused/);assert.match(html,/Unknown/);assert.match(html,/>18</);
+ assert.match(html,/exact ticket quantities/);
+});
+test('history groups never mix event, quantity, section or price basis',()=>{
+ sandbox.historySamples=[
+  {event_id:'a',qty:2,club:'Club',basis:'fees_included_tax_unknown',price_cents:2000,checked_at:'2026-10-01T00:00:00Z'},
+  {event_id:'a',qty:2,club:'Club',basis:'fees_included_tax_unknown',price_cents:2200,checked_at:'2026-10-02T00:00:00Z'},
+  {event_id:'b',qty:2,club:'Club',basis:'fees_included_tax_unknown',price_cents:1700,checked_at:'2026-10-02T00:00:00Z'},
+  {event_id:'a',qty:4,club:'Club',basis:'fees_included_tax_unknown',price_cents:1700,checked_at:'2026-10-02T00:00:00Z'},
+  {event_id:'a',qty:2,club:'Upper',basis:'fees_included_tax_unknown',price_cents:1700,checked_at:'2026-10-02T00:00:00Z'},
+  {event_id:'a',qty:2,club:'Club',basis:'fees_included_tax_reported',price_cents:1700,checked_at:'2026-10-02T00:00:00Z'}];
+ assert.equal(run('comparableHistoryGroups(historySamples).length'),5);
+ assert.equal(run('comparableHistoryGroups(historySamples)[0].samples.length'),2);
+});
+test('quantity search budget never uses a get-in price to verify group affordability',()=>{
+ run('Object.assign(state,{searchQty:4,cheapOnly:false,maxPrice:"20",quantityPrices:{},teamEventIds:null,exploreTeamId:"",search:""})');
+ assert.doesNotMatch(run('catalogQuery()'),/min_total=lte/);
+ assert.match(run('eventPriceCell({event_id:"unknown",min_total:500})'),/4-ticket price unverified/);
+ assert.match(run('eventPriceCell({event_id:"unknown",min_total:500})'),/Get-in \$5 · any quantity/);
+ run('state.searchQty=0;state.maxPrice=""');
+});
+
+test('exact quantity chart uses its older lot observation time instead of a new get-in timestamp',()=>{
+ sandbox.quantityGames=[{event_id:'q',name:'A at B',event_date:'2027-01-03',min_total:900,price_checked_at:new Date().toISOString(),quantity_price:{price_cents:1600,basis:'fees_included_tax_unknown',state:'partial',checked_at:new Date(Date.now()-3*86400000).toISOString()}}];
+ const html=run('schedulePriceChart(quantityGames,{qty:2})');
+ assert.match(html,/Quantity check/);assert.match(html,/Saved price · 3 days ago/);
+ assert.doesNotMatch(html,/Checked just now/);
+});
+
+test('coverage never calls a stale, failed or unknown collector running',()=>{
+ for(const status of ['stale','failed','unknown']){const html=run(`coverageMarkup({events:4,collector_state:${JSON.stringify(status)},failed_checks:0,teams_failed:0})`);assert.doesNotMatch(html,/Collection is running/);}
+ assert.match(run('coverageMarkup({events:4,collector_state:"stale"})'),/checks are delayed/);
+ assert.match(run('coverageMarkup({events:4,collector_state:"unknown"})'),/status is unknown/);
+});
+
+test('comparable alert history excludes observations with unknown price basis',()=>{
+ sandbox.unknownBasisSamples=[null,undefined,'unknown'].map(basis=>({event_id:'a',qty:2,club:'Club',basis,price_cents:1500,checked_at:new Date().toISOString()}));
+ assert.equal(run('comparableHistoryGroups(unknownBasisSamples).length'),0);
+ sandbox.unknownBasisSamples.push({event_id:'a',qty:2,club:'Club',basis:'fees_included_tax_unknown',price_cents:1600,checked_at:new Date().toISOString()});
+ assert.equal(run('comparableHistoryGroups(unknownBasisSamples).length'),1);
+ assert.equal(run('comparableHistoryGroups(unknownBasisSamples)[0].samples.length'),1);
+});

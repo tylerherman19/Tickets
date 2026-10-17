@@ -12,7 +12,7 @@ test('event page renders comparable history and escaped seat details; quantity c
  w.mockGet=async path=> path.includes('tix_events_v')?[{event_id:'fixture',name:'Fixture event',venue:'Arena',event_date:'2026-11-15',min_total:1200,price_checked_at:new Date().toISOString(),url:'https://gametime.co/events/fixture'}]:path.includes('tix_event_market')?[{by_qty:{2:{low:1400,basis:'fees_included_tax_reported'}},groups:[],listing_count:1,checked_at:new Date().toISOString()}]:[];
  w.mockRpc=async(name,body)=>{
   requests.push({name,body});
-  if(name==='tix_event_price_history')return [{checked_at:'2026-10-10T12:00:00Z',price_cents:1500},{checked_at:'2026-10-11T12:00:00Z',price_cents:1400}];
+  if(name==='tix_event_price_history')return [{checked_at:new Date(Date.now()-2*86400000).toISOString(),price_cents:1500},{checked_at:new Date(Date.now()-86400000).toISOString(),price_cents:1400}];
   if(name==='tix_event_listings')return [{listing_id:'lot',price_cents:1400,basis:'fees_included_tax_reported',lots:[2,4],seats:['1','2','<script>bad</script>','4'],section:'C1',row_label:'A',checked_at:new Date().toISOString(),coverage:{complete:true}}];
  };
  w.downloadICS=()=>{};w.googleCalendarUrl=()=> 'https://calendar.google.com/';
@@ -173,4 +173,101 @@ test('a search replaced during the grace period never starts live checks',async(
  await new Promise(r=>setTimeout(r,650));
  assert.equal(calls.length,1,'only the latest search is checked');
  w.close();
+});
+
+function reliabilityPage({search='Badgers',qty=0,teams=[],games=[],quantities=[],fail=false}={}){
+ const dom=new JSDOM('<body data-page="explore"><main id="main"></main></body>',{url:`https://example.test/index.html?q=${encodeURIComponent(search)}&category=college-basketball${qty?'&qty='+qty:''}`,runScripts:'outside-only'});
+ const w=dom.window,requests=[];w.fetch=async()=>{throw new Error('No real network allowed in test');};
+ w.mockGet=async path=>{requests.push({path});return games.map(e=>({...e}));};
+ w.mockRpc=async(name,body)=>{requests.push({name,body});if(fail)throw new Error('not deployed');if(name==='tix_resolve_teams')return teams;if(name==='tix_search_team_events')return games;if(name==='tix_search_quantity_prices')return quantities;return [];};
+ w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;const IS_DEV=false,session=null;'+app+';window.testState=state;');
+ return {w,requests};
+}
+const sourceTeams=[{team_id:'wisconsin-badgers-basketball',category:'college-basketball',label:'Wisconsin Badgers',aliases:['UW'],event_count:2},{team_id:'washington-huskies-basketball',category:'college-basketball',label:'Washington Huskies',aliases:['UW'],event_count:1}];
+const sourceGames=[{event_id:'wisconsin-home',name:'Visitors at Wisconsin Badgers',category:'college-basketball',event_date:soon,city:'Madison',state:'WI',min_total:900,price_checked_at:new Date().toISOString(),is_home:true},{event_id:'wisconsin-away',name:'Wisconsin Badgers at Visitors',category:'college-basketball',event_date:soon,city:'Chicago',state:'IL',min_total:null,price_checked_at:null,is_home:false}];
+test('an ambiguous alias requires a source team choice and then renders its home game chart',async()=>{
+ const {w,requests}=reliabilityPage({search:'UW',teams:sourceTeams,games:sourceGames});await new Promise(r=>setImmediate(r));
+ const d=w.document;
+ assert.match(d.querySelector('#team-search-context').textContent,/Choose the team you mean/);
+ assert.equal(d.querySelectorAll('[data-team-choice]').length,2);
+ assert.ok(!requests.some(r=>r.name==='tix_search_team_events'));
+ d.querySelector('[data-team-choice="wisconsin-badgers-basketball"]').click();await new Promise(r=>setImmediate(r));
+ assert.equal(new URL(w.location.href).searchParams.get('team'),'wisconsin-badgers-basketball');
+ assert.equal(requests.find(r=>r.name==='tix_search_team_events').body.p_team_id,'wisconsin-badgers-basketball');
+ assert.equal(d.querySelector('#team-schedule-panel').hidden,false);
+ assert.equal(d.querySelectorAll('#team-schedule-panel .schedule-bar').length,1);
+ assert.equal(d.querySelectorAll('#team-schedule-panel .schedule-unknown').length,0);
+ d.querySelector('#schedule-home').value='all';d.querySelector('#schedule-home').dispatchEvent(new w.Event('change'));
+ assert.equal(d.querySelectorAll('#team-schedule-panel .schedule-unknown').length,1);
+ assert.match(d.querySelector('#team-schedule-panel').textContent,/Gray dots mean a price is unknown/);
+ w.close();
+});
+test('quantity search shows verified group price separately from get-in and leaves unknown quantities unverified',async()=>{
+ const {w,requests}=reliabilityPage({teams:[sourceTeams[0]],games:sourceGames,qty:4,quantities:[{event_id:'wisconsin-home',price_cents:1400,checked_at:new Date().toISOString(),basis:'fees_included_tax_unknown',state:'partial'},{event_id:'wisconsin-away',price_cents:null,basis:null,state:'unconfirmed'}]});
+ await new Promise(r=>setImmediate(r));const d=w.document;
+ assert.match(d.querySelector('#price-wisconsin-home').textContent,/\$14.*Exactly 4 together.*Tax unconfirmed.*Get-in \$9/);
+ assert.match(d.querySelector('#price-wisconsin-away').textContent,/4-ticket price unverified/);
+ assert.equal(requests.find(r=>r.name==='tix_search_quantity_prices').body.p_qty,4);
+ assert.equal(new URL(w.location.href).searchParams.get('qty'),'4');
+ assert.match(d.querySelector('#search-price-basis').textContent,/exactly 4 together when verified/);
+ w.close();
+});
+test('missing identity rollout preserves ordinary catalog results and explains team matching limits',async()=>{
+ const {w}=reliabilityPage({games:sourceGames,fail:true});await new Promise(r=>setImmediate(r));
+ assert.equal(w.document.querySelectorAll('.event-row').length,2);
+ assert.match(w.document.querySelector('#team-search-context').textContent,/temporarily unavailable/);
+ assert.match(w.document.querySelector('#price-wisconsin-home').textContent,/\$9/);
+ w.close();
+});
+
+test('a delayed old team schedule cannot overwrite a newer team search',async()=>{
+ const dom=new JSDOM('<body data-page="explore"><main id="main"></main></body>',{url:'https://example.test/index.html?q=Wisconsin&category=college-basketball',runScripts:'outside-only'});
+ const w=dom.window;let finishWisconsin;
+ w.fetch=async()=>{throw new Error('No real network allowed in test');};
+ const illinois={team_id:'illinois-fighting-illini-basketball',category:'college-basketball',label:'Illinois Fighting Illini',event_count:1};
+ const illinoisGame={...sourceGames[0],event_id:'illinois-home',name:'Visitors at Illinois Fighting Illini'};
+ w.mockGet=async path=>path.includes('illinois-home')?[illinoisGame]:sourceGames;
+ w.mockRpc=async(name,body)=>{
+  if(name==='tix_resolve_teams')return body.p_query==='Illinois'?[illinois]:[sourceTeams[0]];
+  if(name==='tix_search_team_events')return body.p_team_id===sourceTeams[0].team_id?new Promise(resolve=>{finishWisconsin=resolve;}):[illinoisGame];
+  return [];
+ };
+ w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;const IS_DEV=false,session=null;'+app);
+ await new Promise(r=>setImmediate(r));assert.equal(typeof finishWisconsin,'function');
+ const d=w.document;d.querySelector('#event-search').value='Illinois';d.querySelector('#search-form').dispatchEvent(new w.Event('submit',{cancelable:true}));
+ await new Promise(r=>setImmediate(r));
+ assert.match(d.querySelector('#team-schedule-panel h2').textContent,/Illinois/);
+ finishWisconsin(sourceGames);await new Promise(r=>setImmediate(r));
+ // A harmless redraw after the old response catches global-state contamination too.
+ d.querySelector('#schedule-home').value='all';d.querySelector('#schedule-home').dispatchEvent(new w.Event('change'));
+ assert.match(d.querySelector('#team-schedule-panel').textContent,/Visitors at Illinois Fighting Illini/);
+ assert.doesNotMatch(d.querySelector('#team-schedule-panel').textContent,/Visitors at Wisconsin Badgers/);
+ assert.equal(new URL(w.location.href).searchParams.get('team'),illinois.team_id);
+ w.close();
+});
+
+test('a direct source-team link keeps its explicit identity and opens the matching alert builder',async()=>{
+ const team=sourceTeams[0];
+ const dom=new JSDOM('<body data-page="new"><main id="main"></main></body>',{url:`https://example.test/new.html?kind=team&category=college-basketball&team=${team.team_id}`,runScripts:'outside-only'});
+ const w=dom.window,requests=[];w.scrollTo=()=>{};w.requireSession=async()=>true;
+ w.mockRpc=async(name,body)=>{requests.push({name,body});if(name==='tix_resolve_teams')return [team];if(name==='tix_search_team_events')return sourceGames;return [];};w.mockGet=async()=>[];
+ w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;const IS_DEV=true,session=null;'+app);
+ await new Promise(r=>setImmediate(r));
+ assert.equal(requests.find(r=>r.name==='tix_resolve_teams').body.p_query,team.team_id);
+ assert.match(w.document.querySelector('#builder-panel').textContent,/Wisconsin Badgers/);
+ assert.ok(w.document.querySelector('#price-form'));
+ const selected=w.eval('makeWatch()');assert.equal(selected.match.team_id,team.team_id);assert.equal(selected.match.team_label,team.label);
+ w.close();
+});
+
+test('quantity budget visibility is re-applied after price refresh in both directions',async()=>{
+ const {w}=reliabilityPage({teams:[sourceTeams[0]],games:sourceGames,qty:4,quantities:[{event_id:'wisconsin-home',price_cents:2400,checked_at:new Date().toISOString(),basis:'fees_included_tax_unknown',state:'partial'}]});
+ await new Promise(r=>setImmediate(r));
+ w.testState.maxPrice='20';w.applyQuantityBudget(true);
+ const article=w.document.querySelector('[data-event-id="wisconsin-home"]');assert.equal(article.hidden,true);
+ w.testState.quantityPrices['wisconsin-home'].price_cents=1500;w.applyQuantityBudget(true);assert.equal(article.hidden,false);
+ w.testState.quantityPrices['wisconsin-home'].price_cents=2500;w.applyQuantityBudget(true);assert.equal(article.hidden,true);
+ w.document.querySelector('#search-qty').value='2';w.document.querySelector('#search-qty').dispatchEvent(new w.Event('change'));
+ assert.equal(w.document.querySelector('#max-price').placeholder,'Per ticket under $');
+ await new Promise(r=>setImmediate(r));w.close();
 });

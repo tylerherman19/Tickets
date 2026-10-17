@@ -42,7 +42,7 @@ function expireSession(){
   if(!session) return;
   session=null;storeSession(null);
   sessionStorage.setItem('ticketline.auth-error','Your session expired. Sign in again to continue.');
-  if(!['explore','event','privacy','notfound'].includes(document.body.dataset.page)) setTimeout(()=>location.reload(),0);
+  if(!['explore','event','coverage','privacy','notfound'].includes(document.body.dataset.page)) setTimeout(()=>location.reload(),0);
 }
 async function requireSession(){
   if(IS_DEV) return true;

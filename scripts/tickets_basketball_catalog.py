@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit
 import tickets_collect as collect
 from tickets_sweep import fetch_once
+import tickets_team_catalog as teams
 
 
 def page_data(page):
@@ -60,7 +61,7 @@ def catalog_rows(data):
         if event.get('category') != 'cbb': continue
         url=event.get('seoUrl') or event.get('seo_url') or ''
         row=collect.parse_catalog_url(url)
-        if not row: continue
+        if not row or row['category'] not in ('college-basketball','sports','basketball'): continue
         if event.get('id') != row['event_id']: continue
         date=datetime.fromisoformat(row['event_date']).date()
         if not today <= date <= today+timedelta(days=365): continue
@@ -96,11 +97,11 @@ def team_code(url):
     return url.rsplit('/',1)[-1]
 
 
-def scheduled_pages(pages,coverage,limit):
+def scheduled_pages(pages,coverage,limit,priority=()):
     # New teams go first; completion is tracked by provider ID rather than a
     # shifting numeric offset, so directory additions cannot skip a team.
     checked=coverage.get('teams',{})
-    return sorted(pages,key=lambda url:(checked.get(team_code(url),{}).get('checked_at',''),team_code(url)))[:limit]
+    return sorted(pages,key=lambda url:(team_code(url) not in priority,checked.get(team_code(url),{}).get('checked_at',''),team_code(url)))[:limit]
 
 
 def read_coverage():
@@ -112,7 +113,7 @@ def read_coverage():
     return value
 
 
-def import_pages(pages,load,coverage,save,workers=4):
+def import_pages(pages,load,coverage,save,workers=4,on_checked=None,on_failed=None):
     # Four independent page fetches at most. Guarded deployments serialize so
     # every attempt retains its shared lease/budget. No new work follows an error.
     checked=coverage['teams']
@@ -123,12 +124,15 @@ def import_pages(pages,load,coverage,save,workers=4):
             failure=None
             for url,future in zip(urls,futures):
                 try:
-                    rows=save(future.result())
+                    data=future.result()
+                    rows=save(data)
+                    if on_checked: on_checked(team_code(url),data)
                     coverage.setdefault('errors',{}).pop(team_code(url),None)
                     checked[team_code(url)]={'checked_at':datetime.now(timezone.utc).isoformat(),
                                             'events':len(rows),'priced':sum('min_total' in row for row in rows)}
                 except Exception as error:
                     code=team_code(url)
+                    if on_failed: on_failed(code,error)
                     coverage.setdefault('errors',{})[code]={'at':datetime.now(timezone.utc).isoformat(),'kind':type(error).__name__,'status':getattr(error,'code',None)}
                     print(f'Provider team check failed: {code}; {type(error).__name__}; status={getattr(error,"code",None)}',flush=True)
                     # An unavailable team page must not suppress the rest of
@@ -150,11 +154,14 @@ def main():
         with guard.capture(None,'catalog') if guard else contextlib.nullcontext():
             return page_data(fetch_once(url))
     directory=load('https://gametime.co/c/college-basketball')
+    reliability=teams.available(collect.sb)
+    if reliability: teams.save_teams(directory,collect.sb)
     seen=set()
     priced=set()
     def save(data):
         rows=catalog_rows(data)
         save_rows(rows)
+        if reliability: teams.save_links(data,collect.sb)
         if guard: record_history(rows)
         seen.update(row['event_id'] for row in rows)
         priced.update(row['event_id'] for row in rows if 'min_total' in row)
@@ -172,9 +179,14 @@ def main():
         pending=[url for url in pages if team_code(url) not in coverage['teams']] if bootstrap else pages
         # 32 team pages an hour revisits every team about twice a day within
         # the shared background budget; other sports use the performer sweep.
-        batch=scheduled_pages(pending,coverage,len(pending) if bootstrap else 32)
+        demand=collect.sb('POST','rpc/tix_team_refresh_due',{'p_category':'college-basketball','p_limit':32}) if reliability else []
+        priority={row['team_id'] for row in demand}
+        batch=scheduled_pages(pending,coverage,len(pending) if bootstrap else 32,priority)
     print(f'Gametime directory: {len(pages)} team pages; processing {len(batch)}; bootstrap={bootstrap}',flush=True)
-    import_pages(batch,load,coverage,save,workers=1 if guard else 4)
+    def checked(code,data): teams.save_links(data,collect.sb,code,True)
+    def failed(code,error): collect.sb('POST','rpc/tix_team_check_failed',{'p_team_id':code,'p_status':str(getattr(error,'code',None) or type(error).__name__)})
+    import_pages(batch,load,coverage,save,workers=1 if guard else 4,
+                 on_checked=checked if reliability else None,on_failed=failed if reliability else None)
     covered=sum(team_code(url) in coverage['teams'] for url in pages)
     coverage.update(covered_teams=covered,completed_at=datetime.now(timezone.utc).isoformat())
     if bootstrap:

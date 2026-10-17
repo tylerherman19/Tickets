@@ -17,8 +17,10 @@ from datetime import datetime, timezone, timedelta
 import tickets_collect as collect
 from ticketline_guard import CaptureDeferred
 from tickets_basketball_catalog import page_data, objects, get_in_price
+import tickets_team_catalog as teams
 
 PAGE_LIMIT = 60
+RELIABILITY = False
 # Category pages link to the teams, artists and shows in that category. They
 # are visited once a day; unavailable ones are recorded and skipped.
 # College basketball is imported by its own workflow with its category.
@@ -64,7 +66,12 @@ def sweep_page(url):
     """One admitted request; save prices and newly linked performer pages."""
     with collect.GUARD.capture(None,'catalog'):
         page = collect.get_text(url)
-    rows = price_rows(page_objects(page))
+    items=page_objects(page)
+    if RELIABILITY:
+        teams.save_teams(items,collect.sb)
+        code=url.rsplit('/',1)[-1] if '/performers/' in url else None
+        teams.save_links(items,collect.sb,code,checked=bool(code))
+    rows = price_rows(items)
     result = {'updated':0,'history':0}
     for i in range(0,len(rows),500):
         saved = collect.sb('POST','rpc/tix_apply_get_in_prices',{'p_rows':rows[i:i+500],'p_source':'catalog'}) or {}
@@ -99,10 +106,12 @@ def due_directories(state, now):
 
 
 def main():
+    global RELIABILITY
     if os.environ.get('GITHUB_ACTIONS') != 'true': raise RuntimeError('Performer sweep is hosted-only')
     if getattr(collect,'GUARD',None) is None:
         print('Guarded schema not deployed; performer sweep skipped.')
         return
+    RELIABILITY = teams.available(collect.sb)
     limit = max(1,min(200,int(os.environ.get('TIX_PERFORMER_LIMIT') or PAGE_LIMIT)))
     now = datetime.now(timezone.utc)
     rows = collect.sb('GET','tix_state?k=eq.performer_sweep&select=v&limit=1')
@@ -146,6 +155,7 @@ def main():
                           'last_status':str(getattr(error,'code',None) or type(error).__name__)[:40],
                           'next_check_at':(checked+next_check(0,failures)).isoformat()}
                 stats['failed'] += 1
+                if RELIABILITY: collect.sb('POST','rpc/tix_team_check_failed',{'p_team_id':row['path'].rsplit('/',1)[-1],'p_status':update['last_status']})
                 print(f'performer page skipped: {row["path"]}: {update["last_status"]}',flush=True)
             collect.sb('PATCH','tix_performers?path=eq.'+row['path'],update)
             collect.time.sleep(collect.BACKGROUND_PAUSE_SECONDS)
