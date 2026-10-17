@@ -80,6 +80,62 @@ function priceContext(rows){
  return bits.join(' · ');
 }
 
+// Search prices stay explicit about quantity and the last successful observation.
+function priceFreshness(event){
+ const age=ageMinutes(event.price_checked_at),has=Number.isInteger(event.min_total)&&event.min_total>0;
+ if(['failed','http_failure','parser_failure'].includes(event.discovery_status))return {state:'failed',label:has?'Check failed · saved price':'Last check failed'};
+ if(!event.price_checked_at)return {state:'unchecked',label:'Price not checked'};
+ if(!has)return {state:'unavailable',label:'Price unavailable at last check'};
+ return {state:age<=15?'fresh':'saved',label:(age<=15?'Checked ':'Saved price · ')+ago(event.price_checked_at).toLowerCase()};
+}
+function exactSearchPrice(row,qty){
+ if(!row||row.requested_qty!=null&&row.requested_qty!==qty||!row.checked_at||!Number.isFinite(new Date(row.checked_at).getTime())||!Number.isInteger(row.price_cents)||row.price_cents<=0||!knownPriceBasis(row.basis)||!['verified','complete','partial','ok'].includes(row.state))return null;
+ return {price_cents:row.price_cents,checked_at:row.checked_at,label:`Exactly ${qty} together`,basis:row.basis};
+}
+function schedulePriceChart(rows,{label='Team schedule',qty=0}={}){
+ const games=[...rows].sort((a,b)=>String(a.event_date).localeCompare(String(b.event_date))||String(a.event_id).localeCompare(String(b.event_id)));
+ if(!games.length)return '<p class="field-help">No games with a confirmed home designation are listed yet. Choose all games to see the available schedule.</p>';
+ const price=e=>qty?exactSearchPrice(e.quantity_price,qty)?.price_cents:(Number.isInteger(e.min_total)&&e.min_total>0?e.min_total:null);
+ const freshness=e=>qty?priceFreshness({min_total:price(e),price_checked_at:e.quantity_price?.checked_at,discovery_status:e.quantity_price?.state==='failed'?'failed':null}):priceFreshness(e);
+ const high=Math.max(100,...games.map(e=>price(e)||0)),width=Math.max(560,games.length*48+70),height=220,left=52,bottom=170,step=(width-left-18)/games.length;
+ const marks=games.map((e,i)=>{const value=price(e),x=left+step*(i+.5),y=value==null?bottom:bottom-(value/high)*140,text=`${whenShort(e.event_date)} · ${e.name} · ${value==null?'Price not confirmed':money(value)+' per ticket'} · ${freshness(e).label}`;return `<g><a href="./event.html?event=${encodeURIComponent(e.event_id)}" aria-label="${esc(text)}">${value==null?`<circle class="schedule-unknown" cx="${x.toFixed(1)}" cy="${bottom}" r="5"/>`:`<rect class="schedule-bar" x="${(x-Math.min(14,step*.28)).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.min(28,step*.56).toFixed(1)}" height="${Math.max(2,bottom-y).toFixed(1)}" rx="3"/>`}<title>${esc(text)}</title></a><text x="${x.toFixed(1)}" y="192" text-anchor="middle">${esc(dateObj(e.event_date).toLocaleDateString('en-US',{month:'short',day:'numeric'}))}</text></g>`;}).join('');
+ return `<div class="schedule-chart-scroll"><svg class="schedule-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)}: ${qty?'verified '+qty+'-ticket':'get-in'} prices by game date. Gray dots mean unknown prices."><line x1="${left}" x2="${width-12}" y1="${bottom}" y2="${bottom}"/><text x="42" y="34" text-anchor="end">${money(high)}</text><text x="42" y="174" text-anchor="end">$0</text>${marks}</svg></div><p class="field-help">${qty?`Per ticket for exactly ${qty} together; only verified seller lots are plotted.`:'Gametime get-in per ticket; exact quantity and tax are unconfirmed.'} Gray dots mean a price is unknown, never free.</p><details class="chart-data"><summary>Game prices and check times</summary><div class="listing-table-wrap"><table><thead><tr><th>Date</th><th>Game</th><th>Per ticket</th><th>${qty?'Quantity check':'Last check'}</th></tr></thead><tbody>${games.map(e=>`<tr><td>${esc(whenShort(e.event_date))}</td><td><a href="./event.html?event=${encodeURIComponent(e.event_id)}">${esc(e.name)}</a></td><td>${price(e)==null?'Not confirmed':money(price(e))}</td><td>${esc(freshness(e).label)}</td></tr>`).join('')}</tbody></table></div></details>`;
+}
+function coverageMarkup(health){
+ if(!health||typeof health!=='object'||health.events==null||!Number.isFinite(Number(health.events)))return '<p>Coverage is unavailable right now. <a href="./coverage.html">Check coverage status</a> or try again shortly.</p>';
+ const number=n=>n!=null&&Number.isFinite(Number(n))?Number(n).toLocaleString('en-US'):'Unknown';
+ const metrics=[['Events listed',health.events],['With saved prices',health.priced],['Need first price',health.unpriced],['Checked within 24 hours',health.fresh],['Older saved prices',health.stale],['Checks pending',health.pending_checks],['Failed checks',health.failed_checks],['Teams checked',health.teams_checked],['Teams needing attention',health.teams_failed]];
+ const collectorMessage=health.collector_state==='stale'?'Price checks are delayed. Saved prices remain available.':health.collector_state==='failed'?'The last price sweep failed. Saved prices remain available.':health.collector_state!=='fresh'?'Price-sweep status is unknown. Saved prices remain available.':Number(health.failed_checks)>0||Number(health.teams_failed)>0?'Some checks need attention. Saved prices remain available while checks retry.':'Collection is running.';
+ return `<p class="coverage-state ${health.provider_paused||health.collector_state!=='fresh'?'attention':''}" role="status">${health.provider_paused?'Live checks are paused. Saved prices remain available.':collectorMessage} Coverage includes the next ${number(health.horizon_days||365)} days.</p><dl class="coverage-grid">${metrics.map(([label,value])=>`<div><dt>${label}</dt><dd>${number(value)}</dd></div>`).join('')}</dl><p class="field-help">${health.last_catalog_at?'Schedules updated '+esc(ago(health.last_catalog_at).toLowerCase())+'. ':''}${health.last_collector_at?'Last price sweep '+esc(ago(health.last_collector_at).toLowerCase())+'. ':''}A listed event can have an unknown price. Saved get-in prices do not confirm exact ticket quantities.</p>`;
+}
+// An alert can have a separate series for every event and seat area. Read
+// every page within one snapshot instead of silently accepting the REST cap.
+async function readAlertHistory(watchId,range='7d'){
+ const pageSize=1000,maxPages=10,snapshot=new Date().toISOString(),rows=[],seen=new Set();
+ const base=`rpc/tix_alert_history?p_watch_id=${encodeURIComponent(watchId)}&p_range=${encodeURIComponent(range)}&checked_at=lte.${encodeURIComponent(snapshot)}&order=checked_at.desc,event_id.asc,qty.asc,club.asc,basis.asc,criteria_version.desc&limit=${pageSize}`;
+ for(let page=0;page<maxPages;page++){
+  const batch=await sbGet(base+'&offset='+(page*pageSize));
+  if(!Array.isArray(batch))throw new Error('Price history could not load. Try again shortly.');
+  for(const row of batch){const key=JSON.stringify([row.checked_at,row.event_id,row.qty,row.club,row.basis]);if(!seen.has(key)){seen.add(key);rows.push(row);}}
+  if(batch.length<pageSize)return rows;
+ }
+ throw new Error('This alert has too much price history to display completely. Choose a shorter time range.');
+}
+async function readComparableEventHistory(body){
+ try{const rows=await sbPublicRpc('tix_event_comparable_history',body);if(Array.isArray(rows))return rows;}catch{}
+ if(body.p_section)throw new Error('History for this section is unavailable. Choose Any section to view saved comparable prices.');
+ const {p_section,...legacy}=body;return sbPublicRpc('tix_event_price_history',legacy);
+}
+function historyRangeRows(rows,range){
+ const days={'24h':1,'7d':7,'30d':30}[range];
+ return rows.filter(r=>!days||new Date(r.checked_at).getTime()>=Date.now()-days*86400000);
+}
+function comparableHistoryGroups(rows){
+ const groups=new Map();
+ for(const r of rows){if(!knownPriceBasis(r.basis)||!Number.isInteger(r.price_cents)||r.price_cents<=0)continue;const key=JSON.stringify([r.event_id||'',r.qty||0,r.club||r.section||'',r.basis||'unknown']);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(r);}
+ return [...groups.entries()].map(([key,samples])=>({key,samples:samples.sort((a,b)=>new Date(a.checked_at)-new Date(b.checked_at)),label:`${samples[0].event_label||samples[0].event_id||'Event'} · ${samples[0].qty||'unknown quantity'} tickets · ${samples[0].club||samples[0].section||'Any section'} · ${samples[0].basis==='fees_included_tax_reported'?'tax reported':samples[0].basis==='fees_included_tax_unknown'?'tax unconfirmed':'basis unconfirmed'}`}));
+}
+
 const normalizeUSPhone = raw => { let digits=String(raw||'').replace(/\D/g,'');if(digits.length===11&&digits[0]==='1')digits=digits.slice(1);return /^[2-9]\d{2}[2-9]\d{6}$/.test(digits)?digits:''; };
 const formatPhone = raw => {const d=normalizeUSPhone(raw);return d?`(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`:String(raw||'');};
 const carrierName = carrier => ({tmobile:'T-Mobile or Metro',verizon:'Verizon or Visible',xfinity:'Xfinity Mobile',uscellular:'UScellular'}[carrier]||'Your carrier');
@@ -132,7 +188,7 @@ async function sbGet(path, {signal}={}) {
  return (await readJson(r)) ?? [];
 }
 async function sbPublicRpc(name,body,{signal,token}={}) {
- if(IS_DEV) return false;
+ if(IS_DEV) return typeof devRpc==='function'?devRpc(name,body):false;
  const r=await fetchWithRetry(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:token?{...H,Authorization:'Bearer '+token}:H,body:JSON.stringify(body)},{signal,timeout:10000,tries:2});
  if(!r.ok) throw new Error('Could not request a price check.');
  return readJson(r);
@@ -217,7 +273,7 @@ function errorBox(message,retryId='retry') {return `<div class="notice error" ro
 function loadingRows(n=4) {return `<div aria-label="Loading events" role="status">${Array.from({length:n},()=>'<div class="skeleton-row"><i></i><div><b></b><span></span></div></div>').join('')}</div>`;}
 function chrome(page) {
   $('#chrome').innerHTML=`<header class="header"><div class="header-inner"><a class="brand" href="./index.html" aria-label="Ticketline home"><span class="brand-mark">${icon('ticket')}</span><span>Ticketline<span class="brand-period">.</span></span></a><nav aria-label="Main navigation"><a ${page==='explore'?'aria-current="page"':''} href="./index.html">Find events</a><a ${page==='watches'||page==='new'?'aria-current="page"':''} href="./watches.html">My alerts</a><a ${page==='activity'?'aria-current="page"':''} href="./ledger.html">Activity</a></nav>${session?'<button id="sign-out" class="text-button">Sign out</button>':''}<a class="notification-link" aria-label="Notification status" ${page==='notifications'?'aria-current="page"':''} href="./notifications.html">${icon('bell')}<span>Notifications</span></a></div></header>`;
- $('#footer').innerHTML=`<footer class="footer"><div><a class="brand small" href="./index.html">${icon('ticket')}Ticketline.</a><p>A little patience. A better ticket.</p></div><div><span>Prices from Gametime. All prices in USD.</span><p>Availability and checkout prices can change.</p></div><div class="footer-links"><a href="./notifications.html">Notification settings</a><a href="./privacy.html">Privacy</a><button class="text-button" id="how-link">How it works</button></div></footer>`;
+ $('#footer').innerHTML=`<footer class="footer"><div><a class="brand small" href="./index.html">${icon('ticket')}Ticketline.</a><p>A little patience. A better ticket.</p></div><div><span>Prices from Gametime. All prices in USD.</span><p>Availability and checkout prices can change.</p></div><div class="footer-links"><a href="./coverage.html">Data coverage</a><a href="./notifications.html">Notification settings</a><a href="./privacy.html">Privacy</a><button class="text-button" id="how-link">How it works</button></div></footer>`;
  if($('#sign-out'))$('#sign-out').onclick=signOut;
  $('#how-link').onclick=()=>showDialog('Your game. Your budget.',`<div class="help-steps"><p><strong>1. Pick what you want to see.</strong><br>Track one event, a team’s schedule, or a day out.</p><p><strong>2. Set your limit.</strong><br>Choose the exact number of tickets and your maximum price per ticket, fees included.</p><p><strong>3. Get the heads-up.</strong><br>When a checked listing is at or below your limit, we send an alert with a link to Gametime. You choose whether to buy.</p></div><p class="muted">Checks target every 15 minutes in the week before an event and hourly further out. Scheduling can be delayed. Sign in to keep your alerts and history private.</p><a class="button primary" href="./new.html">Create an alert ${icon('arrow')}</a>`);
 }

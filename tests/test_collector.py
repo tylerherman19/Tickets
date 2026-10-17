@@ -164,7 +164,8 @@ class CollectorTests(unittest.TestCase):
             scan=next(body[0] for path,body in writes if path.startswith('tix_scans'))
             if expected_reason:self.assertIn(expected_reason,scan['detail']['reasons'])
             if expect_send and deal:
-                self.assertTrue(send.call_args.args[1].endswith('Gametime deal: synthetic-tier.'))
+                self.assertIn('Gametime deal label: synthetic-tier', send.call_args.args[1])
+                self.assertIn('synthetic-tier', send.call_args.kwargs['html_body'])
                 self.assertEqual(next(body[0] for path,body in writes if path=='tix_alerts')['deal'],deal)
 
     def test_missing_lots_main_records_incomplete_without_price_or_send(self):
