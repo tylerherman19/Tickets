@@ -46,6 +46,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/tickets_release_gate.py
+      - name: Expire private search activity after 90 days
+        continue-on-error: true # Retention outages must not stop ticket checks.
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/tickets_search_retention.py
       - name: check watched events or recover stale collector
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
