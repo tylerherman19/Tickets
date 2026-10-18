@@ -344,3 +344,8 @@ test('alert history refuses a truncated result after ten full pages',async()=>{
  await assert.rejects(run('readAlertHistory("mine","all")'),/too much price history.*Choose a shorter time range/);
  assert.equal(calls,10);
 });
+
+test('the literal fallback preserves the all-sports category union',()=>{
+ run('Object.assign(state,{category:"all-sports",search:"Wisconsin",exploreTeamId:"",teamEventIds:null})');
+ const q=run('catalogQuery()');assert.match(q,/category=in\.\(nfl-football/);assert.match(q,/,pwhl,sports\)/);assert.doesNotMatch(q,/category=eq\.all-sports/);
+});

@@ -46,7 +46,8 @@ function catalogQuery(limit=13,includeUnpriced=state.catalogFallback){
  let q=`tix_events_v?select=*&event_date=${state.date?'eq.'+state.date:'gte.'+todayISO(now)}&order=${state.cheapOnly&&!includeUnpriced?'min_total,event_date,event_id':'event_date,event_id'}&limit=${limit}&offset=${state.offset}`;
  if(!state.date&&(state.within||state.cheapOnly)&&state.within!=='all'){const days=Number(state.within||7);const end=todayISO(new Date(now.getTime()+days*86400000));q+='&event_date=lte.'+end;}
  q+='&event_date=lte.'+todayISO(new Date(now.getTime()+365*86400000));
- if(state.category)q+='&category=eq.'+encodeURIComponent(state.category);
+ if(state.category==='all-sports')q+='&category=in.(nfl-football,college-football,mlb-baseball,nba-basketball,college-basketball,nhl-hockey,mls-soccer,wnba,pwhl,sports)';
+ else if(state.category)q+='&category=eq.'+encodeURIComponent(state.category);
  if(priceOnly&&Number(state.maxPrice)>0)q+='&min_total=lte.'+Math.round(Number(state.maxPrice)*100);
  if(priceOnly){q+='&min_total=not.is.null&price_checked_at=gte.'+encodeURIComponent(new Date(now.getTime()-72*3600000).toISOString());}
  // Strip PostgREST filter syntax, then quote each server-side search pattern.
