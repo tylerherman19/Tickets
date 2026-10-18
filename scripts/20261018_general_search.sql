@@ -38,28 +38,30 @@ create or replace function public.tix_general_search(
  p_through date default null,p_max_cents integer default null,p_priced_since timestamptz default null,
  p_cheap boolean default false,p_offset integer default 0,p_limit integer default 13)
 returns setof public.tix_events_v language plpgsql stable security definer set search_path='' as $$
-declare term text:=public.tix_normalize_team(left(coalesce(p_query,''),100)); cat text:=nullif(p_category,''); curated_match boolean;
+declare term text:=public.tix_normalize_team(left(coalesce(p_query,''),100)); cat text:=nullif(p_category,''); curated_match boolean; team_ids text[]; families text[]; conflicts text[]; family_names text[]; family_slugs text[]; conflict_names text[]; conflict_slugs text[];
 begin
  if term in ('concert','concerts') and cat is null then cat:='concert';term:=''; end if;
  if term in ('sports','all sports') and cat is null then cat:='all-sports';term:=''; end if;
  select exists(select 1 from public.tix_teams t,unnest(t.search_aliases) a where public.tix_normalize_team(a)=term) into curated_match;
+ select coalesce(array_agg(t.team_id),'{}') into team_ids from public.tix_match_search_teams(term,cat,p_region,1200) t;
+ select coalesce(array_agg(distinct public.tix_normalize_team(a)),'{}') into families from public.tix_teams t,unnest(t.search_aliases) a where t.team_id=any(team_ids) and length(a)>=3;
+ select coalesce(array_agg(distinct public.tix_normalize_team(a)),'{}') into conflicts from public.tix_teams t,unnest(t.aliases) a
+ where not(t.team_id=any(team_ids)) and exists(select 1 from unnest(families) f where public.tix_normalize_team(a) like '% '||f);
+ select coalesce(array_agg('%'||f||'%'),'{}'),coalesce(array_agg('%'||replace(f,' ','-')||'%'),'{}') into family_names,family_slugs from unnest(families) f;
+ select coalesce(array_agg('%'||f||'%'),'{}'),coalesce(array_agg('%'||replace(f,' ','-')||'%'),'{}') into conflict_names,conflict_slugs from unnest(conflicts) f;
  return query execute $q$
- with teams as materialized(select team_id from public.tix_match_search_teams($1,$2,$3,1200)),
- membership as materialized(select distinct te.event_id from public.tix_team_events te join teams using(team_id)),
- family_aliases as materialized(select distinct public.tix_normalize_team(a) value from public.tix_teams t join teams using(team_id),unnest(t.search_aliases) a where length(a)>=3),
- conflicting_names as materialized(select distinct public.tix_normalize_team(a) value from public.tix_teams t,unnest(t.aliases) a
- where t.team_id not in(select team_id from teams) and exists(select 1 from family_aliases f where public.tix_normalize_team(a) like '% '||f.value))
+ with membership as materialized(select distinct te.event_id from public.tix_team_events te where te.team_id=any($14))
  select c.* from public.tix_events_v c where
  c.event_date between current_date and current_date+365 and c.event_date between coalesce($6,current_date) and coalesce($6,least(coalesce($7,current_date+365),current_date+365))
  and ($2 is null or ($2='all-sports' and c.category in ('nfl-football','college-football','nba-basketball','college-basketball','mlb-baseball','nhl-hockey','mls-soccer','wnba','pwhl','sports')) or c.category=$2)
- and (case when $13 then (c.event_id in(select event_id from membership) or exists(select 1 from family_aliases f where c.name ilike '%'||f.value||'%' or c.slug ilike '%'||replace(f.value,' ','-')||'%')) else ($1='' or c.name ilike '%'||$1||'%' or c.slug ilike '%'||replace($1,' ','-')||'%' or c.venue ilike '%'||$1||'%' or c.city ilike '%'||$1||'%' or c.state=$3 or c.event_id in(select event_id from membership) or exists(select 1 from family_aliases f where c.name ilike '%'||f.value||'%' or c.slug ilike '%'||replace(f.value,' ','-')||'%')) end)
- and (c.event_id in(select event_id from membership) or not exists(select 1 from conflicting_names f where c.name ilike '%'||f.value||'%' or c.slug ilike '%'||replace(f.value,' ','-')||'%'))
+ and (case when $13 then (c.event_id in(select event_id from membership) or (coalesce(c.name,'') ilike any($15) or coalesce(c.slug,'') ilike any($16))) else ($1='' or c.name ilike '%'||$1||'%' or c.slug ilike '%'||replace($1,' ','-')||'%' or c.venue ilike '%'||$1||'%' or c.city ilike '%'||$1||'%' or c.state=$3 or c.event_id in(select event_id from membership) or (coalesce(c.name,'') ilike any($15) or coalesce(c.slug,'') ilike any($16))) end)
+ and (c.event_id in(select event_id from membership) or not(coalesce(c.name,'') ilike any($17) or coalesce(c.slug,'') ilike any($18)))
  and ($4 is null or c.state=$4) and ($5 is null or public.tix_normalize_team(c.city) like '%'||public.tix_normalize_team($5)||'%')
  and ($8 is null or c.min_total<=$8)
  and ($9 is null or (c.min_total is not null and c.price_checked_at>=$9))
  order by case when $10 then c.min_total end nulls last,c.event_date,c.event_id
  limit least(greatest(coalesce($12,13),1),201) offset least(greatest(coalesce($11,0),0),100000)
- $q$ using term,cat,p_region,p_place_state,p_place_city,p_date,p_through,p_max_cents,p_priced_since,p_cheap,p_offset,p_limit,curated_match;
+ $q$ using term,cat,p_region,p_place_state,p_place_city,p_date,p_through,p_max_cents,p_priced_since,p_cheap,p_offset,p_limit,curated_match,team_ids,family_names,family_slugs,conflict_names,conflict_slugs;
 end $$;
 revoke all on function public.tix_match_search_teams(text,text,text,integer) from public;
 revoke all on function public.tix_general_search(text,text,text,text,text,date,date,integer,timestamptz,boolean,integer,integer) from public;
