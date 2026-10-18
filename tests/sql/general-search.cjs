@@ -21,13 +21,14 @@ const events=[
  ['college-basketball','Spring Hill Badgers at Other','AL','cbbspringhill']];
 for(let i=0;i<events.length;i++){let [cat,name,state,team]=events[i];await db.query(`insert into tix_catalog(event_id,event_date,url,category,name,slug,state,city,min_total,price_checked_at) values($1,current_date+3,'https://gametime.co/events/'||$1,$2,$3,$4,$5,'Test City',case when $6 then 2500 else null end,case when $6 then now() else null end)`,[id(i+1),cat,name,name.toLowerCase().replaceAll(' ','-'),state,i!==1]);if(team)await db.query('insert into tix_team_events(team_id,event_id,is_home) values($1,$2,false)',[team,id(i+1)]);}
 await db.query(`insert into tix_catalog(event_id,event_date,url,category,name,state) values($1,current_date+3,'x','pwhl','Professional womens hockey','MN')`,[id(11)]);
+await db.query(`insert into tix_catalog(event_id,event_date,url,category,name,state) values($1,current_date+3,'x','sports','Badgers at Golden Gophers Womens Hockey','MN')`,[id(12)]);
 await db.exec('set role anon');
 const search=async(q,cat=null,region=null,offset=0,limit=100)=>rpc('tix_general_search',[q,cat,region,null,null,null,null,null,null,false,offset,limit]);
-assert.deepEqual((await search('Wisconsin',null,'WI')).map(x=>x.event_id),[1,2,3,4,5,6].map(id));
-assert.deepEqual((await search('Badgers')).map(x=>x.event_id),[1,2].map(id),'UW sports, not Spring Hill or other Wisconsin campuses');
+assert.deepEqual((await search('Wisconsin',null,'WI')).map(x=>x.event_id),[1,2,3,4,5,6,12].map(id));
+assert.deepEqual((await search('Badgers')).map(x=>x.event_id),[1,2,12].map(id),'UW sports, not Spring Hill or other Wisconsin campuses');
 assert.deepEqual((await search('john m')).map(x=>x.event_id),[6,7].map(id));
 assert.deepEqual((await search('concerts')).map(x=>x.event_id),[6,7].map(id));
-assert.equal((await search('', 'all-sports')).length,7);assert.equal((await search('Wisconsin','all-sports','WI')).length,5);
+assert.equal((await search('', 'all-sports')).length,8);assert.equal((await search('Wisconsin','all-sports','WI')).length,6);
 assert.deepEqual((await search('Wisconsin','nfl-football','WI')).map(x=>x.event_id),[id(5)]);
 assert.deepEqual((await search('Wisconsin',null,'WI',2,2)).map(x=>x.event_id),[3,4].map(id));
 assert.equal((await rpc('tix_general_search',['Wisconsin',null,'WI','WI'])).length,1,'Explicit location narrows a regional team search to games in that place');
@@ -42,6 +43,6 @@ await db.query('insert into tix_team_events(team_id,event_id,is_home) values($1,
 assert.ok((await rpc('tix_match_search_teams',['Minnesota',null,'MN',100])).some(x=>x.team_id==='nflmin'));
 // No duplicate events when several matching teams play one another.
 await db.query('insert into tix_team_events(team_id,event_id,is_home) values($1,$2,true)',['nflgnb',id(1)]);
-assert.equal((await search('Wisconsin',null,'WI')).length,6);
+assert.equal((await search('Wisconsin',null,'WI')).length,7);
 await db.close();console.log('General search: regional home/away teams, UW aliases, artists, sports/categories, pagination, budgets, location, injection and private-data isolation passed.');
 })().catch(e=>{console.error(e);process.exit(1)});

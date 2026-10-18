@@ -45,11 +45,15 @@ begin
  select exists(select 1 from public.tix_teams t,unnest(t.search_aliases) a where public.tix_normalize_team(a)=term) into curated_match;
  return query execute $q$
  with teams as materialized(select team_id from public.tix_match_search_teams($1,$2,$3,1200)),
- membership as materialized(select distinct te.event_id from public.tix_team_events te join teams using(team_id))
+ membership as materialized(select distinct te.event_id from public.tix_team_events te join teams using(team_id)),
+ family_aliases as materialized(select distinct public.tix_normalize_team(a) value from public.tix_teams t join teams using(team_id),unnest(t.search_aliases) a where length(a)>=3),
+ conflicting_names as materialized(select distinct public.tix_normalize_team(a) value from public.tix_teams t,unnest(t.aliases) a
+ where t.team_id not in(select team_id from teams) and exists(select 1 from family_aliases f where public.tix_normalize_team(a) like '% '||f.value))
  select c.* from public.tix_events_v c where
  c.event_date between current_date and current_date+365 and c.event_date between coalesce($6,current_date) and coalesce($6,least(coalesce($7,current_date+365),current_date+365))
  and ($2 is null or ($2='all-sports' and c.category in ('nfl-football','college-football','nba-basketball','college-basketball','mlb-baseball','nhl-hockey','mls-soccer','wnba','pwhl','sports')) or c.category=$2)
- and (case when $13 then c.event_id in(select event_id from membership) else ($1='' or c.name ilike '%'||$1||'%' or c.slug ilike '%'||replace($1,' ','-')||'%' or c.venue ilike '%'||$1||'%' or c.city ilike '%'||$1||'%' or c.state=$3 or c.event_id in(select event_id from membership)) end)
+ and (case when $13 then (c.event_id in(select event_id from membership) or exists(select 1 from family_aliases f where c.name ilike '%'||f.value||'%' or c.slug ilike '%'||replace(f.value,' ','-')||'%')) else ($1='' or c.name ilike '%'||$1||'%' or c.slug ilike '%'||replace($1,' ','-')||'%' or c.venue ilike '%'||$1||'%' or c.city ilike '%'||$1||'%' or c.state=$3 or c.event_id in(select event_id from membership) or exists(select 1 from family_aliases f where c.name ilike '%'||f.value||'%' or c.slug ilike '%'||replace(f.value,' ','-')||'%')) end)
+ and (c.event_id in(select event_id from membership) or not exists(select 1 from conflicting_names f where c.name ilike '%'||f.value||'%' or c.slug ilike '%'||replace(f.value,' ','-')||'%'))
  and ($4 is null or c.state=$4) and ($5 is null or public.tix_normalize_team(c.city) like '%'||public.tix_normalize_team($5)||'%')
  and ($8 is null or c.min_total<=$8)
  and ($9 is null or (c.min_total is not null and c.price_checked_at>=$9))
