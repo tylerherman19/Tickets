@@ -111,3 +111,11 @@ test('resending uses the remembered email and enforces the send cooldown without
  resend.click();assert.equal(calls.length,1);
  }finally{close();}
 });
+
+test('signing in through an email link in another tab resumes the original sign-in tab',async()=>{
+ const {w,reloads,close}=setup();try{
+ await w.requireSession();
+ w.dispatchEvent(new w.StorageEvent('storage',{key:'ticketline.session.v1',newValue:JSON.stringify({access_token:'other-tab-access',refresh_token:'other-tab-refresh',expires_at:Date.now()+3600000})}));
+ assert.equal(reloads(),1);assert.equal(await w.requireSession(),true);
+ }finally{close();}
+});

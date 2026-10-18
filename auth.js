@@ -161,5 +161,15 @@ async function signOut(){
 }
 // Sign-out in another tab, or Back into a page restored from the bfcache after sign-out,
 // must not keep showing private data.
-addEventListener('storage',e=>{ if(e.key===SESSION_KEY&&!e.newValue&&session){ session=null; location.reload(); } });
+addEventListener('storage',e=>{
+  if(e.key!==SESSION_KEY)return;
+  if(!e.newValue&&session){session=null;location.reload();return;}
+  // An email link often opens a new tab. Resume the original sign-in tab too.
+  if(e.newValue&&!session){
+    try {
+      const next=JSON.parse(e.newValue);
+      if(typeof next?.access_token==='string'&&typeof next?.refresh_token==='string'){session=next;location.reload();}
+    } catch {}
+  }
+});
 addEventListener('pageshow',e=>{ if(e.persisted&&!IS_DEV){ let stored=null; try{stored=localStorage.getItem(SESSION_KEY);}catch{} if(!!stored!==!!session) location.reload(); } });
