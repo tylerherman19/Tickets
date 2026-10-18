@@ -54,20 +54,22 @@ async function requireSession(){
   if(token) return true;
   const notice=sessionStorage.getItem('ticketline.auth-error');sessionStorage.removeItem('ticketline.auth-error');
   const main=document.querySelector('#main');
-  main.innerHTML=`<div class="container page auth-page"><h1>Sign in to your alerts.</h1>${notice?`<p class="notice subtle" role="status">${esc(notice)}</p>`:''}<p>Enter your email for a secure sign-in link and a 6-digit code. You can browse ticket prices without signing in.</p><p>Price alerts are emailed to this address by default. You can add carrier email-to-text when creating an alert.</p><form id="sign-in-form" novalidate><label class="field-label" for="sign-in-email">Email</label><input id="sign-in-email" type="email" autocomplete="email" maxlength="254" required aria-describedby="sign-in-status"><button class="button primary" type="submit">Email me a sign-in link</button></form><p id="sign-in-status" role="status" aria-live="polite"></p><form id="verify-code-form" hidden novalidate><label class="field-label" for="sign-in-code">6-digit code</label><input id="sign-in-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required aria-describedby="verify-code-status"><button class="button primary" type="submit">Verify code</button><p id="verify-code-status" role="status" aria-live="polite"></p></form><p class="field-help">By signing in you agree to the <a class="text-link" href="./privacy.html">privacy policy</a>.</p></div>`;
+  main.innerHTML=`<div class="container page auth-page"><h1>Sign in to your alerts.</h1>${notice?`<p class="notice subtle" role="status">${esc(notice)}</p>`:''}<p>Enter your email for a secure sign-in link and a 6-digit code. You can browse ticket prices without signing in.</p><p>Price alerts are emailed to this address by default. You can add carrier email-to-text when creating an alert.</p><form id="sign-in-form" novalidate><label class="field-label" for="sign-in-email">Email</label><input id="sign-in-email" type="email" autocomplete="email" maxlength="254" required aria-describedby="sign-in-status"><button class="button primary" type="submit">Email me a sign-in link</button></form><p id="sign-in-status" role="status" aria-live="polite"></p><p class="field-help">Already have a sign-in email? Enter your email above and its code below. Verifying a code does not send another email.</p><form id="verify-code-form" novalidate><label class="field-label" for="sign-in-code">6-digit code</label><input id="sign-in-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required aria-describedby="verify-code-status"><button class="button primary" type="submit">Verify code</button><p id="verify-code-status" role="status" aria-live="polite"></p></form><p class="field-help">By signing in you agree to the <a class="text-link" href="./privacy.html">privacy policy</a>.</p></div>`;
   const form=document.querySelector('#sign-in-form'),status=document.querySelector('#sign-in-status'),button=form.querySelector('button');
   const codeForm=document.querySelector('#verify-code-form'),codeInput=document.querySelector('#sign-in-code'),codeStatus=document.querySelector('#verify-code-status'),verifyButton=codeForm.querySelector('button');
   let pendingEmail=null;
   codeForm.onsubmit=async event=>{
     event.preventDefault();
-    if(verifyButton.disabled||!pendingEmail) return;
+    if(verifyButton.disabled) return;
+    const email=pendingEmail||document.querySelector('#sign-in-email').value.trim().toLowerCase();
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){codeStatus.textContent='Enter the email address that received your code.';document.querySelector('#sign-in-email').focus();return;}
     const token=codeInput.value.trim();
     if(!/^[0-9]{6}$/.test(token)){codeStatus.textContent='Enter the 6-digit code from your email.';codeInput.focus();return;}
     verifyButton.disabled=true;verifyButton.textContent='Verifying…';codeStatus.textContent='';
     try {
       const r=await fetch(SB_URL+'/auth/v1/verify',{
         method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},
-        body:JSON.stringify({type:'email',email:pendingEmail,token}),signal:AbortSignal.timeout(15000)});
+        body:JSON.stringify({type:'email',email,token}),signal:AbortSignal.timeout(15000)});
       const next=await r.json();
       if(!r.ok){
         if(r.status===429) throw new Error('Too many attempts. Wait a minute, then try again.');
