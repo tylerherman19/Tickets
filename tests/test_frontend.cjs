@@ -14,7 +14,7 @@ test('date-only events keep their calendar date',()=>{assert.equal(run('dateObj(
 test('phone numbers normalize and format safely',()=>{assert.equal(run('normalizeUSPhone("+1 (612) 555-0148")'),'6125550148');assert.equal(run('formatPhone("6125550148")'),'(612) 555-0148');assert.equal(run('normalizeUSPhone("123")'),'');});
 test('Xfinity Mobile has a dedicated carrier label',()=>{assert.equal(run('carrierName("xfinity")'),'Xfinity Mobile');});
 test('untrusted labels cannot create markup',()=>{assert.equal(run('esc("<img onerror=\\\"bad\\\">&")'),'&lt;img onerror=&quot;bad&quot;&gt;&amp;');});
-const app=fs.readFileSync('app.js','utf8');const start=app.indexOf('function watchLatest(');const end=app.indexOf('function renderWatches(');vm.runInContext('const state={prices:[],scans:[]};'+app.slice(start,end),sandbox);
+const app=fs.readFileSync('app.js','utf8');const start=app.indexOf('function watchCheckFresh(');const end=app.indexOf('function renderWatches(');vm.runInContext('const state={prices:[],scans:[]};'+app.slice(start,end),sandbox);
 const queryStart=app.indexOf('function catalogQuery('),queryEnd=app.indexOf('async function loadEvents(');
 vm.runInContext(app.slice(queryStart,queryEnd),sandbox);
 test('clearing search cannot leave an invisible filter active',()=>{
@@ -131,17 +131,17 @@ test('incomplete provider response separates get-in from exact two-seat price',(
  assert.match(message,/does not verify 2 tickets together/);
  assert.doesNotMatch(message,/no matching tickets/i);
 });
-test('a newer incomplete scan keeps the previous verified lot labeled as historical',()=>{
+test('an incomplete scan never shows a historical price as the current price',()=>{
  sandbox.watch={kind:'event',qty:2};
  sandbox.previous=[{price_cents:12000,basis:'fees_included_tax_unknown',checked_at:new Date(Date.now()-44*60000).toISOString()}];
  sandbox.scan={outcome:'provider_incomplete'};
  const display=run('watchPriceDisplay(watch,null,previous,scan)');
- assert.equal(display.price_cents,12000);
- assert.equal(display.label,'Previous verified lot');
- assert.match(display.detail,/not verified by the latest check/);
+ assert.equal(display.price_cents,null);
+ assert.equal(display.label,'Current price');
+ assert.match(display.detail,/Updating prices/);
  const current=run('watchPriceDisplay(watch,{price_cents:11100,basis:\'fees_included_tax_unknown\',checked_at:new Date().toISOString()},previous,scan)');
  assert.equal(current.price_cents,11100);
- assert.equal(current.label,'Latest verified lot');
+ assert.equal(current.label,'Current price');
  const team=run('watchPriceDisplay({kind:"team",qty:2},null,previous,scan)');
  assert.equal(team.price_cents,null);
 });
@@ -191,7 +191,7 @@ test('legacy null basis cannot become a fresh watch hit from either reader',()=>
  assert.equal(run("watchLatest({id:'legacy',qty:2,criteria_version:1,created_at:'2020-01-01'}).length"),0);
  run('state.intelligence=[]');
  assert.equal(run("watchLatest({id:'legacy',qty:2,criteria_version:1,created_at:'2020-01-01'}).length"),0);
- assert.equal(run("watchPriceDisplay({kind:'event'},null,state.prices,{}).label"),'Previous observed price');
+ assert.equal(run("watchPriceDisplay({kind:'event'},null,state.prices,{}).label"),'Current price');
 });
 test('group filters and partial samples cannot imply sold out',()=>{
  assert.match(run("lotFilterMarkup('groups')"),/Pairs \(2\)/);assert.match(run("lotFilterMarkup('groups')"),/Groups of 4/);
@@ -348,4 +348,30 @@ test('alert history refuses a truncated result after ten full pages',async()=>{
 test('the literal fallback preserves the all-sports category union',()=>{
  run('Object.assign(state,{category:"all-sports",search:"Wisconsin",exploreTeamId:"",teamEventIds:null})');
  const q=run('catalogQuery()');assert.match(q,/category=in\.\(nfl-football/);assert.match(q,/,pwhl,sports\)/);assert.doesNotMatch(q,/category=eq\.all-sports/);
+});
+
+test('an old successful check with two-ticket lots never becomes a no-seats claim',()=>{
+ sandbox.oldWatch={active:true,kind:'event',qty:2,threshold_cents:10000};
+ sandbox.oldIntel={last_checked_at:new Date(Date.now()-3*3600000).toISOString(),scan_outcome:'ok',scan_detail:{listings_checked:201,matching_listings:201,available_lots:[1,2,3,4,5,6,7,8]}};
+ const message=run('watchDiagnostic(oldWatch,oldIntel,null,null)');
+ assert.match(message,/Updating prices/);
+ assert.doesNotMatch(message,/no 2-seat|no matching|currently available/i);
+ assert.equal(run('watchScanSummary(oldWatch,oldIntel)'),'');
+});
+test('quantity matches rejected by other seat preferences do not imply no pairs exist',()=>{
+ sandbox.seatIntel={last_checked_at:new Date().toISOString(),scan_outcome:'unavailable',scan_detail:{listings_checked:201,matching_listings:201,available_lots:[2,4]}};
+ assert.match(run('watchDiagnostic({active:true,qty:2},seatIntel,null,null)'),/offering 2 tickets together, but none matched your other seat requirements/);
+});
+test('a no-quantity result is explicitly tied to the last check and its offered quantities',()=>{
+ sandbox.noPairs={last_checked_at:new Date().toISOString(),scan_outcome:'unavailable',scan_detail:{listings_checked:10,matching_listings:0,available_lots:[1,3]}};
+ assert.match(run('watchDiagnostic({active:true,qty:2},noPairs,null,null)'),/None of the 10 listings checked .* offered 2 tickets together/);
+ sandbox.noPairs.scan_detail.available_lots=[1,2,3];
+ const message=run('watchDiagnostic({active:true,qty:2},noPairs,null,null)');
+ assert.match(message,/provider reported 2-ticket lots/);assert.doesNotMatch(message,/No 2-seat/i);
+});
+test('an old price from the last successful scan stays off the current card',()=>{
+ sandbox.checkedOld=new Date(Date.now()-3*3600000).toISOString();
+ const display=run('watchPriceDisplay({kind:"event",qty:2},null,[{price_cents:12000,basis:"fees_included_tax_unknown",checked_at:checkedOld}],{outcome:"ok",checked_at:checkedOld})');
+ assert.equal(display.label,'Current price');assert.equal(display.price_cents,null);assert.match(display.detail,/Updating prices/);
+ assert.doesNotMatch(display.detail,/not verified by the latest/);
 });

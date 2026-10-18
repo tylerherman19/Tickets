@@ -1,6 +1,6 @@
-const V='20261018h',CACHE='ticketline-shell-'+V;
+const V='20261018j',CACHE='ticketline-shell-'+V;
 const SHELL=['./index.html','./privacy.html','./tickets.css?v='+V,'./tickets.js?v='+V,
-  './auth.js?v='+V,'./dev-fixtures.js?v='+V,'./app.js?v='+V];
+  './team-logos.js?v='+V,'./auth.js?v='+V,'./dev-fixtures.js?v='+V,'./app.js?v='+V];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
 // Only same-origin static files are cached. Supabase API responses (private alert data)

@@ -254,7 +254,50 @@ async function coverage(){
 }
 
 async function getHealth(){try {const rows=await sbGet('tix_state?k=in.(collector_health,notification_health)&select=k,v');return Object.fromEntries(rows.map(r=>[r.k,typeof r.v==='string'?JSON.parse(r.v):r.v]));}catch{return {};}}
+let watchPollTimer=null,watchSnapshotBusy=false;
+const watchRefreshRequested=new Map();
+async function requestFreshWatchChecks(){
+ if(IS_DEV)return;
+ state.watchRefreshStates||={};
+ const candidates=state.watches.filter(w=>w.active&&!w.match?.archived_at&&!w.purchased_at&&!watchCheckFresh(w,state.intelligence.find(i=>i.watch_id===w.id)));
+ const requests=[];
+ const eventWatches=candidates.filter(w=>w.kind==='event');
+ const eventIds=[...new Set(eventWatches.flatMap(w=>w.match?.event_ids||[]))];
+ for(let offset=0;offset<eventIds.length&&requests.length<4;offset+=12){
+   const ids=eventIds.slice(offset,offset+12),key='events:'+ids.join(',');
+   requests.push({key,watches:eventWatches.filter(w=>w.match?.event_ids?.some(id=>ids.includes(id))),body:{p_event_ids:ids}});
+ }
+ const teams=new Set();
+ for(const w of candidates.filter(w=>w.kind==='team')){
+   const key='team:'+(w.match?.category||'')+':'+(w.match?.team_id||w.match?.slug);if(teams.has(key)||requests.length>=8)continue;teams.add(key);
+   requests.push({key,watches:candidates.filter(other=>other.kind==='team'&&(other.match?.team_id||other.match?.slug)===(w.match?.team_id||w.match?.slug)),body:{p_team_id:w.match?.team_id||null,p_category:w.match?.category||null,p_query:(w.match?.team_label||teamName(w.match?.category,w.match?.slug)||'').slice(0,100)}});
+ }
+ for(const request of requests){
+   if(Date.now()-(watchRefreshRequested.get(request.key)||0)<300000)continue;
+   watchRefreshRequested.set(request.key,Date.now());
+   let result;
+   try{result=await sbRpc('tix_prioritize_search',request.body);}catch{result={state:'failed'};}
+   for(const w of request.watches)state.watchRefreshStates[w.id]=result?.state||'failed';
+   if(result?.state==='rate_limited')break;
+ }
+}
+function scheduleWatchSnapshot(){
+ clearTimeout(watchPollTimer);
+ watchPollTimer=setTimeout(async()=>{
+   if(document.body.dataset.page!=='watches')return;
+   if(!document.hidden&&!watchSnapshotBusy){
+     watchSnapshotBusy=true;
+     try{
+       state.intelligence=await sbGet('tix_alert_intelligence_v?select=*');
+       state.scans=state.intelligence.filter(x=>x.last_checked_at).map(x=>({watch_id:x.watch_id,outcome:x.scan_outcome,checked_at:x.last_checked_at,detail:x.scan_detail,criteria_version:x.criteria_version}));
+       renderWatches();await requestFreshWatchChecks();renderWatches();
+     }catch{renderWatches();}finally{watchSnapshotBusy=false;}
+   }
+   scheduleWatchSnapshot();
+ },30000);
+}
 async function watches(){
+ clearTimeout(watchPollTimer);
  layout('Your ticket alerts.','Your events, your seats, your price. We’ll keep watch.',`<div id="watch-health"></div><div class="watch-toolbar"><div class="segmented" aria-label="Filter alerts">${[['all','All alerts'],['active','Watching'],['hit','At target'],['paused','Paused'],['past','Past alerts']].map(([k,l])=>`<button data-filter="${k}" aria-pressed="${state.filter===k}">${l}</button>`).join('')}</div><button id="refresh-watches" class="text-button">${icon('refresh')} Refresh</button></div><div id="watches">${loadingRows(3)}</div>`,`<a class="button primary" href="./new.html">${icon('plus')} Create an alert</a>`);
  $$('[data-filter]').forEach(b=>b.onclick=()=>{state.filter=b.dataset.filter;$$('[data-filter]').forEach(x=>x.setAttribute('aria-pressed',x===b));renderWatches();});$('#refresh-watches').onclick=watches;
  try{
@@ -275,30 +318,38 @@ async function watches(){
  const ids=[...new Set(ws.filter(w=>w.kind==='event').flatMap(w=>w.match?.event_ids||[]))];
  state.eventMarkets={};
  const batches=await Promise.allSettled(Array.from({length:Math.ceil(ids.length/40)},(_,i)=>
-   sbGet('tix_events_v?event_id=in.('+ids.slice(i*40,i*40+40).map(encodeURIComponent).join(',')+')&select=event_id,min_total,price_checked_at,discovery_status,url')));
+   sbGet('tix_events_v?event_id=in.('+ids.slice(i*40,i*40+40).map(encodeURIComponent).join(',')+')&select=event_id,name,slug,category,event_date,min_total,price_checked_at,discovery_status,url')));
  for(const result of batches)if(result.status==='fulfilled')for(const event of result.value)state.eventMarkets[event.event_id]=event;
- renderWatches();
+ renderWatches();scheduleWatchSnapshot();
+ requestFreshWatchChecks().then(()=>renderWatches()).catch(()=>{});
  const h=health.collector_health;
  const watchIssue=state.scans.some(s=>['provider_incomplete','failed','parser_failure','http_failure','event_unavailable'].includes(s.outcome));
  const checkLate=h&&ageMinutes(h.checked_at)>35;
  $('#watch-health').innerHTML=h?`<div class="health-strip ${checkLate||watchIssue?'attention':''}">${icon('clock')}<span>${checkLate?'Checks are delayed.':watchIssue?'One or more alert checks need attention.':'Last collector run '+ago(h.checked_at).toLowerCase()+'.'} New alerts usually get their first check on the next run.</span><a href="./notifications.html">View status</a></div>`:'';
  }catch(e){$('#watches').innerHTML=errorBox(e.message);$('#retry').onclick=watches;}
 }
+function watchCheckFresh(w,intel){
+ const age=ageMinutes(intel?.last_checked_at);
+ return age>=0&&age<15&&(intel.criteria_version==null||w.criteria_version==null||intel.criteria_version===w.criteria_version)&&new Date(intel.last_checked_at)>=new Date(w.criteria_updated_at||w.created_at||0);
+}
 function watchLatest(w){
  const intel=state.intelligence?.find(x=>x.watch_id===w.id);
- if(intel&&intel.criteria_version===w.criteria_version&&knownPriceBasis(intel.basis)&&intel.current_price_cents!=null&&intel.scan_outcome==='ok'&&ageMinutes(intel.price_checked_at)<120&&new Date(intel.price_checked_at)>=new Date(w.criteria_updated_at||w.created_at||0)){
+ if(intel&&watchCheckFresh(w,intel)&&intel.criteria_version===w.criteria_version&&knownPriceBasis(intel.basis)&&intel.current_price_cents!=null&&intel.scan_outcome==='ok'&&ageMinutes(intel.price_checked_at)<15&&new Date(intel.price_checked_at)>=new Date(w.criteria_updated_at||w.created_at||0)){
    return [{watch_id:w.id,price_cents:intel.current_price_cents,checked_at:intel.price_checked_at,
      listing_url:intel.listing_url,event_label:intel.event_label,event_id:intel.current_event_id,club:intel.club,qty:w.qty,
      basis:intel.basis,prefee_cents:intel.prefee_cents,sales_tax_cents:intel.sales_tax_cents,pre_tax_total_cents:intel.pre_tax_total_cents,deal:intel.deal,hist:intel.hist,lots:intel.lots}];
  }
  if(intel)return [];
  const scans=state.scans.filter(s=>s.watch_id===w.id);const byEvent=Object.fromEntries(scans.map(s=>[s.event_id,s]));const seen=new Set();
- const latest=state.prices.filter(p=>{if(!knownPriceBasis(p.basis)||p.watch_id!==w.id||p.criteria_version!=null&&p.criteria_version!==w.criteria_version||new Date(p.checked_at)<new Date(w.criteria_updated_at||w.created_at))return false;const key=p.event_id+'|'+p.club;if(seen.has(key))return false;seen.add(key);const scan=byEvent[p.event_id];return p.qty===w.qty&&ageMinutes(p.checked_at)<120&&scan?.criteria_version===w.criteria_version&&scan.outcome==='ok'&&new Date(p.checked_at)>=new Date(scan.checked_at)-1000;});
+ const latest=state.prices.filter(p=>{if(!knownPriceBasis(p.basis)||p.watch_id!==w.id||p.criteria_version!=null&&p.criteria_version!==w.criteria_version||new Date(p.checked_at)<new Date(w.criteria_updated_at||w.created_at))return false;const key=p.event_id+'|'+p.club;if(seen.has(key))return false;seen.add(key);const scan=byEvent[p.event_id];return p.qty===w.qty&&ageMinutes(p.checked_at)<15&&scan?.criteria_version===w.criteria_version&&scan.outcome==='ok'&&new Date(p.checked_at)>=new Date(scan.checked_at)-1000;});
  const rows=latest.filter(p=>p.watch_id===w.id);return rows.sort((a,b)=>a.price_cents-b.price_cents);
 }
 function watchDiagnostic(w,intel,price,market){
  if(!w.active)return 'This alert is paused.';
- if(!intel?.last_checked_at)return 'Waiting for the first ticket-provider check.';
+ if(!intel?.last_checked_at||!watchCheckFresh(w,intel)){
+   const refresh=state.watchRefreshStates?.[w.id];
+   return refresh==='failed'?'Could not request current prices. Use Refresh to try again.':refresh==='rate_limited'?'Price updates are temporarily limited. Waiting for the next check.':'Updating prices. Waiting for a fresh check of your seats and quantity.';
+ }
  if(['parser_failure','http_failure','failed'].includes(intel.scan_outcome))
    return `Last ticket-provider check failed ${ago(intel.last_checked_at).toLowerCase()}. We will retry.`;
  if(intel.scan_detail?.reasons?.some(r=>r.startsWith('deal_')))return 'Price matched, but the deal rating is not confirmed. Deal-only alerts are waiting for verified tier ordering.';
@@ -307,28 +358,40 @@ function watchDiagnostic(w,intel,price,market){
    `Gametime get-in is ${money(market.min_total)} per ticket, but that does not verify ${w.qty} tickets together. Exact-seat alerts wait for seller lot sizes.`:
    `Gametime did not provide seller lot sizes. We cannot verify ${w.qty} tickets together yet.`;
  if(intel.scan_outcome==='event_unavailable')return 'This event is unavailable from the ticket provider.';
- if(!price){const lots=intel.scan_detail?.available_lots||[],count=intel.scan_detail?.listings_checked||0;
-   return count?`No ${w.qty}-seat listing is currently available. ${count} listings were checked${lots.length?`; offered lot sizes: ${lots.join(', ')}`:''}.`:'No matching listings were found at the last check.';}
+ if(!price){
+   const lots=intel.scan_detail?.available_lots||[],count=intel.scan_detail?.listings_checked||0,matches=intel.scan_detail?.matching_listings;
+   const checked=ago(intel.last_checked_at).toLowerCase();
+   if(intel.scan_outcome==='ok')return `A listing matched your ${w.qty}-ticket alert at the last check, but a current verified price is not available.`;
+   if(matches>0)return `The last check found listings offering ${w.qty} tickets together, but none matched your other seat requirements.`;
+   if(lots.includes(w.qty))return `The provider reported ${w.qty}-ticket lots at the last check, but no listing was verified for all of this alert’s requirements.`;
+   if(intel.scan_outcome==='unavailable')return count?
+     `None of the ${count} listings checked ${checked} offered ${w.qty} tickets together${lots.length?`; available ticket quantities were ${lots.join(', ')}`:''}.`:
+     'No matching listings were found at the last check.';
+   return 'A matching price is not confirmed. Waiting for a successful ticket-provider check.';
+ }
  const distance=price.price_cents-w.threshold_cents;
  return distance>0?`At the last verified check, the cheapest matching ${w.qty}-ticket lot was ${money(price.price_cents)}. Your target is ${money(w.threshold_cents)}.`:
    `At the last verified check, a matching listing was ${money(Math.abs(distance))} ${distance?'below':'at'} your target. Check Activity for delivery status.`;
 }
+function watchScanSummary(w,intel){
+ if(!watchCheckFresh(w,intel))return '';
+ const matches=intel?.scan_detail?.matching_listings;
+ if(Number.isInteger(matches)&&matches>=0)return `${matches} ${matches===1?'listing':'listings'} ${matches?'offered':'verified for'} ${w.qty} tickets together · checked ${ago(intel.last_checked_at)}`;
+ return intel?.last_checked_at?`Last provider check ${ago(intel.last_checked_at)}`:'';
+}
 function watchPriceDisplay(w,current,history,scan){
- if(current)return {label:'Latest verified lot',price_cents:current.price_cents,
+ if(current)return {label:'Current price',price_cents:current.price_cents,
    detail:`Verified ${ago(current.checked_at)}`,breakdown:priceBreakdown(current)};
- const previous=w.kind==='event'?history.at(-1):null;
- if(previous)return {label:knownPriceBasis(previous.basis)?'Previous verified lot':'Previous observed price',price_cents:previous.price_cents,
-   detail:`Recorded ${ago(previous.checked_at)} · not verified by the latest check`,breakdown:priceBreakdown(previous)};
- return {label:'Exact-seat price',price_cents:null,
-   detail:scan?.outcome==='provider_incomplete'?`Exact ${w.qty}-ticket price unverified`:
-     scan?.outcome==='failed'?'Could not check listings':scan?'No matching tickets':'Waiting for first check'};
+ const fresh=watchCheckFresh(w,{last_checked_at:scan?.checked_at,criteria_version:scan?.criteria_version});
+ const detail=w.active===false?'Alert paused':!fresh?'Updating prices':scan.outcome==='unavailable'?'No listings match these seat preferences':scan.outcome==='provider_incomplete'?'Listing details unavailable':['failed','parser_failure','http_failure'].includes(scan.outcome)?'Could not check prices':scan.outcome==='event_unavailable'?'Event unavailable':'Price not confirmed';
+ return {label:'Current price',price_cents:null,detail};
 }
 function renderWatches(){
  const box=$('#watches');const ws=state.watches.filter(w=>{const past=!!(w.match?.archived_at||w.purchased_at);return state.filter==='past'?past:!past&&(state.filter==='all'||(state.filter==='active'&&w.active)||(state.filter==='paused'&&!w.active)||(state.filter==='hit'&&w.active&&watchLatest(w).some(p=>p.price_cents<=w.threshold_cents)));});
  if(!ws.length){box.innerHTML=`<div class="empty-state watch-empty"><span class="empty-ticket">${icon('ticket')}</span><h2>${state.watches.length?'No alerts in this view.':'Good seats start with a game plan.'}</h2><p>${state.watches.length?'Choose another filter to see your saved alerts.':'Choose an event and your maximum price. Your first ticket alert takes about a minute to set up.'}</p><a class="button primary" href="./new.html">${icon('plus')} Create an alert</a></div>`;return;}
  box.innerHTML='<div class="watch-grid"></div>';const grid=$('.watch-grid');
- for(const w of ws){const rows=watchLatest(w),p=rows[0],history=watchHistory(state.prices,w.id),context=priceProof(history,p),intel=state.intelligence.find(x=>x.watch_id===w.id),archived=!!(w.match?.archived_at||w.purchased_at),hit=w.active&&!archived&&p&&p.price_cents<=w.threshold_cents;const recent=state.scans.filter(s=>s.watch_id===w.id)[0],display=watchPriceDisplay(w,p,history,recent),market=w.kind==='event'?state.eventMarkets[w.match?.event_ids?.[0]]:null,marketFresh=market?.min_total!=null&&market.price_checked_at&&ageMinutes(market.price_checked_at)<120;const status=w.purchased_at?'Purchased':archived?'Past alert':!w.active?'Paused':hit?'At your price':recent?.outcome==='provider_incomplete'?'Listing data missing':recent?.outcome==='failed'?'Check delayed':'Watching';
- const article=document.createElement('article');article.className='watch-card'+(hit?' is-hit':'');article.innerHTML=`<div class="watch-card-head"><span class="sport-stamp">${icon(w.kind==='team'?'ball':'ticket')}</span><span class="badge ${hit?'green':!w.active?'neutral':['failed','provider_incomplete'].includes(recent?.outcome)?'amber':'blue'}">${w.active?'<i></i>':''}${status}</span></div><h2>${esc(w.label)}</h2><p class="watch-detail">${esc(w.kind==='team'?matchSummary(w):w.kind==='date'?matchSummary(w):'One event')} · ${w.qty} ${w.qty===1?'ticket':'tickets together'}</p><div class="watch-score"><div><span>Your target</span><strong>${money(w.threshold_cents)}</strong><small>per ticket, fees included</small></div><div><span>${display.label}</span><strong class="${hit?'hit-text':''}">${display.price_cents!=null?money(display.price_cents):'—'}</strong><small>${esc(display.detail)}</small>${display.breakdown?`<small>${esc(display.breakdown)}</small>`:''}</div></div>${p?`<div class="watch-trend">${sparkline(history.filter(r=>r.basis===p.basis&&r.qty===p.qty&&r.club===p.club&&(!p.event_id||r.event_id===p.event_id)))}<p>${esc(context||'Price history is building with each check.')}</p></div>`:''}${marketFresh&&!p?`<div class="watch-market"><span>Gametime get-in · any quantity</span><strong>${money(market.min_total)}</strong><small>Checked ${ago(market.price_checked_at)} · exact ${w.qty}-ticket lot unverified</small></div>`:''}${p?`<p class="price-context">${esc(p.club)} · ${esc(p.event_label||'')}${hit?`<br><strong>${money(w.threshold_cents-p.price_cents)} below your limit</strong>`:''}</p>`:(marketFresh||intel?.scan_outcome==='provider_incomplete'?'':'<p class="price-context">We’ll show a price when a recent listing matches your seat preferences.</p>')}<div class="intelligence"><strong>${esc(watchDiagnostic(w,intel,p,marketFresh?market:null))}</strong>${p&&history.length>1&&intel?.low_7d_cents!=null?`<p>7-day low ${money(intel.low_7d_cents)} · high ${money(intel.high_7d_cents)}${intel.price_24h_ago_cents!=null&&p?` · ${money(Math.abs(p.price_cents-intel.price_24h_ago_cents))} ${p.price_cents<intel.price_24h_ago_cents?'down':'up'} in 24 hours`:''}</p>`:''}${intel?.scan_detail?.matching_listings!=null?`<p>${intel.scan_detail.matching_listings} matching listings · checked ${ago(intel.last_checked_at)}</p>`:intel?.last_checked_at?`<p>Last provider check ${ago(intel.last_checked_at)}</p>`:''}</div>${marketLinks(p?.event_label||w.label)}${!p&&marketFresh&&safeUrl(market.url)?`<a class="text-link market-view" href="${esc(safeUrl(market.url))}" target="_blank" rel="noopener">Check current listings on Gametime ${icon('arrow')}</a>`:''}<div class="watch-options"><span>${icon('people')}${w.match?.club_level?(w.clubs.length?esc(w.clubs.join(', ')):'Any club section'):'Any section'}</span><span>${icon('bell')}${w.alert_style==='repeat'?'Hourly while at target':'First match per event & section'}</span></div>${p&&safeUrl(p.listing_url)?`<a class="button ${hit?'primary':'secondary'} full" href="${esc(safeUrl(p.listing_url))}" target="_blank" rel="noopener">View tickets on Gametime ${icon('arrow')}</a>`:''}<div class="card-actions"><a href="./new.html?edit=${encodeURIComponent(w.id)}">Change target</a><a href="./ledger.html?watch=${encodeURIComponent(w.id)}">Price history</a>${archived?(w.purchased_at?'':`<button data-action="restore">Restore</button>`):`<button data-action="pause">${w.active?'Pause':'Resume'}</button><button data-action="purchased">I bought tickets</button><button data-action="delete" aria-label="Archive ${esc(w.label)}">Archive</button>`}</div>`;
+ for(const w of ws){const rows=watchLatest(w),p=rows[0],history=watchHistory(state.prices,w.id),context=priceProof(history,p),intel=state.intelligence.find(x=>x.watch_id===w.id),archived=!!(w.match?.archived_at||w.purchased_at),hit=w.active&&!archived&&p&&p.price_cents<=w.threshold_cents;const recent=state.scans.filter(s=>s.watch_id===w.id)[0],display=watchPriceDisplay(w,p,history,recent),market=w.kind==='event'?state.eventMarkets[w.match?.event_ids?.[0]]:null,marketFresh=market?.min_total!=null&&market.price_checked_at&&ageMinutes(market.price_checked_at)<15;const status=w.purchased_at?'Purchased':archived?'Past alert':!w.active?'Paused':!watchCheckFresh(w,intel)?'Updating':hit?'At your price':recent?.outcome==='provider_incomplete'?'Listing data missing':recent?.outcome==='failed'?'Check delayed':'Watching';
+ const article=document.createElement('article');article.className='watch-card'+(hit?' is-hit':'');article.innerHTML=`<div class="watch-card-head">${watchTeamStamp(w,market)}<span class="badge ${hit?'green':!w.active?'neutral':['failed','provider_incomplete'].includes(recent?.outcome)?'amber':'blue'}">${w.active?'<i></i>':''}${status}</span></div><h2>${esc(w.label)}</h2><p class="watch-detail">${esc(w.kind==='team'?matchSummary(w):w.kind==='date'?matchSummary(w):'One event')} · ${w.qty} ${w.qty===1?'ticket':'tickets together'}</p><div class="watch-score"><div><span>Your target</span><strong>${money(w.threshold_cents)}</strong><small>per ticket, fees included</small></div><div><span>${display.label}</span><strong class="${hit?'hit-text':''}">${display.price_cents!=null?money(display.price_cents):'—'}</strong><small>${esc(display.detail)}</small>${display.breakdown?`<small>${esc(display.breakdown)}</small>`:''}</div></div>${p?`<div class="watch-trend">${sparkline(history.filter(r=>r.basis===p.basis&&r.qty===p.qty&&r.club===p.club&&(!p.event_id||r.event_id===p.event_id)))}<p>${esc(context||'Price history is building with each check.')}</p></div>`:''}${marketFresh&&!p?`<div class="watch-market"><span>Gametime get-in · any quantity</span><strong>${money(market.min_total)}</strong><small>Checked ${ago(market.price_checked_at)} · exact ${w.qty}-ticket lot unverified</small></div>`:''}${p?`<p class="price-context">${esc(p.club)} · ${esc(p.event_label||'')}${hit?`<br><strong>${money(w.threshold_cents-p.price_cents)} below your limit</strong>`:''}</p>`:(marketFresh||intel?.scan_outcome==='provider_incomplete'?'':'<p class="price-context">We’ll show a price when a recent listing matches your seat preferences.</p>')}<div class="intelligence"><strong>${esc(watchDiagnostic(w,intel,p,marketFresh?market:null))}</strong>${p&&history.length>1&&intel?.low_7d_cents!=null?`<p>7-day low ${money(intel.low_7d_cents)} · high ${money(intel.high_7d_cents)}${intel.price_24h_ago_cents!=null&&p?` · ${money(Math.abs(p.price_cents-intel.price_24h_ago_cents))} ${p.price_cents<intel.price_24h_ago_cents?'down':'up'} in 24 hours`:''}</p>`:''}${watchScanSummary(w,intel)?`<p>${esc(watchScanSummary(w,intel))}</p>`:''}</div>${marketLinks(p?.event_label||w.label)}${!p&&marketFresh&&safeUrl(market.url)?`<a class="text-link market-view" href="${esc(safeUrl(market.url))}" target="_blank" rel="noopener">Check current listings on Gametime ${icon('arrow')}</a>`:''}<div class="watch-options"><span>${icon('people')}${w.match?.club_level?(w.clubs.length?esc(w.clubs.join(', ')):'Any club section'):'Any section'}</span><span>${icon('bell')}${w.alert_style==='repeat'?'Hourly while at target':'First match per event & section'}</span></div>${p&&safeUrl(p.listing_url)?`<a class="button ${hit?'primary':'secondary'} full" href="${esc(safeUrl(p.listing_url))}" target="_blank" rel="noopener">View tickets on Gametime ${icon('arrow')}</a>`:''}<div class="card-actions"><a href="./new.html?edit=${encodeURIComponent(w.id)}">Change target</a><a href="./ledger.html?watch=${encodeURIComponent(w.id)}">Price history</a>${archived?(w.purchased_at?'':`<button data-action="restore">Restore</button>`):`<button data-action="pause">${w.active?'Pause':'Resume'}</button><button data-action="purchased">I bought tickets</button><button data-action="delete" aria-label="Archive ${esc(w.label)}">Archive</button>`}</div>`;
  if(article.querySelector('[data-action="pause"]'))article.querySelector('[data-action="pause"]').onclick=async e=>{e.target.disabled=true;try{const out=await sbWrite('PATCH','tix_watches?id=eq.'+encodeURIComponent(w.id),{active:!w.active});if(!out.length)throw new Error('This alert no longer exists. Refresh the page.');w.active=!w.active;renderWatches();toast(w.active?'Alert resumed.':'Alert paused.');}catch(err){toast(err.message);e.target.disabled=false;}};
  if(article.querySelector('[data-action="restore"]'))article.querySelector('[data-action="restore"]').onclick=async e=>{e.target.disabled=true;try{const {archived_at,...match}=w.match;const out=await sbWrite('PATCH','tix_watches?id=eq.'+encodeURIComponent(w.id),{match});if(!out.length)throw new Error('This alert no longer exists. Refresh the page.');w.match=match;renderWatches();toast('Alert restored. It stays paused until you resume it.');}catch(err){toast(err.message);e.target.disabled=false;}};
  if(article.querySelector('[data-action="purchased"]'))article.querySelector('[data-action="purchased"]').onclick=()=>{
@@ -341,7 +404,7 @@ function renderWatches(){
      $('#dialog').close();renderWatches();toast('Purchase saved.');
    }catch(err){$('#purchase-error').innerHTML=errorBox(err.message,'');e.target.disabled=false;}};
  };
- if(article.querySelector('[data-action="delete"]'))article.querySelector('[data-action="delete"]').onclick=()=>{showDialog('Archive this alert?',`<p><strong>${esc(w.label)}</strong></p><p>This stops the alert and keeps its price and text history in Past alerts. You can restore it from Past alerts later.</p><div class="dialog-actions"><button class="button secondary" id="cancel-delete">Keep watching</button><button class="button danger" id="confirm-delete">Archive alert</button></div><div id="delete-error"></div>`);$('#cancel-delete').onclick=()=>$('#dialog').close();$('#confirm-delete').onclick=async e=>{e.target.disabled=true;try{const match={...w.match,archived_at:new Date().toISOString()};const out=await sbWrite('PATCH','tix_watches?id=eq.'+encodeURIComponent(w.id),{active:false,match});if(!out.length)throw new Error('This alert no longer exists. Refresh the page.');w.active=false;w.match=match;$('#dialog').close();renderWatches();toast('Alert archived.');}catch(err){$('#delete-error').innerHTML=errorBox(err.message,'');e.target.disabled=false;}};};grid.appendChild(article);
+ if(article.querySelector('[data-action="delete"]'))article.querySelector('[data-action="delete"]').onclick=()=>{showDialog('Archive this alert?',`<p><strong>${esc(w.label)}</strong></p><p>This stops the alert and keeps its price and text history in Past alerts. You can restore it from Past alerts later.</p><div class="dialog-actions"><button class="button secondary" id="cancel-delete">Keep watching</button><button class="button danger" id="confirm-delete">Archive alert</button></div><div id="delete-error"></div>`);$('#cancel-delete').onclick=()=>$('#dialog').close();$('#confirm-delete').onclick=async e=>{e.target.disabled=true;try{const match={...w.match,archived_at:new Date().toISOString()};const out=await sbWrite('PATCH','tix_watches?id=eq.'+encodeURIComponent(w.id),{active:false,match});if(!out.length)throw new Error('This alert no longer exists. Refresh the page.');w.active=false;w.match=match;$('#dialog').close();renderWatches();toast('Alert archived.');}catch(err){$('#delete-error').innerHTML=errorBox(err.message,'');e.target.disabled=false;}};};grid.appendChild(article);const logo=article.querySelector('.team-logo');if(logo)logo.onerror=()=>{logo.parentElement.classList.remove('has-team-logo');logo.remove();};
  }
 }
 async function builder(){
@@ -541,7 +604,7 @@ async function activity(){
  $$('[data-activity]').forEach(x=>x.setAttribute('aria-pressed',x.dataset.activity===state.activityKind));draw();
 }
 async function notifications(){
- layout('The heads-up that matters.','Your alert is only useful if you know where it’s going.',`<div class="notification-layout"><section class="settings-panel"><div class="settings-title"><span class="setting-icon">${icon('bell')}</span><div><h2>Email and text alerts</h2><p>Email to your sign-in address, with optional carrier text</p></div></div><div id="delivery-health">${loadingRows(1)}</div><div class="settings-divider"></div><h3>How are alerts delivered?</h3><p>Ticketline emails your verified sign-in address by default. You may also enable a carrier email-to-text copy for each alert. Direct SMS is not configured.</p><h3>When will I get an alert?</h3><p>We queue a confirmation when you save an alert. After that, we email and optionally text when a checked listing has your exact number of tickets and costs at or below your per-ticket limit, fees included.</p><dl class="schedule-list"><div><dt>Events within 7 days</dt><dd>Target: every 15 minutes</dd></div><div><dt>Events more than 7 days away</dt><dd>Target: hourly</dd></div></dl><p class="field-help">Checks are scheduled, not instant. Busy periods, the ticket provider, and the carrier can delay an alert. First-match alerts are sent once per event and section; repeat alerts are limited to about once an hour.</p><a class="button primary" href="./watches.html">Manage my alerts ${icon('arrow')}</a></section><aside><div class="settings-panel"><h3>Not seeing your alert?</h3><ol class="troubleshoot"><li>Check your sign-in inbox and spam folder. If text is enabled, check the carrier and number in the alert.</li><li>Make sure your alert is watching, not paused.</li><li>Check Activity for a matching price and the send result.</li><li>Check your phone’s spam or blocked messages.</li></ol><p>“Accepted for delivery” means the mail server accepted the message. It does not confirm that the carrier delivered it to your phone.</p><a class="text-link" href="./ledger.html">View alert activity ${icon('arrow')}</a></div><div class="aside-note">${icon('shield')}<p>Full phone numbers stay in a private delivery table. They are never returned to the public site or shown on alert cards. <a class="text-link" href="./privacy.html">Privacy policy</a></p></div><div class="settings-panel account-panel"><h3>Delete your account</h3><p>Permanently removes your sign-in, every alert, its price history, delivery log and any saved phone number. This cannot be undone.</p><button class="button secondary" id="delete-account">Delete my account and data</button></div></aside></div>`,`<button class="button secondary" id="refresh-status">${icon('refresh')} Refresh status</button>`);
+ layout('The heads-up that matters.','Your alert is only useful if you know where it’s going.',`<div class="notification-layout"><section class="settings-panel"><div class="settings-title"><span class="setting-icon">${icon('bell')}</span><div><h2>Email and text alerts</h2><p>Email to your sign-in address, with optional carrier text</p></div></div><div id="delivery-health">${loadingRows(1)}</div><div class="settings-divider"></div><h3>How are alerts delivered?</h3><p>Ticketline emails your verified sign-in address by default. You may also enable a carrier email-to-text copy for each alert. Direct SMS is not configured.</p><h3>When will I get an alert?</h3><p>We queue a confirmation when you save an alert. After that, we email and optionally text when a checked listing has your exact number of tickets and costs at or below your per-ticket limit, fees included.</p><dl class="schedule-list"><div><dt>All active alerts</dt><dd>Target: every 15 minutes</dd></div></dl><p class="field-help">Checks are scheduled, not instant. Busy periods, the ticket provider, and the carrier can delay an alert. First-match alerts are sent once per event and section; repeat alerts are limited to about once an hour.</p><a class="button primary" href="./watches.html">Manage my alerts ${icon('arrow')}</a></section><aside><div class="settings-panel"><h3>Not seeing your alert?</h3><ol class="troubleshoot"><li>Check your sign-in inbox and spam folder. If text is enabled, check the carrier and number in the alert.</li><li>Make sure your alert is watching, not paused.</li><li>Check Activity for a matching price and the send result.</li><li>Check your phone’s spam or blocked messages.</li></ol><p>“Accepted for delivery” means the mail server accepted the message. It does not confirm that the carrier delivered it to your phone.</p><a class="text-link" href="./ledger.html">View alert activity ${icon('arrow')}</a></div><div class="aside-note">${icon('shield')}<p>Full phone numbers stay in a private delivery table. They are never returned to the public site or shown on alert cards. <a class="text-link" href="./privacy.html">Privacy policy</a></p></div><div class="settings-panel account-panel"><h3>Delete your account</h3><p>Permanently removes your sign-in, every alert, its price history, delivery log and any saved phone number. This cannot be undone.</p><button class="button secondary" id="delete-account">Delete my account and data</button></div></aside></div>`,`<button class="button secondary" id="refresh-status">${icon('refresh')} Refresh status</button>`);
  $('#refresh-status').onclick=notifications;
  $('#delete-account').onclick=()=>{
    showDialog('Delete your account?',`<p>This permanently deletes your sign-in, all alerts, price history, delivery history and saved phone numbers.</p><label class="field-label" for="delete-confirm">Type DELETE to confirm</label><input id="delete-confirm" autocomplete="off" spellcheck="false"><div class="dialog-actions"><button class="button secondary" id="delete-cancel">Keep my account</button><button class="button danger" id="delete-go" disabled title="Type DELETE to enable">Delete everything</button></div><div id="delete-account-error"></div>`);

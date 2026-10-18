@@ -339,8 +339,8 @@ class CollectorTests(unittest.TestCase):
             self.assertFalse(c.already_alerted('w','e','Club',criteria_version=2,channel='email'))
     def test_adaptive_intervals_respect_workflow_cadence(self):
         self.assertEqual(c.check_interval_minutes(2),15)
-        self.assertEqual(c.check_interval_minutes(20),60)
-        self.assertEqual(c.check_interval_minutes(60),180)
+        self.assertEqual(c.check_interval_minutes(20),15)
+        self.assertEqual(c.check_interval_minutes(60),15)
         self.assertEqual(c.check_interval_minutes(60,10500,10000),15)
     def test_parser_failure_is_distinct_from_zero_inventory(self):
         self.assertEqual(c.page_outcome('<html>changed markup</html>',None),'parser_failure')

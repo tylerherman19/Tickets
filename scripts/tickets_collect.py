@@ -283,12 +283,12 @@ def allows_quantity(listing, qty):
     return quantity_state(listing,qty) == 'allowed'
 
 def check_interval_minutes(days_out, price_cents=None, threshold_cents=None):
-    """A 15-minute workflow can only realize 15-minute or slower intervals."""
-    if days_out <= 2: return 15
-    if days_out <= FAST_WINDOW_DAYS: return 15
-    if price_cents and threshold_cents and price_cents <= threshold_cents * 1.1: return 15
-    if days_out <= 30: return 60
-    return 180
+    """Every active watched event is due on each 15-minute sweep.
+
+    Shared provider admission limits still apply; delayed results stay hidden
+    from current alert cards instead of being presented as available tickets.
+    """
+    return 15
 
 def inventory_envelope(parent, key):
     container=parent.get(key)
