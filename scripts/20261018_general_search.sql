@@ -45,8 +45,13 @@ begin
  select exists(select 1 from public.tix_teams t,unnest(t.search_aliases) a where public.tix_normalize_team(a)=term) into curated_match;
  select coalesce(array_agg(t.team_id),'{}') into team_ids from public.tix_match_search_teams(term,cat,p_region,1200) t;
  select coalesce(array_agg(distinct public.tix_normalize_team(a)),'{}') into families from public.tix_teams t,unnest(t.search_aliases) a where t.team_id=any(team_ids) and length(a)>=3;
- select coalesce(array_agg(distinct public.tix_normalize_team(a)),'{}') into conflicts from public.tix_teams t,unnest(t.aliases) a
- where not(t.team_id=any(team_ids)) and exists(select 1 from unnest(families) f where public.tix_normalize_team(a) like '% '||f);
+ select coalesce(array_agg(distinct value),'{}') into conflicts from (
+  select public.tix_normalize_team(a) value from public.tix_teams t,unnest(t.aliases) a
+  where not(t.team_id=any(team_ids)) and exists(select 1 from unnest(families) f where public.tix_normalize_team(a) like '% '||f)
+  union
+  select regexp_replace(public.tix_normalize_team(t.label),' (?:(?:men s|women s|mens|womens) )?(basketball|football|hockey|volleyball|wrestling)$','') from public.tix_teams t
+  where not(t.team_id=any(team_ids)) and exists(select 1 from unnest(t.aliases) a,unnest(families) f where public.tix_normalize_team(a)=f or public.tix_normalize_team(a) like '% '||f)
+ ) names where length(value)>=4;
  select coalesce(array_agg('%'||f||'%'),'{}'),coalesce(array_agg('%'||replace(f,' ','-')||'%'),'{}') into family_names,family_slugs from unnest(families) f;
  select coalesce(array_agg('%'||f||'%'),'{}'),coalesce(array_agg('%'||replace(f,' ','-')||'%'),'{}') into conflict_names,conflict_slugs from unnest(conflicts) f;
  return query execute $q$
