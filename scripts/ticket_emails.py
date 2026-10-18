@@ -88,25 +88,28 @@ def event_rows(event):
     return [('When', when(event)), ('Where', ' · '.join(filter(None, [venue, place])) or 'Venue not confirmed')]
 
 
-def _render(subject, preview, heading, intro, rows, primary, secondary, notes, footer):
+def _render(subject, preview, heading, intro, rows, primary, secondary, notes, footer, hero=None):
     """Table layout with inline styles works in email clients and without images."""
     esc = lambda value: escape(clean_text(value, 2000), quote=True)
     details = ''.join(
-        '<tr><td style="padding:12px 0;border-bottom:1px solid #e4e8ef;color:#61708a;width:35%;vertical-align:top">'
-        + esc(label) + '</td><td style="padding:12px 0;border-bottom:1px solid #e4e8ef;font-weight:600;color:#172740">'
+        '<tr><td style="padding:12px 0;border-bottom:1px solid #E4E0D5;color:#625D50;width:35%;vertical-align:top;font-family:Courier New,Courier,monospace;font-size:12px">'
+        + esc(label) + '</td><td style="padding:12px 0;border-bottom:1px solid #E4E0D5;font-weight:600;color:#17150F">'
         + esc(value) + '</td></tr>' for label, value in rows)
     button = ''
     if primary and primary[1]:
-        button = '<p style="margin:28px 0"><a href="' + esc(primary[1]) + '" style="background:#2457f5;color:#fff;text-decoration:none;padding:15px 22px;border-radius:8px;display:inline-block;font-weight:700">' + esc(primary[0]) + '</a></p>'
-    links = ' &nbsp;·&nbsp; '.join('<a href="' + esc(url) + '" style="color:#2457f5">' + esc(label) + '</a>' for label, url in secondary if url)
+        button = '<table role="presentation" cellspacing="0" cellpadding="0" style="margin:28px 0"><tr><td bgcolor="#C2410C" style="background:#C2410C"><a href="' + esc(primary[1]) + '" style="background:#C2410C;color:#FFFFFF;text-decoration:none;padding:16px 24px;display:inline-block;font-weight:700">' + esc(primary[0]) + '</a></td></tr></table>'
+    links = ' &nbsp;·&nbsp; '.join('<a href="' + esc(url) + '" style="color:#F4A07C">' + esc(label) + '</a>' for label, url in secondary if url)
+    price = ''
+    if hero:
+        price = '<p style="margin:24px 0 6px;font:12px Courier New,Courier,monospace;letter-spacing:2px;color:#F4A07C">' + esc(hero[0]) + '</p><p style="margin:0 0 8px;font:700 64px Courier New,Courier,monospace;line-height:1.1;color:#FBFAF6">' + esc(hero[1]) + '</p><p style="margin:0 0 28px;font:13px Courier New,Courier,monospace;color:#F4A07C">' + esc(hero[2]) + '</p>'
     html = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>''' + esc(subject) + '''</title></head>
-<body style="margin:0;background:#f4f6fa;font:16px Arial,Helvetica,sans-serif;color:#172740">
+<body style="margin:0;background:#E4E0D5;font:16px Arial,Helvetica,sans-serif;color:#17150F">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0">''' + esc(preview) + '''</div>
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:28px 12px">
-<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#fff;border:1px solid #dde3ed;border-radius:12px">
-<tr><td style="padding:23px 28px;background:#172740;color:#fff;font-size:22px;font-weight:700;border-radius:12px 12px 0 0">Ticketline</td></tr>
-<tr><td style="padding:28px"><h1 style="font-size:27px;line-height:1.25;margin:0 0 16px">''' + esc(heading) + '''</h1><p style="line-height:1.6;margin:0 0 22px">''' + esc(intro) + '''</p>
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="font-size:15px">''' + details + '</table>' + button + ''.join('<p style="font-size:14px;color:#53627a;line-height:1.6">' + esc(note) + '</p>' for note in notes) + '<p style="font-size:14px;line-height:1.8">' + links + '</p></td></tr><tr><td style="padding:20px 28px;background:#f8f9fc;border-radius:0 0 12px 12px;font-size:12px;color:#61708a;line-height:1.6">' + esc(footer) + '</td></tr></table></td></tr></table></body></html>'
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#E4E0D5"><tr><td align="center" style="padding:40px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" bgcolor="#17150F" style="max-width:600px;width:100%;background:#17150F;color:#FBFAF6">
+<tr><td style="padding:28px 32px;border-bottom:1px solid #454034;color:#F4A07C;font:700 22px Arial,Helvetica,sans-serif">Ticketline<span style="font:12px Courier New,Courier,monospace"> / TICKET PRICE ALERTS</span></td></tr>
+<tr><td style="padding:32px"><h1 style="font-size:34px;line-height:1.15;margin:0 0 16px;color:#FBFAF6">''' + esc(heading) + '''</h1><p style="line-height:1.6;margin:0 0 22px;color:#E4E0D5">''' + esc(intro) + '</p>' + price + '''
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#FBFAF6" style="background:#FBFAF6;color:#17150F"><tr><td style="padding:8px 20px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="font:15px Arial,Helvetica,sans-serif">''' + details + '</table></td></tr></table>' + button + ''.join('<p style="font-size:14px;color:#E4E0D5;line-height:1.6">' + esc(note) + '</p>' for note in notes) + '<p style="font-size:14px;line-height:1.8">' + links + '</p></td></tr><tr><td style="padding:24px 32px;background:#FBFAF6;color:#625D50;font:12px Arial,Helvetica,sans-serif;line-height:1.6">' + esc(footer) + '</td></tr></table></td></tr></table></body></html>'
     text = '\n\n'.join([heading, intro, '\n'.join(f'{label}: {clean_text(value, 2000)}' for label, value in rows), *notes,
                           *([primary[0] + ': ' + primary[1]] if primary and primary[1] else []),
                           *[label + ': ' + url for label, url in secondary if url], footer])
@@ -140,7 +143,8 @@ def confirmation_email(watch, event=None, label=None):
                    ('Manage my alerts', manage), secondary,
                    ['Targets use prices with fees included. Sales tax may be unreported; each price email will state its tax basis.',
                     'A confirmation is not a ticket offer. Checks run on a schedule and may be delayed by provider availability.'],
-                   'You received this confirmation because an alert was saved for your verified sign-in email. Sign in to edit, pause, archive, or turn off email delivery for this alert.')
+                   'You received this confirmation because an alert was saved for your verified sign-in email. Sign in to edit, pause, archive, or turn off email delivery for this alert.',
+                   hero=('YOUR TARGET', money(target), 'or less per ticket'))
 
 
 def price_alert_email(watch, event, price_cents, listing_url, club=None, section=None, row=None, fields=None, checked_at=None):
@@ -165,4 +169,5 @@ def price_alert_email(watch, event, price_cents, listing_url, club=None, section
                    f'{name}: {money(price_cents)} per ticket for your exact quantity, at or below your {money(target)} target.', rows,
                    ('View tickets on Gametime', listing) if listing else ('View event', secondary[0][1]), secondary,
                    [tax_note, 'This listing matched your requested quantity when checked. Tickets are not reserved; prices and availability can change before checkout.'],
-                   'You received this email because this alert has email delivery enabled for your verified sign-in address. Sign in to pause, archive, or turn off email delivery. Ticketline does not sell or reserve tickets.')
+                   'You received this email because this alert has email delivery enabled for your verified sign-in address. Sign in to pause, archive, or turn off email delivery. Ticketline does not sell or reserve tickets.',
+                   hero=('MATCHING PRICE', money(price_cents), 'per ticket · ' + money(total) + ' group total'))

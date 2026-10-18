@@ -54,8 +54,36 @@ async function requireSession(){
   if(token) return true;
   const notice=sessionStorage.getItem('ticketline.auth-error');sessionStorage.removeItem('ticketline.auth-error');
   const main=document.querySelector('#main');
-  main.innerHTML=`<div class="container page auth-page"><h1>Sign in to your alerts.</h1>${notice?`<p class="notice subtle" role="status">${esc(notice)}</p>`:''}<p>Enter your email for a secure sign-in link. You can browse ticket prices without signing in.</p><p>Price alerts are emailed to this address by default. You can add carrier email-to-text when creating an alert.</p><form id="sign-in-form" novalidate><label class="field-label" for="sign-in-email">Email</label><input id="sign-in-email" type="email" autocomplete="email" maxlength="254" required aria-describedby="sign-in-status"><button class="button primary" type="submit">Email me a sign-in link</button></form><p id="sign-in-status" role="status" aria-live="polite"></p><p class="field-help">By signing in you agree to the <a class="text-link" href="./privacy.html">privacy policy</a>.</p></div>`;
+  main.innerHTML=`<div class="container page auth-page"><h1>Sign in to your alerts.</h1>${notice?`<p class="notice subtle" role="status">${esc(notice)}</p>`:''}<p>Enter your email for a secure sign-in link and a 6-digit code. You can browse ticket prices without signing in.</p><p>Price alerts are emailed to this address by default. You can add carrier email-to-text when creating an alert.</p><form id="sign-in-form" novalidate><label class="field-label" for="sign-in-email">Email</label><input id="sign-in-email" type="email" autocomplete="email" maxlength="254" required aria-describedby="sign-in-status"><button class="button primary" type="submit">Email me a sign-in link</button></form><p id="sign-in-status" role="status" aria-live="polite"></p><form id="verify-code-form" hidden novalidate><label class="field-label" for="sign-in-code">6-digit code</label><input id="sign-in-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required aria-describedby="verify-code-status"><button class="button primary" type="submit">Verify code</button><p id="verify-code-status" role="status" aria-live="polite"></p></form><p class="field-help">By signing in you agree to the <a class="text-link" href="./privacy.html">privacy policy</a>.</p></div>`;
   const form=document.querySelector('#sign-in-form'),status=document.querySelector('#sign-in-status'),button=form.querySelector('button');
+  const codeForm=document.querySelector('#verify-code-form'),codeInput=document.querySelector('#sign-in-code'),codeStatus=document.querySelector('#verify-code-status'),verifyButton=codeForm.querySelector('button');
+  let pendingEmail=null;
+  codeForm.onsubmit=async event=>{
+    event.preventDefault();
+    if(verifyButton.disabled||!pendingEmail) return;
+    const token=codeInput.value.trim();
+    if(!/^[0-9]{6}$/.test(token)){codeStatus.textContent='Enter the 6-digit code from your email.';codeInput.focus();return;}
+    verifyButton.disabled=true;verifyButton.textContent='Verifying…';codeStatus.textContent='';
+    try {
+      const r=await fetch(SB_URL+'/auth/v1/verify',{
+        method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},
+        body:JSON.stringify({type:'email',email:pendingEmail,token}),signal:AbortSignal.timeout(15000)});
+      const next=await r.json();
+      if(!r.ok){
+        if(r.status===429) throw new Error('Too many attempts. Wait a minute, then try again.');
+        if(r.status>=500) throw new Error('The sign-in service is temporarily unavailable. Please try again shortly.');
+        // Supabase uses otp_expired for both invalid and expired codes.
+        if(next.error_code==='otp_expired'||next.code==='otp_expired') throw new Error('That code is incorrect or has expired. Check the latest email, or request a new sign-in email.');
+        throw new Error('That code could not be verified. Check the 6 digits in your latest email and try again.');
+      }
+      if(typeof next.access_token!=='string'||typeof next.refresh_token!=='string') throw new Error('Sign-in could not be completed. Please request a new sign-in email.');
+      session={access_token:next.access_token,refresh_token:next.refresh_token,expires_at:Date.now()+Number(next.expires_in||3600)*1000};
+      storeSession(session);
+      location.reload();
+    } catch(e){
+      codeStatus.textContent=e.name==='TimeoutError'||e.name==='TypeError'?'Could not reach the sign-in service. Check your connection and try again.':e.message;
+    } finally {verifyButton.disabled=false;verifyButton.textContent='Verify code';}
+  };
   form.onsubmit=async event=>{
     event.preventDefault();
     if(button.disabled) return;
@@ -70,7 +98,8 @@ async function requireSession(){
       if(r.status===429) throw new Error('Too many sign-in requests. Wait a minute, then try again.');
       if(!r.ok) throw new Error('Could not send the sign-in link. Please try again.');
       // Same message whether or not the address already has an account.
-      status.textContent='Check your email for the sign-in link. It may take a minute to arrive.';
+      status.textContent='Check your email. Click the sign-in link or enter the 6-digit code below. It may take a minute to arrive.';
+      pendingEmail=email;codeForm.hidden=false;codeInput.value='';codeStatus.textContent='';codeInput.focus();
       // Short cooldown so repeated clicks can't flood the inbox or hit the auth rate limit.
       let wait=60;button.textContent=`Resend in ${wait}s`;
       const timer=setInterval(()=>{wait--;if(wait<=0){clearInterval(timer);button.disabled=false;button.textContent='Resend the link';}else button.textContent=`Resend in ${wait}s`;},1000);

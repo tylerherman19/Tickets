@@ -227,7 +227,7 @@ class AuthTemplateTests(unittest.TestCase):
             self.assertEqual(parsed.urls, ['{{ .ConfirmationURL }}'])
             self.assertEqual(parsed.active_tags, [])
             self.assertEqual(source.count('{{ .ConfirmationURL }}'), 1)
-            self.assertNotIn('.Token', source)
+            self.assertEqual(source.count('{{ .Token }}'), 1)
             self.assertNotIn('@import', source)
             self.assertNotIn('url(', source)
             self.assertIn('If you did not request', source)
