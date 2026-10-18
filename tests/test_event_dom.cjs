@@ -8,7 +8,7 @@ test('event page renders comparable history and escaped seat details; quantity c
  const dom=new JSDOM('<main id="main"></main>',{url:'http://localhost/event.html?event=fixture',runScripts:'outside-only'});
  const w=dom.window,requests=[];
  const prelude=`const main=document.querySelector('#main'),query=new URLSearchParams(location.search),session=null;
- ${app.slice(app.indexOf('function layout('),app.indexOf('function stadiumArt'))}`;
+ ${app.slice(app.indexOf('function layout('),app.indexOf('function heroCard'))}`;
  w.mockGet=async path=> path.includes('tix_events_v')?[{event_id:'fixture',name:'Fixture event',venue:'Arena',event_date:'2026-11-15',min_total:1200,price_checked_at:new Date().toISOString(),url:'https://gametime.co/events/fixture'}]:path.includes('tix_event_market')?[{by_qty:{2:{low:1400,basis:'fees_included_tax_reported'}},groups:[],listing_count:1,checked_at:new Date().toISOString()}]:[];
  w.mockRpc=async(name,body)=>{
   requests.push({name,body});
@@ -151,7 +151,7 @@ test('opening an event while signed in prices it now and says it is tracked',asy
  const dom=new JSDOM('<main id="main"></main>',{url:'http://localhost/event.html?event=fixture',runScripts:'outside-only'});
  const w=dom.window,captured=[];
  const prelude=`const main=document.querySelector('#main'),query=new URLSearchParams(location.search),session={user:{}};const IS_DEV=false;
- ${app.slice(app.indexOf('function layout('),app.indexOf('function stadiumArt'))}`;
+ ${app.slice(app.indexOf('function layout('),app.indexOf('function heroCard'))}`;
  w.mockGet=async path=> path.includes('tix_events_v')?[{event_id:'fixture',name:'Fixture event',venue:'Arena',event_date:'2026-11-15',min_total:1200,price_checked_at:new Date(Date.now()-86400000).toISOString(),url:'https://gametime.co/events/fixture'}]:[];
  w.mockRpc=async()=>[];
  w.mockCapture=async id=>{captured.push(id);return {event_id:id,state:'metadata_only',min_total:1350,detail_worker:'not_needed'};};
