@@ -281,3 +281,19 @@ function chrome(page) {
 let dialogReturnFocus;
 function showDialog(title,body) { const d=$('#dialog'); dialogReturnFocus=document.activeElement; d.innerHTML=`<div class="dialog-head"><h2 id="dialog-title">${title}</h2><button class="icon-button" id="dialog-close" aria-label="Close dialog">${icon('close')}</button></div><div class="dialog-body">${body}</div>`;d.showModal();$('#dialog-close').onclick=()=>d.close();d.onclose=()=>dialogReturnFocus?.focus();d.onclick=e=>{if(e.target===d&&e.clientX&&(e.clientX<d.getBoundingClientRect().left||e.clientX>d.getBoundingClientRect().right||e.clientY<d.getBoundingClientRect().top||e.clientY>d.getBoundingClientRect().bottom))d.close();}; }
 function dateBadge(iso) {const d=dateObj(iso);return `<div class="date-badge"><span>${d.toLocaleDateString('en-US',{month:'short'})}</span><strong>${d.getDate()}</strong><small>${d.toLocaleDateString('en-US',{weekday:'short'})}</small></div>`;}
+
+// One identifier per submitted/opened search, never a visitor identifier.
+function newSearchActivity(source,term){
+ if(!term.trim()||typeof crypto==='undefined'||!crypto.randomUUID)return null;
+ return {p_search_id:crypto.randomUUID(),p_query:term.trim().slice(0,100),p_source:source};
+}
+async function recordSearchActivity(body){
+ if(typeof IS_DEV!=='undefined'&&IS_DEV||typeof fetch!=='function')return false;
+ const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),5000);
+ try{
+ const token=typeof accessToken==='function'?await accessToken():null;
+ if(ctrl.signal.aborted)return false;
+ const res=await fetch(SB_URL+'/rest/v1/rpc/tix_record_search',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+(token||SB_KEY),'Content-Type':'application/json'},body:JSON.stringify(body),signal:ctrl.signal});
+ return res.ok;
+ }catch{return false;}finally{clearTimeout(timer);}
+}
