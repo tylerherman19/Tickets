@@ -44,26 +44,32 @@ begin
  if term in ('sports','all sports') and cat is null then cat:='all-sports';term:=''; end if;
  select exists(select 1 from public.tix_teams t,unnest(t.search_aliases) a where public.tix_normalize_team(a)=term) into curated_match;
  select coalesce(array_agg(t.team_id),'{}') into team_ids from public.tix_match_search_teams(term,cat,p_region,1200) t;
- select coalesce(array_agg(distinct public.tix_normalize_team(a)),'{}') into families from public.tix_teams t,unnest(t.search_aliases) a where t.team_id=any(team_ids) and length(a)>=3;
- select coalesce(array_agg(distinct value),'{}') into conflicts from (
-  select public.tix_normalize_team(a) value from public.tix_teams t,unnest(t.aliases) a
-  where not(t.team_id=any(team_ids)) and exists(select 1 from unnest(families) f where public.tix_normalize_team(a) like '% '||f)
-  union
-  select regexp_replace(public.tix_normalize_team(t.label),' (?:(?:men s|women s|mens|womens) )?(basketball|football|hockey|volleyball|wrestling)$','') from public.tix_teams t
-  where not(t.team_id=any(team_ids)) and exists(select 1 from unnest(t.aliases) a,unnest(families) f where public.tix_normalize_team(a)=f or public.tix_normalize_team(a) like '% '||f)
- ) names where length(value)>=4;
+ select coalesce(array_agg(distinct value),'{}') into families from (
+ select distinct on(t.team_id) public.tix_normalize_team(a) value from public.tix_teams t,unnest(t.search_aliases) a
+ where t.team_id=any(team_ids) and length(a)>=3 order by t.team_id,length(a),a
+ ) shortest_family_alias;
+ with aliases as materialized(
+  select t.team_id,public.tix_normalize_team(a) value from public.tix_teams t,unnest(t.aliases) a where not(t.team_id=any(team_ids))
+ ), conflict_teams as materialized(
+  select distinct a.team_id from aliases a where a.value=any(families) or exists(select 1 from unnest(families) f where a.value like '% '||f)
+ ), names as (
+  select a.value from aliases a where exists(select 1 from unnest(families) f where a.value like '% '||f)
+  union select regexp_replace(public.tix_normalize_team(t.label),' (?:(?:men s|women s|mens|womens) )?(basketball|football|hockey|volleyball|wrestling)$','')
+  from public.tix_teams t join conflict_teams c using(team_id)
+ ) select coalesce(array_agg(distinct value),'{}') into conflicts from names where length(value)>=4;
  select coalesce(array_agg('%'||f||'%'),'{}'),coalesce(array_agg('%'||replace(f,' ','-')||'%'),'{}') into family_names,family_slugs from unnest(families) f;
  select coalesce(array_agg('%'||f||'%'),'{}'),coalesce(array_agg('%'||replace(f,' ','-')||'%'),'{}') into conflict_names,conflict_slugs from unnest(conflicts) f;
  return query execute $q$
- with membership as materialized(select distinct te.event_id from public.tix_team_events te where te.team_id=any($14))
+ with membership as materialized(select distinct te.event_id from public.tix_team_events te where te.team_id=any($14)), matched as materialized(
  select c.* from public.tix_events_v c where
  c.event_date between current_date and current_date+365 and c.event_date between coalesce($6,current_date) and coalesce($6,least(coalesce($7,current_date+365),current_date+365))
  and ($2 is null or ($2='all-sports' and c.category in ('nfl-football','college-football','nba-basketball','college-basketball','mlb-baseball','nhl-hockey','mls-soccer','wnba','pwhl','sports')) or c.category=$2)
  and (case when $13 then (c.event_id in(select event_id from membership) or (coalesce(c.name,'') ilike any($15) or coalesce(c.slug,'') ilike any($16))) else ($1='' or c.name ilike '%'||$1||'%' or c.slug ilike '%'||replace($1,' ','-')||'%' or c.venue ilike '%'||$1||'%' or c.city ilike '%'||$1||'%' or c.state=$3 or c.event_id in(select event_id from membership) or (coalesce(c.name,'') ilike any($15) or coalesce(c.slug,'') ilike any($16))) end)
- and (c.event_id in(select event_id from membership) or not(coalesce(c.name,'') ilike any($17) or coalesce(c.slug,'') ilike any($18)))
  and ($4 is null or c.state=$4) and ($5 is null or public.tix_normalize_team(c.city) like '%'||public.tix_normalize_team($5)||'%')
  and ($8 is null or c.min_total<=$8)
  and ($9 is null or (c.min_total is not null and c.price_checked_at>=$9))
+)
+ select c.* from matched c where (c.event_id in(select event_id from membership) or not(coalesce(c.name,'') ilike any($17) or coalesce(c.slug,'') ilike any($18)))
  order by case when $10 then c.min_total end nulls last,c.event_date,c.event_id
  limit least(greatest(coalesce($12,13),1),201) offset least(greatest(coalesce($11,0),0),100000)
  $q$ using term,cat,p_region,p_place_state,p_place_city,p_date,p_through,p_max_cents,p_priced_since,p_cheap,p_offset,p_limit,curated_match,team_ids,family_names,family_slugs,conflict_names,conflict_slugs;
