@@ -7,7 +7,7 @@ const fs=require('fs'),assert=require('node:assert/strict');
  create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('test.uid',true),'')::uuid$$;
  grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;`);
  await db.exec(fs.readFileSync('scripts/tickets_schema.sql','utf8'));
- for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_catalog_reliability.sql'])
+ for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_catalog_reliability.sql','20261017_coverage_query.sql','20261017_coverage_query.sql'])
   await db.exec(fs.readFileSync('scripts/'+file,'utf8').replace(/^.*(?:create extension.*pg_trgm|create index.*gin_trgm_ops).*$/gm,''));
  const rpc=async(name,args=[]) => (await db.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) as result`,args)).rows[0].result;
  const rows=async(name,args=[]) => (await db.query(`select * from public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')})`,args)).rows;
@@ -92,5 +92,17 @@ const fs=require('fs'),assert=require('node:assert/strict');
  assert.equal(activity.length,5);assert.ok(activity.every(r=>r.price_cents===1200));
  await db.exec('set role anon');await assert.rejects(rows('tix_alert_history',[watch.id,'7d',null]));await db.exec('reset role');
  assert.equal((await one('select expiry_enabled from tix_provider_guard')).expiry_enabled,false);
+ // Coverage retains public event exclusions and exact category/job counts.
+ await db.exec(`insert into tix_catalog(event_id,event_date,url,category,name,slug) values
+ ('${id(101)}',current_date+7,'https://gametime.co/events/${id(101)}','nfl-football','Visitors at Home','visitors-at-home'),
+ ('${id(102)}',current_date+7,'https://gametime.co/events/${id(102)}','nfl-football','Home vs Home','home-vs-home'),
+ ('${id(103)}',current_date+7,'https://gametime.co/events/${id(103)}','nfl-football','Parking only','parking');
+ insert into tix_capture_jobs(event_id,state,detail_requested) values('${id(101)}','failed',true),('${id(102)}','failed',true),('${id(103)}','failed',true);`);
+ await db.exec('set role anon');
+ const globalHealth=await rpc('tix_catalog_health',[null]);
+ assert.equal(globalHealth.events,6);assert.equal(globalHealth.failed_checks,1);
+ assert.equal((await rpc('tix_catalog_health',['college-basketball'])).events,5);
+ assert.equal((await rpc('tix_catalog_health',['nfl-football'])).events,1);
+ await db.exec('reset role');
  await db.close();console.log('Catalog identities, demand, coverage, exact quantities and comparable history tests passed.');
 })().catch(e=>{console.error(e);process.exit(1)});

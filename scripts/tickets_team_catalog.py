@@ -59,9 +59,14 @@ def team_rows(data):
                     abbr=re.match(r'^([A-Z0-9&]{2,8})\s',value)
                     if abbr: aliases.add(abbr.group(1))
         if category.startswith('college-'):
-            lowered=label.lower()
+            # Match the whole school, not a prefix: Wisconsin Green Bay is
+            # not UW Madison, and Washington State is not UW Seattle.
+            school_name=re.sub(r'[^a-z0-9]+',' ',label.lower()).strip()
+            school_name=re.sub(r' (?:(?:mens|womens|men s|women s) )?(?:basketball|football)$','',school_name)
+            mascot=re.sub(r'[^a-z0-9]+',' ',str(item.get('shortName') or '').lower()).strip()
+            if mascot and school_name.endswith(' '+mascot): school_name=school_name[:-len(mascot)-1]
             for school,names in SCHOOL_ALIASES.items():
-                if lowered.startswith(school+' '): aliases.update(names)
+                if school == school_name: aliases.update(names)
         rows[code]={'team_id':code,'category':category,'label':label.strip(),'path':parts.path,
                     'aliases':sorted(a[:100] for a in aliases)[:20]}
     return list(rows.values())
@@ -136,6 +141,24 @@ def save_teams(data,db):
     rows=team_rows(data)
     for start in range(0,len(rows),1000): db('POST','rpc/tix_upsert_teams',{'p_rows':rows[start:start+1000]})
     return len(rows)
+
+
+def membership_shape(data,team_id):
+    """Bounded public-source schema evidence when membership cannot be read."""
+    events={};contexts=[]
+    def walk(value,path):
+        if isinstance(value,dict):
+            eid=value.get('id')
+            if isinstance(eid,str) and EVENT.fullmatch(eid) and len(events)<2:
+                events.setdefault(eid,{'keys':list(value)[:40],
+                    'references':{k:v for k,v in value.items() if re.search('team|performer',k,re.I)}})
+            if len(contexts)<6 and (value.get('slug')==team_id or value.get('id')==team_id or team_id in value):
+                contexts.append({'path':path,'keys':list(value)[:40]})
+            for key,item in value.items(): walk(item,path+'/'+str(key))
+        elif isinstance(value,list):
+            for i,item in enumerate(value): walk(item,path+'/'+str(i))
+    walk(data,'')
+    return {'team_id':team_id,'events':events,'contexts':contexts}
 
 
 def save_links(data,db,team_id=None,checked=False):

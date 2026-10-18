@@ -10,7 +10,8 @@ class TeamCatalogTests(unittest.TestCase):
         return {'id':'a'*24,'seoUrl':'https://gametime.co/x/events/'+'a'*24,
                 'performers':[{'slug':'cbbwis'},{'slug':'cbbnw'}]}
     def test_names_and_ambiguous_aliases_preserve_unique_provider_id(self):
-        rows=t.team_rows([self.team(),self.team('Washington Huskies Basketball','cbbwash')])
+        washington={**self.team('Washington Huskies Basketball','cbbwash'),'shortName':'Huskies','mediumName':'WASH Huskies'}
+        rows=t.team_rows([self.team(),washington])
         self.assertEqual([r['team_id'] for r in rows],['cbbwis','cbbwash'])
         self.assertTrue(all('UW' in r['aliases'] for r in rows))
         self.assertIn('WISC',rows[0]['aliases'])
@@ -20,6 +21,14 @@ class TeamCatalogTests(unittest.TestCase):
                        {'seoUrl':'https://gametime.co/x/performers/cbbwis?bad=yes'}, {'slug':'cbbother'},
                        {'seoUrl':'https://gametime.co/a/b/c/performers/cbbwis'}):
             self.assertEqual(t.team_rows({**self.team(),**values}),[])
+    def test_school_aliases_do_not_spread_to_other_campuses_or_state_schools(self):
+        for label,mascot in [('Wisconsin Green Bay Basketball','Phoenix'),('Wisconsin Milwaukee Basketball','Panthers'),('Washington State Basketball','Cougars')]:
+            row=t.team_rows({**self.team(label),'shortName':mascot,'mediumName':label})[0]
+            self.assertNotIn('UW Madison',row['aliases'])
+            self.assertNotIn('UW Seattle',row['aliases'])
+            self.assertNotIn('UW',row['aliases'])
+        for label in ['Wisconsin Basketball','Wisconsin Badgers Basketball',"Wisconsin Badgers Men's Basketball"]:
+            self.assertIn('UW Madison',t.team_rows(self.team(label))[0]['aliases'])
     def test_membership_requires_source_identity_home_role_is_never_guessed(self):
         e=self.event();e['name']='Wisconsin Badgers at Northwestern Wildcats'
         rows=t.event_links(e)

@@ -56,6 +56,13 @@ class TeamRefreshTests(unittest.TestCase):
         self.assertIsNone(raised);self.assertEqual(writes[0][1]['failed'],1)
         self.assertTrue(any(path=='rpc/tix_team_check_failed' for _,path,_ in calls))
         self.assertFalse(any(path=='rpc/tix_link_team_events' for _,path,_ in calls))
+    def test_priced_events_without_team_membership_cannot_fulfill_demand(self):
+        page='window.__data='+json.dumps({'events':[self.event()]})
+        calls,writes,_,_,raised=self.run_worker(page=page)
+        self.assertIsNone(raised)
+        self.assertEqual(writes[0][1]['failed'],1)
+        self.assertEqual(writes[0][1]['checked'],0)
+        self.assertFalse(any(path=='rpc/tix_link_team_events' for _,path,_ in calls))
     def test_catalog_rows_preserve_unknown_price_and_reject_mismatched_sport_and_dates(self):
         events=[self.event(),self.event('b'*24,days=366),self.event('c'*24,category='nba'),self.event('d'*24,price=None)]
         rows=refresh.catalog_rows(events,'college-basketball')
