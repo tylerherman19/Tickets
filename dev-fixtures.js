@@ -34,10 +34,23 @@ DEV_EVENTS.push(...[
  {event_id:'preview-wisconsin-3',name:'Iowa Hawkeyes at Wisconsin Badgers',event_date:devDay(28),min_total:null,price_checked_at:null,is_home:true,discovery_status:'pending'},
  {event_id:'preview-wisconsin-4',name:'Wisconsin Badgers at Illinois Fighting Illini',event_date:devDay(35),min_total:1800,price_checked_at:new Date(Date.now()-3600000).toISOString(),is_home:false,discovery_status:'metadata_only'}
 ].map(e=>({slug:e.name.toLowerCase().replaceAll(' ','-'),category:'college-basketball',venue:e.is_home?'Kohl Center':'State Farm Center',venue_slug:e.is_home?'kohl-center':'state-farm-center',city:e.is_home?'Madison':'Champaign',state:e.is_home?'WI':'IL',url:'https://gametime.co/',...e})));
+DEV_EVENTS.push(...[
+ {event_id:'preview-packers-away',name:'Green Bay Packers at Minnesota Vikings',category:'nfl-football',state:'MN',city:'Minneapolis',region:'WI'},
+ {event_id:'preview-brewers-away',name:'Milwaukee Brewers at Chicago Cubs',category:'mlb-baseball',state:'IL',city:'Chicago',region:'WI'},
+ {event_id:'preview-bucks-away',name:'Milwaukee Bucks at Boston Celtics',category:'nba-basketball',state:'MA',city:'Boston',region:'WI'},
+ {event_id:'preview-badgers-football',name:'Wisconsin Badgers at Iowa Hawkeyes',category:'college-football',state:'IA',city:'Iowa City',region:'WI'},
+ {event_id:'preview-concert',name:'John Mayer',category:'concert',state:'WI',city:'Milwaukee'}
+].map((e,i)=>({...e,event_date:devDay(10+i),url:'https://gametime.co/',venue:'Preview venue',slug:e.name.toLowerCase().replaceAll(' ','-'),min_total:2000+i*100,price_checked_at:new Date().toISOString()})));
 function devRpc(name,body={}){
- if(name==='tix_resolve_teams'){
+ if(name==='tix_resolve_teams'||name==='tix_match_search_teams'){
   const term=String(body.p_query||'').toLowerCase();
   return DEV_TEAMS.filter(t=>(!body.p_category||t.category===body.p_category)&&(!term||t.team_id===term||[t.label,...t.aliases].some(a=>a.toLowerCase().includes(term)))).slice(0,body.p_limit||12);
+ }
+ if(name==='tix_general_search'){
+  let term=String(body.p_query||'').toLowerCase(),cat=body.p_category;
+  if(['concert','concerts'].includes(term)&&!cat){cat='concert';term='';}
+  if(['sports','all sports'].includes(term)&&!cat){cat='all-sports';term='';}
+  return DEV_EVENTS.filter(e=>e.event_date>=todayISO()&&(!body.p_date||e.event_date===body.p_date)&&(!body.p_through||e.event_date<=body.p_through)&&(!cat||(cat==='all-sports'?e.category!=='concert':e.category===cat))&&(!term||[e.name,e.city,e.venue].some(v=>(v||'').toLowerCase().includes(term))||(body.p_region&&(e.state===body.p_region||e.region===body.p_region)))&&(!body.p_place_state||e.state===body.p_place_state)&&(!body.p_place_city||e.city.toLowerCase().includes(body.p_place_city.toLowerCase()))&&(!body.p_max_cents||e.min_total!=null&&e.min_total<=body.p_max_cents)&&(!body.p_priced_since||e.min_total!=null&&e.price_checked_at>=body.p_priced_since)).sort((a,b)=>a.event_date.localeCompare(b.event_date)||a.event_id.localeCompare(b.event_id)).slice(body.p_offset||0,(body.p_offset||0)+(body.p_limit||13));
  }
  if(name==='tix_search_team_events')return body.p_team_id==='preview-wisconsin-badgers-basketball'?DEV_EVENTS.filter(e=>e.event_id.startsWith('preview-wisconsin-')):[];
  if(name==='tix_search_quantity_prices')return (body.p_event_ids||[]).map(event_id=>({event_id,price_cents:event_id==='preview-wisconsin-1'?1600:event_id==='preview-wisconsin-2'?3200:null,basis:event_id==='preview-wisconsin-1'?'fees_included_tax_unknown':'fees_included_tax_reported',checked_at:event_id==='preview-wisconsin-2'?new Date(Date.now()-3*86400000).toISOString():new Date().toISOString(),state:event_id==='preview-wisconsin-1'?'partial':event_id==='preview-wisconsin-2'?'complete':'unconfirmed',listing_count:event_id==='preview-wisconsin-3'?0:3,coverage:{complete:false}}));

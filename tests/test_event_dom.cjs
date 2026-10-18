@@ -179,16 +179,16 @@ function reliabilityPage({search='Badgers',qty=0,teams=[],games=[],quantities=[]
  const dom=new JSDOM('<body data-page="explore"><main id="main"></main></body>',{url:`https://example.test/index.html?q=${encodeURIComponent(search)}&category=college-basketball${qty?'&qty='+qty:''}`,runScripts:'outside-only'});
  const w=dom.window,requests=[];w.fetch=async()=>{throw new Error('No real network allowed in test');};
  w.mockGet=async path=>{requests.push({path});return games.map(e=>({...e}));};
- w.mockRpc=async(name,body)=>{requests.push({name,body});if(fail)throw new Error('not deployed');if(name==='tix_resolve_teams')return teams;if(name==='tix_search_team_events')return games;if(name==='tix_search_quantity_prices')return quantities;return [];};
+ w.mockRpc=async(name,body)=>{requests.push({name,body});if(fail)throw new Error('not deployed');if(name==='tix_resolve_teams'||name==='tix_match_search_teams')return teams;if(name==='tix_search_team_events'||name==='tix_general_search')return games;if(name==='tix_search_quantity_prices')return quantities;return [];};
  w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;const IS_DEV=false,session=null;'+app+';window.testState=state;');
  return {w,requests};
 }
 const sourceTeams=[{team_id:'wisconsin-badgers-basketball',category:'college-basketball',label:'Wisconsin Badgers',aliases:['UW'],event_count:2},{team_id:'washington-huskies-basketball',category:'college-basketball',label:'Washington Huskies',aliases:['UW'],event_count:1}];
 const sourceGames=[{event_id:'wisconsin-home',name:'Visitors at Wisconsin Badgers',category:'college-basketball',event_date:soon,city:'Madison',state:'WI',min_total:900,price_checked_at:new Date().toISOString(),is_home:true},{event_id:'wisconsin-away',name:'Wisconsin Badgers at Visitors',category:'college-basketball',event_date:soon,city:'Chicago',state:'IL',min_total:null,price_checked_at:null,is_home:false}];
-test('an ambiguous alias requires a source team choice and then renders its home game chart',async()=>{
+test('an ambiguous alias shows combined matches and can narrow to a source team chart',async()=>{
  const {w,requests}=reliabilityPage({search:'UW',teams:sourceTeams,games:sourceGames});await new Promise(r=>setImmediate(r));
  const d=w.document;
- assert.match(d.querySelector('#team-search-context').textContent,/Choose the team you mean/);
+ assert.match(d.querySelector('#team-search-context').textContent,/Matching teams/);
  assert.equal(d.querySelectorAll('[data-team-choice]').length,2);
  assert.ok(!requests.some(r=>r.name==='tix_search_team_events'));
  d.querySelector('[data-team-choice="wisconsin-badgers-basketball"]').click();await new Promise(r=>setImmediate(r));
@@ -228,7 +228,7 @@ test('a delayed old team schedule cannot overwrite a newer team search',async()=
  const illinoisGame={...sourceGames[0],event_id:'illinois-home',name:'Visitors at Illinois Fighting Illini'};
  w.mockGet=async path=>path.includes('illinois-home')?[illinoisGame]:sourceGames;
  w.mockRpc=async(name,body)=>{
-  if(name==='tix_resolve_teams')return body.p_query==='Illinois'?[illinois]:[sourceTeams[0]];
+  if(name==='tix_resolve_teams'||name==='tix_match_search_teams')return body.p_query==='Illinois'?[illinois]:[sourceTeams[0]];
   if(name==='tix_search_team_events')return body.p_team_id===sourceTeams[0].team_id?new Promise(resolve=>{finishWisconsin=resolve;}):[illinoisGame];
   return [];
  };
@@ -250,7 +250,7 @@ test('a direct source-team link keeps its explicit identity and opens the matchi
  const team=sourceTeams[0];
  const dom=new JSDOM('<body data-page="new"><main id="main"></main></body>',{url:`https://example.test/new.html?kind=team&category=college-basketball&team=${team.team_id}`,runScripts:'outside-only'});
  const w=dom.window,requests=[];w.scrollTo=()=>{};w.requireSession=async()=>true;
- w.mockRpc=async(name,body)=>{requests.push({name,body});if(name==='tix_resolve_teams')return [team];if(name==='tix_search_team_events')return sourceGames;return [];};w.mockGet=async()=>[];
+ w.mockRpc=async(name,body)=>{requests.push({name,body});if(name==='tix_resolve_teams'||name==='tix_match_search_teams')return [team];if(name==='tix_search_team_events')return sourceGames;return [];};w.mockGet=async()=>[];
  w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;const IS_DEV=true,session=null;'+app);
  await new Promise(r=>setImmediate(r));
  assert.equal(requests.find(r=>r.name==='tix_resolve_teams').body.p_query,team.team_id);
@@ -299,4 +299,30 @@ test('college team picker explains missing identity service and keeps ambiguous 
  assert.match(w.document.querySelector('#team-options').textContent,/confirmed school identity/);
  assert.ok(w.document.querySelector('#team-options a[href*="index.html"]'));
  assert.ok(!requests.some(path=>path.startsWith('tix_teams_v')));w.close();
+});
+
+test('general search defaults to all events, combines regional teams, paginates and searches artists without an NFL filter',async()=>{
+ const dom=new JSDOM('<body data-page="explore"><main id="main"></main></body>',{url:'https://example.test/index.html?q=Wisconsin',runScripts:'outside-only'});
+ const w=dom.window,calls=[];w.fetch=async()=>{throw new Error('No actual network');};
+ const generalRows=Array.from({length:13},(_,i)=>({...sourceGames[0],event_id:'general-'+i,name:i===0?'Packers at Vikings':i===1?'Milwaukee Bucks at Celtics':'Wisconsin game '+i}));
+ w.mockGet=async()=>{throw new Error('Broad search must use server pagination');};
+ w.mockRpc=async(name,body)=>{calls.push({name,body});if(name==='tix_match_search_teams')return sourceTeams;if(name==='tix_general_search')return body.p_query==='john m'?[{...generalRows[0],event_id:'concert',name:'John Mayer',category:'concert'}]:body.p_offset?generalRows.slice(0,2):generalRows.map(e=>({...e}));return [];};
+ w.eval(fs.readFileSync('tickets.js','utf8')+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;const IS_DEV=false,session=null;'+app);
+ await new Promise(r=>setImmediate(r));const d=w.document;
+ assert.equal(d.querySelector('#category').value,'');assert.equal(d.querySelector('[data-category=""]').getAttribute('aria-pressed'),'true');
+ const first=calls.find(x=>x.name==='tix_general_search').body;assert.equal(first.p_region,'WI');assert.equal(first.p_category,null);assert.equal(first.p_limit,13);
+ assert.equal(new URL(w.location.href).searchParams.has('team'),false,'broad state search never silently selects a team');
+ assert.equal(d.querySelectorAll('.event-row').length,12);assert.match(d.querySelector('#events').textContent,/Packers at Vikings/);
+ d.querySelector('#more-events').click();await new Promise(r=>setImmediate(r));assert.equal(calls.filter(x=>x.name==='tix_general_search').at(-1).body.p_offset,12);
+ d.querySelector('[data-category="all-sports"]').click();await new Promise(r=>setImmediate(r));assert.equal(calls.filter(x=>x.name==='tix_general_search').at(-1).body.p_category,'all-sports');
+ d.querySelector('[data-category=""]').click();await new Promise(r=>setImmediate(r));
+ d.querySelector('#event-search').value='john m';d.querySelector('#search-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await new Promise(r=>setImmediate(r));
+ assert.match(d.querySelector('#events').textContent,/John Mayer/);assert.equal(d.querySelector('.event-category').textContent,'Concerts');assert.equal(calls.filter(x=>x.name==='tix_general_search').at(-1).body.p_category,null);
+ w.close();
+});
+
+test('an empty search never claims saved prices were just checked',async()=>{
+ const {w}=reliabilityPage({search:'No matching performer',teams:[],games:[]});await new Promise(r=>setImmediate(r));
+ assert.equal(w.document.querySelector('#price-request-status').hidden,true);
+ assert.doesNotMatch(w.document.querySelector('#price-request-status').textContent,/checked within/);w.close();
 });
