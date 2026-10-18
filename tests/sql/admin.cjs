@@ -22,7 +22,7 @@ assert.equal((await rpc('tix_admin_data',['watches',other])).total,1);
 assert.equal((await rpc('tix_admin_data',['watches',"' or true; --"])).total,0);
 await assert.rejects(rpc('tix_admin_data',['auth.users']));await assert.rejects(rpc('tix_admin_data',['watches;drop table auth.users']));
 for(const dataset of ['destinations','confirmations','deliveries','scans','prices','tracking','watch_audit','admin_audit','catalog','teams','jobs','observations','listings','provider_requests','team_events','team_demand','discovery_interest','search_limits','venue_clubs','event_changes','health'])assert.ok(Array.isArray((await rpc('tix_admin_data',[dataset])).rows),dataset);
-let overview=await rpc('tix_admin_overview',[7]);assert.equal(overview.users,2);assert.equal(overview.active_alerts,1);assert.equal(overview.daily.length,7);assert.equal(overview.daily.at(-1).alerts_created,1);
+let overview=await rpc('tix_admin_overview',[7]);assert.equal(overview.users,2);assert.equal(overview.active_alerts,1);assert.equal(overview.daily.length,7);assert.equal(overview.daily.at(-1).alerts_created,1);assert.ok((await rpc('tix_admin_data',['admin_audit','overview'])).total>0);
 await rpc('tix_admin_update_alert',[watch,'{"active":false,"threshold_cents":5000}']);assert.equal((await rpc('tix_admin_overview')).paused_alerts,1);
 await assert.rejects(rpc('tix_admin_update_alert',[watch,'{"owner_id":"'+admin+'"}']));await assert.rejects(rpc('tix_admin_update_alert',[watch,'{"qty":0}']));await assert.rejects(rpc('tix_admin_update_alert',[watch,'{"sms_enabled":true}']));
 await db.exec('reset role');assert.equal((await db.query('select criteria_version from tix_watches where id=$1',[watch])).rows[0].criteria_version,2);
