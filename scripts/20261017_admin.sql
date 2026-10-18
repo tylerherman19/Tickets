@@ -64,6 +64,7 @@ begin
  select label,count(*) alerts,count(distinct owner_id) users from public.tix_watches
  where active and coalesce(match->>'archived_at','')='' and purchased_at is null group by label order by count(*) desc,label limit 15) d)
  ) into result;
+ insert into public.tix_admin_audit(actor,action,dataset) values(auth.uid(),'read','overview');
  return result;
 end $$;
 
