@@ -40,6 +40,17 @@ function marketQuantityText(sample,qty,metadataOnly=false){
  if(!metadataOnly&&coverage?.complete&&!(coverage.unknown_lots>0)&&!(coverage.unknown_seats>0))return `No seller-confirmed ${qty}-ticket lot in the last market sample.`;
  return `Exactly ${qty} together: not confirmed. Seller lot coverage is incomplete.`;
 }
+function marketQuantitySummary(sample,qty,metadataOnly=false){
+ const age=ageMinutes(sample?.checked_at),spread=sample?.by_qty?.[String(qty)];
+ if(!Number.isFinite(age)||age>=15||new Date(sample?.checked_at).getTime()>Date.now()+60000)
+   return '<p>Updating prices for '+esc(qty)+' tickets together.</p>';
+ if(metadataOnly||!spread||!knownPriceBasis(spread.basis)||!Number.isInteger(spread.low)||spread.low<=0){
+   const complete=!metadataOnly&&sample?.coverage?.complete&&!sample.coverage.unknown_lots&&!sample.coverage.unknown_seats;
+   return '<p>'+esc(complete&&!spread?'No listings found for '+qty+' tickets together.':'Prices for '+qty+' tickets together are not confirmed yet.')+'</p>';
+ }
+ const fees=spread.basis==='fees_included_tax_reported'?'Fees and reported tax included.':'Fees included. Tax may be added.';
+ return `<p><strong>From ${money(spread.low)} per ticket</strong> · ${money(spread.low*qty)} for ${esc(qty)} together</p><small>${esc(fees)} Any section. Checked ${esc(ago(sample.checked_at).toLowerCase())}.</small>`;
+}
 const todayISO = (d=new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const dateObj = iso => new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso||'') ? iso+'T12:00:00' : iso);
 const whenShort = iso => iso ? dateObj(iso).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : 'Date to be confirmed';

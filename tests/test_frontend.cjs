@@ -375,3 +375,32 @@ test('an old price from the last successful scan stays off the current card',()=
  assert.equal(display.label,'Current price');assert.equal(display.price_cents,null);assert.match(display.detail,/Updating prices/);
  assert.doesNotMatch(display.detail,/not verified by the latest/);
 });
+
+test('quantity summary shows only the selected group with clear per-ticket and total prices',()=>{
+ const sample={checked_at:new Date().toISOString(),by_qty:{2:{low:10000,typical:24900,high:253400,basis:'fees_included_tax_reported'},4:{low:11500,basis:'fees_included_tax_unknown'}}};
+ sandbox.summarySample=sample;
+ const html=run('marketQuantitySummary(summarySample,2)');
+ assert.match(html,/From \$100 per ticket/);assert.match(html,/\$200 for 2 together/);
+ assert.doesNotMatch(html,/249|2,534|4 together|typical|reported tax\)/);
+ assert.match(run('marketQuantitySummary(summarySample,4)'),/Tax may be added/);
+});
+test('quantity summary hides outdated, invalid and incomplete prices',()=>{
+ sandbox.summarySample={checked_at:new Date(Date.now()-16*60000).toISOString(),by_qty:{2:{low:10000,basis:'fees_included_tax_reported'}}};
+ assert.doesNotMatch(run('marketQuantitySummary(summarySample,2)'),/100|Checked/);
+ assert.match(run('marketQuantitySummary(summarySample,2)'),/Updating/);
+ sandbox.summarySample.checked_at='invalid';assert.match(run('marketQuantitySummary(summarySample,2)'),/Updating/);
+ sandbox.summarySample.checked_at=new Date(Date.now()+3600000).toISOString();assert.match(run('marketQuantitySummary(summarySample,2)'),/Updating/);
+ sandbox.summarySample.checked_at=new Date().toISOString();assert.doesNotMatch(run('marketQuantitySummary(summarySample,2,true)'),/100/);
+ assert.match(run('marketQuantitySummary({checked_at:new Date().toISOString(),coverage:{complete:false}},2)'),/not confirmed/);
+});
+test('alert builder fetches one selected quantity and rejects late responses',async()=>{
+ const box={innerHTML:''};sandbox.referenceBox=box;sandbox.marketQuantitySummary=undefined;
+ sandbox.document={querySelector:selector=>selector==='#price-reference'?box:null,querySelectorAll:()=>[]};
+ // Restore the shared function after installing DOM stubs.
+ vm.runInContext(code.slice(code.indexOf('function marketQuantitySummary('),code.indexOf('const todayISO')),sandbox);
+ sandbox.icon=()=>'';sandbox.sbGet=async()=>[{checked_at:new Date().toISOString(),by_qty:{2:{low:10000,basis:'fees_included_tax_unknown'},4:{low:11500,basis:'fees_included_tax_unknown'}}}];
+ vm.runInContext(app.slice(app.indexOf('async function loadPriceSpread('),app.indexOf('async function loadClubs(')),sandbox);
+ run('Object.assign(state,{kind:"event",qty:2,selected:{event_id:"test"}})');
+ await run('loadPriceSpread()');assert.match(box.innerHTML,/\$200 for 2 together/);assert.doesNotMatch(box.innerHTML,/4 together/);
+ let resolve;sandbox.sbGet=()=>new Promise(r=>resolve=r);const pending=run('loadPriceSpread()');run('state.qty=4');box.innerHTML='Updating';resolve([]);await pending;assert.equal(box.innerHTML,'Updating');
+});
