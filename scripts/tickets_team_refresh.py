@@ -6,6 +6,7 @@ admitted through the same provider guard as search/alerts, and blocking stops
 all work without retries. Ordinary missing/broken pages back off independently.
 """
 import os
+import json
 from datetime import datetime, timezone, timedelta
 import tickets_collect as collect
 import tickets_performers as performers
@@ -95,6 +96,9 @@ def main():
                 save_rows(rows)
                 record_history(rows)
                 teams.save_teams(items,collect.sb)
+                if rows and not teams.event_links(items,row['team_id']).get(row['team_id']):
+                    print('Team membership source unreadable: '+json.dumps(teams.membership_shape(items,row['team_id']))[:10000],flush=True)
+                    raise ValueError('Source team membership not confirmed')
                 teams.save_links(items,collect.sb,row['team_id'],True)
                 stats['checked']+=1;stats['events']+=len(rows);stats['priced']+=sum('min_total' in x for x in rows)
             except CaptureDeferred: raise

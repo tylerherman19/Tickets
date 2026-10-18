@@ -10,7 +10,8 @@ class TeamCatalogTests(unittest.TestCase):
         return {'id':'a'*24,'seoUrl':'https://gametime.co/x/events/'+'a'*24,
                 'performers':[{'slug':'cbbwis'},{'slug':'cbbnw'}]}
     def test_names_and_ambiguous_aliases_preserve_unique_provider_id(self):
-        rows=t.team_rows([self.team(),self.team('Washington Huskies Basketball','cbbwash')])
+        washington={**self.team('Washington Huskies Basketball','cbbwash'),'shortName':'Huskies','mediumName':'WASH Huskies'}
+        rows=t.team_rows([self.team(),washington])
         self.assertEqual([r['team_id'] for r in rows],['cbbwis','cbbwash'])
         self.assertTrue(all('UW' in r['aliases'] for r in rows))
         self.assertIn('WISC',rows[0]['aliases'])
@@ -20,6 +21,14 @@ class TeamCatalogTests(unittest.TestCase):
                        {'seoUrl':'https://gametime.co/x/performers/cbbwis?bad=yes'}, {'slug':'cbbother'},
                        {'seoUrl':'https://gametime.co/a/b/c/performers/cbbwis'}):
             self.assertEqual(t.team_rows({**self.team(),**values}),[])
+    def test_school_aliases_do_not_spread_to_other_campuses_or_state_schools(self):
+        for label,mascot in [('Wisconsin Green Bay Basketball','Phoenix'),('Wisconsin Milwaukee Basketball','Panthers'),('Washington State Basketball','Cougars')]:
+            row=t.team_rows({**self.team(label),'shortName':mascot,'mediumName':label})[0]
+            self.assertNotIn('UW Madison',row['aliases'])
+            self.assertNotIn('UW Seattle',row['aliases'])
+            self.assertNotIn('UW',row['aliases'])
+        for label in ['Wisconsin Basketball','Wisconsin Badgers Basketball',"Wisconsin Badgers Men's Basketball"]:
+            self.assertIn('UW Madison',t.team_rows(self.team(label))[0]['aliases'])
     def test_membership_requires_source_identity_home_role_is_never_guessed(self):
         e=self.event();e['name']='Wisconsin Badgers at Northwestern Wildcats'
         rows=t.event_links(e)
@@ -34,6 +43,38 @@ class TeamCatalogTests(unittest.TestCase):
         self.assertEqual(t.event_links({'performer':{'slug':'cbbwis'},'schedule':[event]},'cbbwis'),{'cbbwis':[{'event_id':'a'*24,'is_home':None}]})
         self.assertEqual(t.event_links({'schedule':[], 'recommendations':[event]},'cbbwis'),{})
         self.assertEqual(t.event_links(event),{})
+    def test_live_mongo_performer_references_join_expanded_canonical_source_identities(self):
+        # Shape verified in the guarded hosted Wisconsin/Syracuse page checks.
+        wid='545d5fa83bf3761659000004';oid='5660e501f80c415b74000003'
+        event={**self.event(),'performers':[{'id':wid,'primary':True},{'id':oid,'primary':False}]}
+        wisconsin={**self.team('Wisconsin Basketball'),'id':wid}
+        other={**self.team('Wyoming Basketball','cbbwyo'),'id':oid,'shortName':'Cowboys'}
+        data={'redux':{'data':{'fullEvents':{'eventsData':[{'events':[{'event':event,'performers':[wisconsin,other]}]}]}}}}
+        links=t.event_links(data,'cbbwis')
+        self.assertEqual(set(links),{'cbbwis','cbbwyo'})
+        self.assertIsNone(links['cbbwis'][0]['is_home'],'Primary is not proof of home designation')
+        self.assertNotIn(wid,links)
+        event['homeTeamId']=wid
+        self.assertTrue(t.event_links(data)['cbbwis'][0]['is_home'])
+        # Unmapped or contradictory Mongo IDs never become canonical teams.
+        self.assertEqual(t.event_links(event),{})
+        conflicting={**self.team('Other Basketball','cbbother'),'id':wid}
+        self.assertNotIn('cbbwis',t.event_links([event,wisconsin,conflicting]))
+    def test_source_at_label_matches_two_canonical_participants_without_guessing_neutral_or_shared_mascots(self):
+        wisconsin={**self.team('Wisconsin Basketball'),'id':'1'*24}
+        visitor={**self.team('Wyoming Basketball','cbbwyo'),'id':'2'*24,'shortName':'Cowboys'}
+        event={**self.event(),'name':'Wyoming Cowboys at Wisconsin Badgers Mens Basketball (Exhibition)',
+               'performers':[{'id':'1'*24,'primary':True},{'id':'2'*24,'primary':False}]}
+        data=[event,wisconsin,visitor]
+        links=t.event_links(data)
+        self.assertTrue(links['cbbwis'][0]['is_home'])
+        self.assertFalse(links['cbbwyo'][0]['is_home'])
+        for label in ['Wisconsin vs Wyoming','Wyoming at Wisconsin (Neutral Site)','Badgers at Badgers']:
+            event['name']=label
+            self.assertIsNone(t.event_links(data)['cbbwis'][0]['is_home'])
+        visitor.update(name='Spring Hill Basketball',shortName='Badgers')
+        event['name']='Badgers at Badgers'
+        self.assertIsNone(t.event_links(data)['cbbwis'][0]['is_home'])
     def test_empty_checked_team_page_fulfills_demand_and_unchanged_prices_are_irrelevant(self):
         calls=[]
         t.save_links({},lambda *args:calls.append(args),'cbbwis',True)

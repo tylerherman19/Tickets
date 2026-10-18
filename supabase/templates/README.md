@@ -4,6 +4,8 @@ These two templates match the operational confirmation and matching-price emails
 
 The `supabase/config.toml` entries configure local CLI development only. For the hosted Ticketline project (`aahqagqztanltejsqjom`), open **Authentication > Emails > Templates** and apply:
 
+Verified October 17: this project's Free plan uses Supabase's default email service, and the dashboard requires custom SMTP or Pro before editing authentication email subjects or bodies. These files are ready for that configuration step. Operational alert confirmations and matching-price emails already use the existing Gmail sender and do not require this upgrade.
+
 | Template | Subject | Body |
 | --- | --- | --- |
 | Magic Link | Your Ticketline sign-in link | `magic-link.html` |
