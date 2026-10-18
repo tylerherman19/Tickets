@@ -1,15 +1,17 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
-const {JSDOM}=require('jsdom');
+const {JSDOM,VirtualConsole}=require('jsdom');
 const source=fs.readFileSync('auth.js','utf8');
 function setup(){
- const dom=new JSDOM('<body data-page="watches"><main id="main"></main>',{url:'https://ticketline.example/watches.html',runScripts:'outside-only'});
+ let reloads=0;const virtualConsole=new VirtualConsole();
+ virtualConsole.on('jsdomError',error=>{if(error.message==='Not implemented: navigation (except hash changes)') reloads++;else throw error;});
+ const dom=new JSDOM('<body data-page="watches"><main id="main"></main>',{url:'https://ticketline.example/watches.html',runScripts:'outside-only',virtualConsole});
  const w=dom.window,calls=[];
  w.SB_URL='https://auth.example';w.SB_KEY='public';w.esc=s=>String(s).replaceAll('<','&lt;');
  w.AbortSignal=AbortSignal;w.setInterval=()=>1;
  w.fetch=async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return {ok:true,status:200,json:async()=>({})};};
- w.eval(source);return {w,calls,close:()=>w.close()};
+ w.eval(source);return {w,calls,reloads:()=>reloads,close:()=>w.close()};
 }
 async function request(w,email='owner@example.test'){
  w.document.querySelector('#sign-in-email').value=email;
@@ -40,12 +42,12 @@ test('wrong or expired code has an actionable error and permits another attempt'
  }finally{close();}
 });
 test('successful code verification stores the same session fields as a link callback',async()=>{
- const {w,close}=setup();try{
+ const {w,reloads,close}=setup();try{
  await w.requireSession();await request(w);
  w.fetch=async()=>({ok:true,status:200,json:async()=>({access_token:'access',refresh_token:'refresh',expires_in:3600})});
  await verify(w,'123456');
  const session=JSON.parse(w.localStorage.getItem('ticketline.session.v1'));
- assert.equal(session.access_token,'access');assert.equal(session.refresh_token,'refresh');assert.ok(session.expires_at>Date.now());
+ assert.equal(session.access_token,'access');assert.equal(session.refresh_token,'refresh');assert.ok(session.expires_at>Date.now());assert.equal(reloads(),1);
  }finally{close();}
 });
 test('failed email request does not reveal code entry; network failures stay retryable',async()=>{
