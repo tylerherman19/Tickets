@@ -16,7 +16,7 @@ function rememberSignIn(value){
 let session = null;
 try { session = JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { try { localStorage.removeItem(SESSION_KEY); } catch {} }
 if (session && (typeof session.access_token!=='string' || typeof session.refresh_token!=='string')) session = null;
-const storeSession = value => { try { value ? localStorage.setItem(SESSION_KEY,JSON.stringify(value)) : localStorage.removeItem(SESSION_KEY); } catch {} };
+const storeSession = value => { try { value ? localStorage.setItem(SESSION_KEY,JSON.stringify(value)) : localStorage.removeItem(SESSION_KEY); return true; } catch { return false; } };
 const callback = new URLSearchParams(location.hash.slice(1));
 if (callback.has('access_token') && callback.has('refresh_token')) {
   session = {access_token:callback.get('access_token'),refresh_token:callback.get('refresh_token'),
@@ -123,7 +123,7 @@ async function requireSession(){
       }
       if(typeof next.access_token!=='string'||typeof next.refresh_token!=='string') throw new Error('Sign-in could not be completed. Please request a new sign-in email.');
       session={access_token:next.access_token,refresh_token:next.refresh_token,expires_at:Date.now()+Number(next.expires_in||3600)*1000};
-      storeSession(session);rememberSignIn(null);
+      if(!storeSession(session)){session=null;throw new Error('Your browser could not keep you signed in. Allow website data for Ticketline, then try again.');}rememberSignIn(null);
       location.reload();
     } catch(e){
       codeStatus.textContent=e.name==='TimeoutError'||e.name==='TypeError'?'Could not reach the sign-in service. Check your connection and try again.':e.message;

@@ -4,15 +4,16 @@ const fs=require('node:fs');
 const {JSDOM,VirtualConsole}=require('jsdom');
 const source=fs.readFileSync('auth.js','utf8');
 const pendingKey='ticketline.pending-sign-in.v1';
-function setup({url='https://ticketline.example/watches.html',pending=null,callbackPage=false}={}){
+function setup({url='https://ticketline.example/watches.html',pending=null,callbackPage=false,fetchResponse=null,storageDenied=false}={}){
  let reloads=0;const virtualConsole=new VirtualConsole();
  virtualConsole.on('jsdomError',error=>{if(error.message==='Not implemented: navigation (except hash changes)') reloads++;else throw error;});
  const dom=new JSDOM('<body data-page="watches"><main id="main"></main>',{url,runScripts:'outside-only',virtualConsole});
  const w=dom.window,calls=[];
  w.SB_URL='https://auth.example';w.SB_KEY='public';w.esc=s=>String(s).replaceAll('<','&lt;');
  w.AbortSignal=AbortSignal;w.setInterval=()=>1;
+ if(storageDenied){const original=w.Storage.prototype.setItem;w.Storage.prototype.setItem=function(key,value){if(key==='ticketline.session.v1')throw new Error('Storage blocked');return original.call(this,key,value);};}
  if(pending)w.localStorage.setItem(pendingKey,JSON.stringify(pending));
- w.fetch=async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return {ok:true,status:200,json:async()=>({})};};
+ w.fetch=async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return fetchResponse||{ok:true,status:200,json:async()=>({})};};
  w.eval(source+(callbackPage?'\n'+fs.readFileSync('auth-callback.js','utf8'):''));return {w,calls,reloads:()=>reloads,close:()=>w.close()};
 }
 const field=(w,id)=>w.document.querySelector('#'+id);
@@ -147,5 +148,50 @@ test('dedicated callback explains an expired link instead of silently showing an
  assert.match(w.document.querySelector('[role="alert"]').textContent,/expired, already used/);
  assert.equal(w.document.querySelector('a').getAttribute('href'),'/Tickets/watches.html');
  assert.equal(w.location.hash,'');
+ }finally{close();}
+});
+
+const linkHash='a'.repeat(64);
+function directEmailLink({encoded=false,origin='https://auth.example',type='magiclink',next='/Tickets/new.html?event=abc&qty=2'}={}){
+ const redirect=new URL('https://ticketline.example/Tickets/auth-callback.html');redirect.searchParams.set('next',next);
+ const confirmation=new URL(origin+'/auth/v1/verify');confirmation.searchParams.set('token',linkHash);confirmation.searchParams.set('type',type);confirmation.searchParams.set('redirect_to',redirect.href);
+ return 'https://ticketline.example/Tickets/auth-callback.html#confirmation_url='+(encoded?encodeURIComponent(confirmation.href):confirmation.href);
+}
+test('direct email links verify once without an email or code, save the session, and scrub the link',async()=>{
+ for(const encoded of [false,true]){
+ const {w,calls,reloads,close}=setup({url:directEmailLink({encoded}),callbackPage:true,pending:{email:'owner@example.test',requested_at:Date.now()},fetchResponse:{ok:true,status:200,json:async()=>({access_token:'direct-access',refresh_token:'direct-refresh',expires_in:3600})}});try{
+ assert.equal(w.location.hash,'');
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(calls,[{url:'https://auth.example/auth/v1/verify',body:{type:'email',token_hash:linkHash}}]);
+ assert.equal(JSON.parse(w.localStorage.getItem('ticketline.session.v1')).access_token,'direct-access');
+ assert.equal(w.localStorage.getItem(pendingKey),null);assert.equal(reloads(),1);
+ }finally{close();}}
+});
+test('direct expired links show a clear five-minute expiry message and never sign in',async()=>{
+ const {w,calls,reloads,close}=setup({url:directEmailLink({type:'signup'}),callbackPage:true,fetchResponse:{ok:false,status:403,json:async()=>({error_code:'otp_expired'})}});try{
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(calls.length,1);assert.equal(reloads(),0);assert.equal(w.localStorage.getItem('ticketline.session.v1'),null);
+ assert.match(w.document.querySelector('[role="alert"]').textContent,/expire after 5 minutes/);assert.equal(w.location.hash,'');
+ }finally{close();}
+});
+test('foreign verification services and non-login link types are rejected without a request',async()=>{
+ for(const url of [directEmailLink({origin:'https://evil.example'}),directEmailLink({type:'recovery'})]){
+ const {w,calls,reloads,close}=setup({url,callbackPage:true});try{
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,0);assert.equal(reloads(),0);
+ assert.match(w.document.querySelector('[role="alert"]').textContent,/not valid/);assert.equal(w.location.hash,'');
+ }finally{close();}}
+});
+test('untrusted destination inside a valid email link stays on Ticketline after an error',async()=>{
+ const {w,close}=setup({url:directEmailLink({next:'https://evil.example'}),callbackPage:true,fetchResponse:{ok:false,status:403,json:async()=>({})}});try{
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(w.document.querySelector('a').getAttribute('href'),'/Tickets/watches.html');
+ }finally{close();}
+});
+
+
+test('blocked browser storage shows a useful error instead of redirecting back to the email form',async()=>{
+ const {w,reloads,close}=setup({url:directEmailLink(),callbackPage:true,storageDenied:true,fetchResponse:{ok:true,status:200,json:async()=>({access_token:'direct-access',refresh_token:'direct-refresh',expires_in:3600})}});try{
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(reloads(),0);
+ assert.match(w.document.querySelector('[role="alert"]').textContent,/Allow website data/);
+ assert.equal(w.localStorage.getItem('ticketline.session.v1'),null);
  }finally{close();}
 });

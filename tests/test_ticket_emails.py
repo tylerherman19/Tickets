@@ -224,7 +224,7 @@ class AuthTemplateTests(unittest.TestCase):
         for name in ('confirmation.html','magic-link.html'):
             source = (base / name).read_text()
             parsed = Resources(); parsed.feed(source)
-            self.assertEqual(parsed.urls, ['{{ .ConfirmationURL }}'])
+            self.assertEqual(parsed.urls, ['{{ .SiteURL }}auth-callback.html#confirmation_url={{ .ConfirmationURL }}'])
             self.assertEqual(parsed.active_tags, [])
             self.assertEqual(source.count('{{ .ConfirmationURL }}'), 1)
             self.assertEqual(source.count('{{ .Token }}'), 1)
