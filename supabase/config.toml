@@ -1,6 +1,10 @@
 [functions.ticketline-prices]
 verify_jwt = true
 
+[auth.email]
+otp_length = 6
+otp_expiry = 300
+
 # CLI development settings. Hosted projects apply these same files in Auth > Emails.
 [auth.email.template.magic_link]
 subject = "Your Ticketline sign-in link"

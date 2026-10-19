@@ -136,14 +136,16 @@ async function requireSession(){
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){status.textContent='Enter a valid email address.';document.querySelector('#sign-in-email').focus();return;}
     button.disabled=resend.disabled=true;button.textContent=resend.textContent='Sending…';
     try {
-      const redirect=location.origin+location.pathname+location.search;
-      const r=await fetch(SB_URL+'/auth/v1/otp?redirect_to='+encodeURIComponent(redirect),{
+      const destination=location.pathname+location.search;
+      const redirect=new URL('./auth-callback.html',location.href);
+      redirect.searchParams.set('next',destination);
+      const r=await fetch(SB_URL+'/auth/v1/otp?redirect_to='+encodeURIComponent(redirect.href),{
         method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},
         body:JSON.stringify({email,create_user:true}),signal:AbortSignal.timeout(15000)});
       if(r.status===429) throw new Error('Too many sign-in requests. Wait a minute, then try again.');
       if(!r.ok) throw new Error('Could not send the sign-in link. Please try again.');
       // Same message whether or not the address already has an account.
-      status.textContent='Check your email. Click the sign-in link or enter the 6-digit code below. It may take a minute to arrive.';
+      status.textContent='Check your email. Click the sign-in link or enter the 6-digit code below. Use the newest email.';
       const requestedAt=Date.now();rememberSignIn({email,requested_at:requestedAt});showCode(email);cooldown(requestedAt);
     } catch(e){
       status.textContent=e.name==='TimeoutError'||e.name==='TypeError'?'Could not reach the sign-in service. Check your connection and try again.':e.message;

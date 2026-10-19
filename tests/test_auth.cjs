@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const {JSDOM,VirtualConsole}=require('jsdom');
 const source=fs.readFileSync('auth.js','utf8');
 const pendingKey='ticketline.pending-sign-in.v1';
-function setup({url='https://ticketline.example/watches.html',pending=null}={}){
+function setup({url='https://ticketline.example/watches.html',pending=null,callbackPage=false}={}){
  let reloads=0;const virtualConsole=new VirtualConsole();
  virtualConsole.on('jsdomError',error=>{if(error.message==='Not implemented: navigation (except hash changes)') reloads++;else throw error;});
  const dom=new JSDOM('<body data-page="watches"><main id="main"></main>',{url,runScripts:'outside-only',virtualConsole});
@@ -13,7 +13,7 @@ function setup({url='https://ticketline.example/watches.html',pending=null}={}){
  w.AbortSignal=AbortSignal;w.setInterval=()=>1;
  if(pending)w.localStorage.setItem(pendingKey,JSON.stringify(pending));
  w.fetch=async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return {ok:true,status:200,json:async()=>({})};};
- w.eval(source);return {w,calls,reloads:()=>reloads,close:()=>w.close()};
+ w.eval(source+(callbackPage?'\n'+fs.readFileSync('auth-callback.js','utf8'):''));return {w,calls,reloads:()=>reloads,close:()=>w.close()};
 }
 const field=(w,id)=>w.document.querySelector('#'+id);
 async function request(w,email='owner@example.test'){
@@ -117,5 +117,35 @@ test('signing in through an email link in another tab resumes the original sign-
  await w.requireSession();
  w.dispatchEvent(new w.StorageEvent('storage',{key:'ticketline.session.v1',newValue:JSON.stringify({access_token:'other-tab-access',refresh_token:'other-tab-refresh',expires_at:Date.now()+3600000})}));
  assert.equal(reloads(),1);assert.equal(await w.requireSession(),true);
+ }finally{close();}
+});
+
+
+test('email requests use the dedicated callback and preserve the requested page without credentials',async()=>{
+ const {w,calls,close}=setup({url:'https://ticketline.example/Tickets/new.html?event=abc&qty=2'});try{
+ await w.requireSession();await request(w);
+ const redirect=new URL(new URL(calls[0].url).searchParams.get('redirect_to'));
+ assert.equal(redirect.pathname,'/Tickets/auth-callback.html');
+ assert.equal(redirect.searchParams.get('next'),'/Tickets/new.html?event=abc&qty=2');
+ assert.equal(redirect.hash,'');
+ }finally{close();}
+});
+
+test('dedicated email callback opens the protected page only after storing the session',async()=>{
+ const {w,reloads,close}=setup({url:'https://ticketline.example/Tickets/auth-callback.html?next=%2FTickets%2Fnew.html%3Fevent%3Dabc#access_token=link-access&refresh_token=link-refresh&expires_in=3600',callbackPage:true});try{
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(reloads(),1);
+ assert.equal(JSON.parse(w.localStorage.getItem('ticketline.session.v1')).access_token,'link-access');
+ assert.equal(w.location.hash,'');
+ }finally{close();}
+});
+
+test('dedicated callback explains an expired link instead of silently showing an email form',async()=>{
+ const {w,reloads,close}=setup({url:'https://ticketline.example/Tickets/auth-callback.html?next=https%3A%2F%2Fevil.example# error=access_denied&error_description=Expired'.replace('# ','#'),callbackPage:true});try{
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(reloads(),0);
+ assert.match(w.document.querySelector('[role="alert"]').textContent,/expired, already used/);
+ assert.equal(w.document.querySelector('a').getAttribute('href'),'/Tickets/watches.html');
+ assert.equal(w.location.hash,'');
  }finally{close();}
 });
