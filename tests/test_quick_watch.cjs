@@ -19,7 +19,7 @@ test('hero event search, exact-seat gap, delivery and review/save work as one fl
  const h=setup();try{
  await tick();const {w,d}=h;let next;w.captureNavigation=url=>next=url;w.eval('goToWatchSetup=window.captureNavigation');
  const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.Event('input'));input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();
- assert.equal(d.querySelectorAll('[data-quick-result]').length,1);d.querySelector('[data-quick-result]').click();await tick();
+ assert.equal(d.querySelectorAll('[data-quick-result-type=event]').length,1);d.querySelector('[data-quick-result-type=event]').click();await tick();
  const price=d.querySelector('#quick-price');price.value='75';price.dispatchEvent(new w.Event('input'));
  assert.match(d.querySelector('#quick-gap').textContent,/\$42.91 above your price/);assert.match(d.querySelector('#quick-gap').textContent,/\$235.82 total/);
  assert.match(d.querySelector('#quick-gap').textContent,/tax may be added/);
@@ -29,7 +29,7 @@ test('hero event search, exact-seat gap, delivery and review/save work as one fl
  }finally{h.close();}
 });
 test('hero quantity changes recalculate the gap and old samples never show a price',async()=>{
- const h=setup();try{await tick();const {d,w}=h;const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-result]').click();await tick();d.querySelector('[data-quick-qty="4"]').click();d.querySelector('#quick-price').value='100';d.querySelector('#quick-price').dispatchEvent(new w.Event('input'));assert.match(d.querySelector('#quick-gap').textContent,/\$500 total/);assert.match(d.querySelector('#quick-gap').textContent,/\$25 above/);
+ const h=setup();try{await tick();const {d,w}=h;const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-result-type=event]').click();await tick();d.querySelector('[data-quick-qty="4"]').click();d.querySelector('#quick-price').value='100';d.querySelector('#quick-price').dispatchEvent(new w.Event('input'));assert.match(d.querySelector('#quick-gap').textContent,/\$500 total/);assert.match(d.querySelector('#quick-gap').textContent,/\$25 above/);
  const html=w.eval('quickGapMarkup({checked_at:new Date(Date.now()-16*60000).toISOString(),by_qty:{2:{low:11791,basis:"fees_included_tax_reported"}}},2,7500)');assert.doesNotMatch(html,/117|42.91/);assert.match(html,/fresh price.*not available/);
  d.querySelector('[data-quick-qty="5"]').click();assert.equal(d.querySelector('#quick-more-qty').hidden,false);
  }finally{h.close();}
@@ -42,7 +42,7 @@ test('team and date choices carry identity, budget and text preference into setu
 });
 test('hero requires a real search choice and a delivery method; outdated search replies are ignored',async()=>{
  const h=setup();try{await tick();const {d,w}=h;d.querySelector('#quick-price').value='75';d.querySelector('#quick-watch-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.match(d.querySelector('#quick-error').textContent,/Choose an event/);
- let resolve;w.deferSearch=()=>new Promise(r=>resolve=r);w.eval('sbPublicRpc=window.deferSearch');const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));d.querySelector('[data-quick-kind="team"]').click();resolve([event]);await tick();assert.equal(d.querySelector('#quick-options').hidden,true);assert.equal(d.querySelectorAll('[data-quick-result]').length,0);
+ const resolvers=[];w.deferSearch=()=>new Promise(r=>resolvers.push(r));w.eval('sbPublicRpc=window.deferSearch');const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));d.querySelector('[data-quick-kind="date"]').click();resolvers.forEach(resolve=>resolve([event]));await tick();assert.equal(d.querySelector('#quick-options').hidden,true);assert.equal(d.querySelectorAll('[data-quick-result]').length,0);
  }finally{h.close();}
 });
 test('invalid quick-link budgets cannot bypass the normal setup',async()=>{
@@ -58,5 +58,36 @@ test('the event list keeps category search, pagination and quantity-aware setup 
 
 test('nickname suggestions retain exact identities and do not cut off the pro team',async()=>{
  const h=setup();try{await tick();h.w.eval('window.rankTeams=rankQuickTeams');const colleges=Array.from({length:7},(_,i)=>({team_id:'college-'+i,label:'College '+i,category:'college-football',aliases:['Vikings']}));const rows=h.w.rankTeams([...colleges,team],'Vikings');assert.equal(rows[0].team_id,'vikings-source');assert.equal(new Set(rows.map(t=>t.team_id)).size,8);
+ }finally{h.close();}
+});
+
+test('Badger football resolves the source football identity, shows its schedule and filters opponents, dates and locations',async()=>{
+ const h=setup();try{await tick();const {w,d}=h;let next;w.captureNavigation=url=>next=url;w.eval('goToWatchSetup=window.captureNavigation');
+ const wis={team_id:'cfbwis',label:'Wisconsin Football',category:'college-football'};
+ const games=[{...event,event_id:'gopher-game',name:'Minnesota Golden Gophers at Wisconsin Badgers',event_date:'2026-11-27',venue:'Camp Randall Stadium',city:'Madison',state:'WI'},{...event,event_id:'trojan-game',name:'Wisconsin Badgers at USC Trojans',event_date:'2026-12-01',venue:'Memorial Coliseum',city:'Los Angeles',state:'CA'}];
+ w.searchTeams=async(name,body)=>{
+  w.requests.push({name,body});if(name==='tix_general_search')return [];
+  if(name==='tix_search_team_events'){assert.equal(body.p_team_id,'cfbwis');return games;}
+  if(body.p_query==='badger')return [{team_id:'cbbwis',label:'Wisconsin Basketball',category:'college-basketball',aliases:['Badgers']},{team_id:'cbbspringhill',label:'Spring Hill College Basketball',category:'college-basketball',aliases:['Badgers']}];
+  return body.p_query==='Wisconsin'&&body.p_category==='college-football'?[wis]:[];
+ };w.eval('sbPublicRpc=window.searchTeams');
+ const input=d.querySelector('#quick-search');input.value='badger football';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();await tick();
+ assert.equal(d.querySelectorAll('[data-quick-result]').length,1);assert.match(d.querySelector('[data-quick-result]').textContent,/Wisconsin Football/);d.querySelector('[data-quick-result]').click();await tick();
+ assert.equal(d.querySelector('#quick-schedule').hidden,false);assert.equal(d.querySelectorAll('[data-quick-game]').length,2);assert.match(d.querySelector('#quick-games').textContent,/Nov 27/);assert.match(d.querySelector('#quick-games').textContent,/Camp Randall Stadium.*Madison, WI/);
+ const filter=d.querySelector('#quick-opponent');filter.value='gophers';filter.dispatchEvent(new w.Event('input'));assert.equal(d.querySelectorAll('[data-quick-game]').length,1);assert.match(d.querySelector('[data-quick-game]').textContent,/Minnesota/);
+ filter.value='Los Angeles';filter.dispatchEvent(new w.Event('input'));assert.match(d.querySelector('[data-quick-game]').textContent,/USC/);
+ filter.value='2026-11-27';filter.dispatchEvent(new w.Event('input'));d.querySelector('[data-quick-game]').click();await tick();assert.match(d.querySelector('#quick-game-selection').textContent,/Minnesota.*Nov 27.*Madison/);
+ d.querySelector('#quick-price').value='90';d.querySelector('#quick-watch-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.equal(new URL(next,'https://example.test').searchParams.get('event'),'gopher-game');
+ next=undefined;filter.value='Trojans';filter.dispatchEvent(new w.Event('input'));d.querySelector('#quick-watch-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.equal(next,undefined);assert.match(d.querySelector('#quick-error').textContent,/Choose a game/);
+ d.querySelector('[data-quick-kind=team]').click();d.querySelector('#quick-watch-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.equal(new URL(next,'https://example.test').searchParams.get('team'),'cfbwis');assert.equal(new URL(next,'https://example.test').searchParams.get('category'),'college-football');
+ }finally{h.close();}
+});
+test('a replacement team rejects a late schedule, and empty schedules still allow following the team',async()=>{
+ const h=setup();try{await tick();const {w,d}=h;let finishBucks;const twins={team_id:'mlbmin',label:'Minnesota Twins',category:'mlb-baseball'},bucks={team_id:'nbamil',label:'Milwaukee Bucks',category:'nba-basketball'};
+ w.scheduleRpc=async(name,body)=>{if(name==='tix_general_search')return [];if(name==='tix_resolve_teams')return [body.p_query==='Bucks'.toLowerCase()?bucks:twins];if(body.p_team_id==='nbamil')return new Promise(r=>finishBucks=r);return [];};w.eval('sbPublicRpc=window.scheduleRpc');
+ const input=d.querySelector('#quick-search');input.value='Bucks';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-result]').click();await tick();
+ input.value='Twins';input.dispatchEvent(new w.Event('input'));input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-result]').click();await tick();finishBucks([{...event,name:'Bucks at Celtics'}]);await tick();
+ assert.equal(d.querySelector('#quick-team-title').textContent,'Minnesota Twins');assert.doesNotMatch(d.querySelector('#quick-games').textContent,/Celtics/);assert.match(d.querySelector('#quick-games').textContent,/No upcoming games.*follow the whole team/);
+ let next;w.captureNavigation=url=>next=url;w.eval('goToWatchSetup=window.captureNavigation');d.querySelector('#quick-price').value='50';d.querySelector('#quick-watch-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.equal(next,undefined);assert.match(d.querySelector('#quick-error').textContent,/Choose a game/);d.querySelector('[data-quick-kind=team]').click();d.querySelector('#quick-watch-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.equal(new URL(next,'https://example.test').searchParams.get('team'),'mlbmin');
  }finally{h.close();}
 });
