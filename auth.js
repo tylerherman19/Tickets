@@ -74,7 +74,7 @@ async function requireSession(){
   let pendingEmail=pending?.email||null;
   function showCode(email){
     pendingEmail=email;emailInput.value=email;form.hidden=true;codeForm.hidden=false;existingCode.hidden=true;
-    recipient.hidden=false;recipient.textContent='Enter the code sent to '+email+'. You can also click the sign-in link in that email.';
+    recipient.hidden=false;recipient.textContent='Enter the code sent to '+email+'. You can also click the sign-in link in that email. Both expire after 5 minutes.';
     codeInput.value='';codeStatus.textContent='';codeInput.focus();
   }
   const resend=document.querySelector('#resend-sign-in-code');
@@ -145,7 +145,7 @@ async function requireSession(){
       if(r.status===429) throw new Error('Too many sign-in requests. Wait a minute, then try again.');
       if(!r.ok) throw new Error('Could not send the sign-in link. Please try again.');
       // Same message whether or not the address already has an account.
-      status.textContent='Check your email. Click the sign-in link or enter the 6-digit code below. Use the newest email.';
+      status.textContent='Check your email. Click the sign-in link or enter the 6-digit code below. The link and code expire after 5 minutes.';
       const requestedAt=Date.now();rememberSignIn({email,requested_at:requestedAt});showCode(email);cooldown(requestedAt);
     } catch(e){
       status.textContent=e.name==='TimeoutError'||e.name==='TypeError'?'Could not reach the sign-in service. Check your connection and try again.':e.message;
