@@ -1,4 +1,4 @@
-const V='20261019c',CACHE='ticketline-shell-'+V;
+const V='20261019d',CACHE='ticketline-shell-'+V;
 const SHELL=['./index.html','./privacy.html','./tickets.css?v='+V,'./tickets.js?v='+V,
   './team-logos.js?v='+V,'./auth.js?v='+V,'./dev-fixtures.js?v='+V,'./app.js?v='+V];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)).then(()=>self.skipWaiting()));});

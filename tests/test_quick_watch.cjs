@@ -6,13 +6,13 @@ const shared=fs.readFileSync('tickets.js','utf8'),app=fs.readFileSync('app.js','
 const event={event_id:'fixture',name:'Panthers at Vikings',slug:'panthers-at-vikings',category:'nfl-football',event_date:'2026-12-20',venue:'U.S. Bank Stadium',city:'Minneapolis',state:'MN',discovery_status:'ok'};
 const team={team_id:'vikings-source',label:'Minnesota Vikings',category:'nfl-football',event_count:8};
 const tick=()=>new Promise(r=>setImmediate(r));
-function setup(page='explore',search=''){
+function setup(page='explore',search='',signedIn=false){
  const dom=new JSDOM('<body data-page="'+page+'"><main id="main"></main></body>',{url:'https://example.test/'+(page==='new'?'new':'index')+'.html'+search,runScripts:'outside-only'});
- const w=dom.window;w.requests=[];w.saved=[];w.scrollTo=()=>{};
+ const w=dom.window;w.requests=[];w.saved=[];w.scrollTo=()=>{};w.testSession=signedIn?{access_token:'fixture-user'}:null;w.captureCalls=[];w.mockCapture=async id=>{w.captureCalls.push(id);return {event_id:id,min_total:10000,checked_at:new Date().toISOString(),state:'metadata_only'};};
  w.mockGet=async path=>{w.requests.push(path);return path.includes('tix_event_market')?[{checked_at:new Date().toISOString(),by_qty:{2:{low:11791,basis:'fees_included_tax_unknown'},4:{low:12500,basis:'fees_included_tax_reported'}}}]:path.includes('tix_events_v')?[event]:[];};
  w.mockRpc=async(name,body)=>{w.requests.push({name,body});return name==='tix_resolve_teams'?[team]:name==='tix_general_search'||name==='tix_search_team_events'?[event]:[];};
  w.mockSave=async(name,body)=>{w.saved.push({name,body});return {};};
- w.eval(shared+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;sbRpc=window.mockSave;const IS_DEV=true,session=null;async function requireSession(){return true;}'+app);
+ w.eval(shared+';chrome=()=>{};sbGet=window.mockGet;sbPublicRpc=window.mockRpc;sbRpc=window.mockSave;captureEventPrice=window.mockCapture;const IS_DEV=true,session=window.testSession;async function requireSession(){return true;}'+app);
  return {dom,w,d:w.document,close:()=>w.close()};
 }
 test('hero event search, exact-seat gap, delivery and review/save work as one flow',async()=>{
@@ -103,5 +103,24 @@ test('Minnesota first offers teams, then the same dropdown shows only Vikings ga
 test('a full team name immediately opens its games in the original dropdown',async()=>{
  const h=setup();try{await tick();const {w,d}=h;const input=d.querySelector('#quick-search');input.value='Minnesota Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();
  assert.equal(d.querySelectorAll('[data-quick-result]').length,0);assert.match(d.querySelector('#quick-options').textContent,/Panthers at Vikings/);assert.match(d.querySelector('#quick-options').textContent,/U.S. Bank Stadium/);
+ }finally{h.close();}
+});
+test('choosing a game triggers one instant pull and renders its fresh advertised price while exact seats are pending',async()=>{
+ const h=setup('explore','',true);try{await tick();const {w,d}=h;const timers=[],originalTimeout=w.setTimeout.bind(w);w.setTimeout=(callback,ms,...args)=>ms===5000?(timers.push(callback),98765):originalTimeout(callback,ms,...args);
+ let quote=null,market=[];w.readQuote=async path=>path.includes('tix_event_market')?market:path.includes('tix_events_v')?(quote?[quote]:[]):[];w.pullQuote=async id=>{w.captureCalls.push(id);quote={min_total:4500,price_checked_at:new Date().toISOString()};return {event_id:id,min_total:4500,checked_at:quote.price_checked_at,state:'metadata_only'};};w.eval('sbGet=window.readQuote;captureEventPrice=window.pullQuote');
+ const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-game]').click();await tick();await tick();
+ assert.deepEqual(w.captureCalls,['fixture']);const detail=w.saved.find(r=>r.name==='tix_request_capture');assert.equal(detail.body.p_details,true);assert.equal(w.saved.some(r=>r.name==='tix_save_alert'),false);
+ assert.match(d.querySelector('#quick-gap').textContent,/Lowest advertised ticket.*\$45/);assert.match(d.querySelector('#quick-gap').textContent,/Seat count and tax are not confirmed/);assert.doesNotMatch(d.querySelector('#quick-gap').textContent,/above your price|below your price/);assert.equal(timers.length,1);
+ d.querySelector('#quick-refresh-price').click();await tick();assert.equal(w.captureCalls.length,1,'one provider request per event per minute');
+ market=[{checked_at:new Date().toISOString(),by_qty:{2:{low:7420,listings:228,basis:'fees_included_tax_unknown'}}}];await timers.pop()();assert.match(d.querySelector('#quick-gap').textContent,/Current price · 2 tickets together/);assert.match(d.querySelector('#quick-gap').textContent,/\$74.20/);assert.match(d.querySelector('#quick-gap').textContent,/228 matching listings/);assert.equal(w.captureCalls.length,1);
+ }finally{h.close();}
+});
+test('an old quick-pull result cannot overwrite the newly selected game',async()=>{
+ const h=setup('explore','',true);try{await tick();const {w,d}=h;let firstResult;w.getQuotes=async()=>[];w.getGames=async(name)=>name==='tix_resolve_teams'?[team]:name==='tix_search_team_events'?[event,{...event,event_id:'second',name:'Vikings at Lions'}]:[];w.pullSelected=async id=>{w.captureCalls.push(id);if(id==='fixture')return new Promise(resolve=>firstResult=resolve);return {event_id:id,state:'metadata_only',min_total:9000,checked_at:new Date().toISOString()};};w.eval('sbGet=window.getQuotes;sbPublicRpc=window.getGames;captureEventPrice=window.pullSelected');
+ const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-game=fixture]').click();await tick();input.focus();d.querySelector('[data-quick-game=second]').click();await tick();firstResult({state:'metadata_only',min_total:1000,checked_at:new Date().toISOString()});await tick();assert.match(input.value,/Lions/);assert.match(d.querySelector('#quick-gap').textContent,/\$90/);assert.doesNotMatch(d.querySelector('#quick-gap').textContent,/\$10/);
+ }finally{h.close();}
+});
+test('guests see a fresh saved exact-seat price without issuing an authenticated pull',async()=>{
+ const h=setup();try{await tick();const {w,d}=h;const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-game]').click();await tick();assert.match(d.querySelector('#quick-gap').textContent,/Current price · 2 tickets together/);assert.match(d.querySelector('#quick-gap').textContent,/\$117.91/);assert.equal(w.captureCalls.length,0);assert.equal(w.saved.some(r=>r.name==='tix_request_capture'),false);
  }finally{h.close();}
 });

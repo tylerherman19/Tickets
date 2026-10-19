@@ -16,13 +16,26 @@ function quickWatchUrl(draft){
  else{params.set('kind','date');params.set('date',draft.date);if(draft.city)params.set('city',draft.city);}
  return './new.html?'+params;
 }
-function quickGapMarkup(sample,qty,target){
+function quickExactPrice(sample,qty){
  const spread=sample?.by_qty?.[String(qty)],age=ageMinutes(sample?.checked_at);
- if(!Number.isFinite(age)||age>=15||new Date(sample.checked_at).getTime()>Date.now()+60000||!knownPriceBasis(spread?.basis)||!Number.isInteger(spread?.low)||spread.low<=0)
-   return '<strong>The gap right now</strong><p>A fresh price for '+esc(qty)+' tickets together is not available yet. You can still set your alert.</p>';
+ return Number.isFinite(age)&&age<15&&new Date(sample.checked_at).getTime()<=Date.now()+60000&&knownPriceBasis(spread?.basis)&&Number.isInteger(spread?.low)&&spread.low>0?spread:null;
+}
+function quickGapMarkup(sample,qty,target,context={}){
+ const spread=quickExactPrice(sample,qty);
+ if(!spread){
+  const quote=context.event,age=ageMinutes(quote?.price_checked_at),fresh=Number.isFinite(age)&&age<15&&new Date(quote.price_checked_at).getTime()<=Date.now()+60000&&Number.isInteger(quote.min_total)&&quote.min_total>0;
+  const pending=['checking','queued'].includes(context.state);
+  return (fresh?`<div class="quick-current-price"><small>Lowest advertised ticket</small><div><strong>${money(quote.min_total)}</strong><span>per ticket</span></div></div><p>Seat count and tax are not confirmed. ${pending?'Checking your '+esc(qty)+' tickets together.':'Your selected seats may cost more.'} Checked ${esc(ago(quote.price_checked_at).toLowerCase())}.</p>`:`<strong>Current ticket price</strong><p>${context.state==='checking'?'Pulling current prices…':pending?'The price check is queued. This card will update as results arrive.':'A fresh price for '+esc(qty)+' tickets together is not available yet. You can still set your alert.'}</p>`);
+ }
  const current=spread.low,diff=current-target,valid=Number.isInteger(target)&&target>0,max=Math.max(current,valid?target:0)*1.25;
  const a=valid?Math.max(8,Math.min(88,target/max*100)):8,b=Math.max(8,Math.min(88,current/max*100));
- return `<div class="quick-gap-heading"><strong>The gap right now</strong><span>${valid?(diff>0?money(diff)+' above your price':diff<0?money(-diff)+' below your price':'At your price'):'Enter your price to compare'}</span></div><div class="quick-gap-track" aria-hidden="true">${valid?`<span class="quick-gap-you" style="left:${a}%">You ${money(target)}</span><i class="quick-gap-distance" style="left:${Math.min(a,b)}%;width:${Math.abs(a-b)}%"></i>`:''}<span class="quick-gap-now" style="left:${b}%">Now ${money(current)}</span></div><p>${esc(qty)} tickets together · ${money(current)} per ticket · ${money(current*qty)} total. ${spread.basis==='fees_included_tax_reported'?'Fees and reported tax included.':'Fees included; tax may be added.'} Checked ${esc(ago(sample.checked_at).toLowerCase())}.</p>`;
+ return `<div class="quick-current-price"><small>Current price · ${esc(qty)} tickets together</small><div><strong>${money(current)}</strong><span>per ticket</span></div></div><div class="quick-gap-heading"><strong>The gap right now</strong><span>${valid?(diff>0?money(diff)+' above your price':diff<0?money(-diff)+' below your price':'At your price'):'Enter your price to compare'}</span></div><div class="quick-gap-track" aria-hidden="true">${valid?`<span class="quick-gap-you" style="left:${a}%">You ${money(target)}</span><i class="quick-gap-distance" style="left:${Math.min(a,b)}%;width:${Math.abs(a-b)}%"></i>`:''}<span class="quick-gap-now" style="left:${b}%">Now ${money(current)}</span></div><p>${Number.isInteger(spread.listings)?esc(spread.listings)+' matching listings · ':''}${esc(qty)} tickets together · ${money(current)} per ticket · ${money(current*qty)} total. ${spread.basis==='fees_included_tax_reported'?'Fees and reported tax included.':'Fees included; tax may be added.'} Checked ${esc(ago(sample.checked_at).toLowerCase())}.</p>`;
+}
+async function quickPullEvent(eventId){
+ // Queue exact-seat details as the signed-in owner before using the existing
+ // instant capture route. This path never creates an alert or sends an email.
+ await sbRpc('tix_request_capture',{p_event_id:eventId,p_details:true}).catch(()=>null);
+ return captureEventPrice(eventId);
 }
 function rankQuickTeams(rows,term){
  const normalize=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(),q=normalize(term);
@@ -78,7 +91,8 @@ function automaticQuickTeam(rows,term){
 }
 function bindQuickWatch(){
  const form=$('#quick-watch-form');if(!form)return;
- const draft={kind:'event',selected:null,qty:2,sample:null,rows:[],team:null,games:[],searchTerm:'',teamTerm:''};
+ const draft={kind:'event',selected:null,qty:2,sample:null,rows:[],team:null,games:[],searchTerm:'',teamTerm:'',pullState:'',pullMessage:'',pullId:0};
+ const pricePulls=new Map();let pricePollTimer=null;
  const input=$('#quick-search'),options=$('#quick-options'),status=$('#quick-search-status'),gap=$('#quick-gap');
  let searchTimer,request=0,priceRequest=0,scheduleRequest=0,scheduleLoaded=false;
  const active=()=>typeof document!=='undefined'&&form.isConnected;
@@ -87,14 +101,50 @@ function bindQuickWatch(){
  const showOptions=html=>{options.innerHTML=html;options.hidden=false;input.setAttribute('aria-expanded','true');};
  const syncScopes=()=>$$('[data-quick-kind]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.quickKind===draft.kind));
  const drawGap=()=>{
-  gap.innerHTML=draft.kind==='event'&&draft.selected?quickGapMarkup(draft.sample,draft.qty,Math.round(Number($('#quick-price').value)*100)):`<strong>${draft.kind==='team'?'A price for every game':draft.kind==='date'?'An alert for your day out':'The gap right now'}</strong><p>${draft.kind==='team'?'Each game is checked against your price and seat count.':draft.kind==='date'?'We’ll watch events on your chosen date and in your chosen city.':draft.team?'Choose a game from the search dropdown to compare your price.':'Choose a team or event to get started.'}</p>`;
+  gap.innerHTML=draft.kind==='event'&&draft.selected?quickGapMarkup(draft.sample,draft.qty,Math.round(Number($('#quick-price').value)*100),{event:draft.selected,state:draft.pullState}):`<strong>${draft.kind==='team'?'A price for every game':draft.kind==='date'?'An alert for your day out':'The gap right now'}</strong><p>${draft.kind==='team'?'Each game is checked against your price and seat count.':draft.kind==='date'?'We’ll watch events on your chosen date and in your chosen city.':draft.team?'Choose a game from the search dropdown to compare your price.':'Choose a team or event to get started.'}</p>`;
+  if(draft.kind==='event'&&draft.selected){
+   gap.insertAdjacentHTML('beforeend',`<div class="quick-price-actions"><span role="status">${esc(draft.pullMessage)}</span>${session?`<button type="button" class="text-button" id="quick-refresh-price" ${draft.pullState==='checking'?'disabled':''}>${icon('refresh')} Refresh price</button>`:`<a class="text-link" href="./new.html?event=${encodeURIComponent(draft.selected.event_id)}">Sign in for a live price</a>`}</div>`);
+   if($('#quick-refresh-price'))$('#quick-refresh-price').onclick=()=>pullCurrentPrice();
+  }
   const price=Number($('#quick-price').value);$('#quick-submit').innerHTML=(price>0?'Start watching at '+money(Math.round(price*100)):'Start watching')+' '+icon('arrow');
  };
  const loadPrice=async(reset=true)=>{
   const event=draft.selected,id=++priceRequest;if(reset)draft.sample=null;drawGap();if(draft.kind!=='event'||!event)return;
-  try{const rows=await sbGet('tix_event_market?event_id=eq.'+encodeURIComponent(event.event_id)+'&select=by_qty,checked_at,coverage&limit=1');if(!active()||id!==priceRequest||event!==draft.selected||draft.kind!=='event')return;draft.sample=rows[0]||null;drawGap();}catch{if(active()&&id===priceRequest)drawGap();}
+  const results=await Promise.allSettled([
+   sbGet('tix_event_market?event_id=eq.'+encodeURIComponent(event.event_id)+'&select=by_qty,checked_at,coverage&limit=1'),
+   sbGet('tix_events_v?event_id=eq.'+encodeURIComponent(event.event_id)+'&select=min_total,price_checked_at&limit=1')
+  ]);
+  if(!active()||id!==priceRequest||event!==draft.selected||draft.kind!=='event')return;
+  if(results[0].status==='fulfilled')draft.sample=results[0].value[0]||null;
+  if(results[1].status==='fulfilled'){const current=results[1].value[0];if(current?.min_total>0&&(!event.price_checked_at||new Date(current.price_checked_at)>=new Date(event.price_checked_at)))Object.assign(event,current);}
+  if(quickExactPrice(draft.sample,draft.qty)){draft.pullState='complete';draft.pullMessage='Current seat price loaded.';clearTimeout(pricePollTimer);}
+  drawGap();
  };
- const selectGame=game=>{draft.kind='event';draft.selected=game;request++;priceRequest++;syncScopes();input.value=cap(game.name);status.textContent=quickGameDate(game)+' · '+quickGameLocation(game);hideOptions();error('');loadPrice();};
+ const pollPrice=(event,pullId,attempt=0)=>{
+  clearTimeout(pricePollTimer);if(attempt>=18)return;
+  pricePollTimer=setTimeout(async()=>{
+   if(!active()||event!==draft.selected||draft.kind!=='event'||pullId!==draft.pullId)return;
+   await loadPrice(false);
+   if(!quickExactPrice(draft.sample,draft.qty))pollPrice(event,pullId,attempt+1);
+  },5000);
+ };
+ const pullCurrentPrice=async()=>{
+  const event=draft.selected;if(!event||draft.kind!=='event')return;
+  const pullId=++draft.pullId;clearTimeout(pricePollTimer);
+  if(!session){draft.pullState='sign_in_required';draft.pullMessage='Sign in to pull a new price.';drawGap();return;}
+  draft.pullState='checking';draft.pullMessage='Pulling current prices…';drawGap();
+  let entry=pricePulls.get(event.event_id);
+  if(!entry||Date.now()-entry.startedAt>=60000){entry={startedAt:Date.now(),promise:quickPullEvent(event.event_id)};pricePulls.set(event.event_id,entry);}
+  try{
+   const result=await entry.promise;if(!active()||event!==draft.selected||draft.kind!=='event'||pullId!==draft.pullId)return;
+   if(Number.isInteger(result.min_total)&&result.min_total>0&&result.checked_at&&(!event.price_checked_at||new Date(result.checked_at)>=new Date(event.price_checked_at))){event.min_total=result.min_total;event.price_checked_at=result.checked_at;}
+   draft.pullState=['metadata_only','partial','cached','queued','scheduled','saved_only'].includes(result.state)?'queued':result.state;
+   draft.pullMessage=result.state==='sign_in_required'?'Sign in to pull a new price.':result.state==='suspended'?'Live checks are paused. Try again later.':result.reason==='request_limit'?'The quick pull is at its limit. Waiting for the next available check.':draft.pullState==='queued'?'Waiting for fresh seat details. This card updates automatically.':'Price check finished.';
+   await loadPrice(false);
+   if(['queued','checking','complete','partial'].includes(draft.pullState)&&!quickExactPrice(draft.sample,draft.qty))pollPrice(event,pullId);
+  }catch{if(active()&&event===draft.selected&&pullId===draft.pullId){draft.pullState='failed';draft.pullMessage='Could not refresh the price. Please try again.';pricePulls.delete(event.event_id);drawGap();}}
+ };
+ const selectGame=game=>{draft.kind='event';draft.selected=game;request++;priceRequest++;syncScopes();input.value=cap(game.name);status.textContent=quickGameDate(game)+' · '+quickGameLocation(game);hideOptions();error('');draft.pullState='';draft.pullMessage='';loadPrice();pullCurrentPrice();};
  const followTeam=()=>{draft.kind='team';draft.selected=draft.team;input.value=draft.team.label;syncScopes();hideOptions();status.textContent='Every home game for '+draft.team.label;error('');drawGap();};
  const dropdownHead=()=>`<div class="quick-dropdown-head"><strong>${esc(draft.team.label)} games</strong><button type="button" class="text-button" id="quick-back-results">Back to search</button></div>`;
  const bindBack=()=>{$('#quick-back-results').onclick=()=>{scheduleRequest++;draft.team=null;draft.selected=null;draft.sample=null;input.value=draft.searchTerm;renderMatches();drawGap();};};
@@ -152,8 +202,14 @@ function bindQuickWatch(){
   if(draft.kind!=='date'&&draft.team){input.value=draft.team.label;if(draft.kind==='team')followTeam();else if(scheduleLoaded)drawGames();else loadSchedule();}
   else if(draft.kind!=='date'&&input.value.trim().length>=2)search();drawGap();
  });
- $$('[data-quick-qty]').forEach(button=>button.onclick=()=>{draft.qty=Number(button.dataset.quickQty);$('#quick-more-qty').hidden=draft.qty<5;$('#quick-more-qty').value=String(draft.qty);$$('[data-quick-qty]').forEach(b=>b.setAttribute('aria-pressed',b===button));drawGap();});
- $('#quick-more-qty').onchange=e=>{draft.qty=Number(e.target.value);drawGap();};$('#quick-price').oninput=drawGap;
+ const quantityChanged=()=>{
+  if(draft.kind==='event'&&draft.selected){
+   const exact=quickExactPrice(draft.sample,draft.qty);draft.pullState=exact?'complete':session?'queued':'sign_in_required';draft.pullMessage=exact?'Current seat price loaded.':session?'Checking your selected seat count.':'Sign in to pull a new price.';
+   loadPrice(false);if(session&&!exact)pullCurrentPrice();
+  }else drawGap();
+ };
+ $$('[data-quick-qty]').forEach(button=>button.onclick=()=>{draft.qty=Number(button.dataset.quickQty);$('#quick-more-qty').hidden=draft.qty<5;$('#quick-more-qty').value=String(draft.qty);$$('[data-quick-qty]').forEach(b=>b.setAttribute('aria-pressed',b===button));quantityChanged();});
+ $('#quick-more-qty').onchange=e=>{draft.qty=Number(e.target.value);quantityChanged();};$('#quick-price').oninput=drawGap;
  form.onsubmit=e=>{
   e.preventDefault();error('');if(draft.kind!=='date'&&!draft.selected){error(draft.team?'Choose a game from the search dropdown, or select A whole team.':'Choose an event or team from the search results first.');input.focus();return;}
   if(!$('#quick-email').checked&&!$('#quick-text').checked){error('Choose email, text, or both.');return;}if(!form.reportValidity())return;
