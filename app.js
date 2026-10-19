@@ -7,7 +7,7 @@ const state={events:[],category:query.get('category')==='all'?'':query.get('cate
 state.pendingSearchActivity=page==='explore'?newSearchActivity('link',state.search):null;
 const matchSummary=w=>w.kind==='team'?`${w.match.team_label||cap(w.match.slug)} · ${w.match.home_away==='any'?'Home & away':cap(w.match.home_away||'home')+' games'}`:w.kind==='date'?whenShort(w.match.date)+(w.match.city?` in ${w.match.city}`:w.match.state?` in ${w.match.state}`:''):w.label;
 function layout(title,sub,body,action='') {main.innerHTML=`<div class="container page"><div class="page-heading"><div><h1>${title}</h1><p>${sub}</p></div>${action}</div>${body}</div>`;}
-function heroCard(){return `<aside class="start-card quick-watch" aria-labelledby="start-title"><div class="start-card-head"><h2 id="start-title">Start a watch</h2><span>Your event. Your price.</span></div><form id="quick-watch-form"><label class="field-label" id="quick-search-label" for="quick-search">1 · What do you want to see?</label><div class="quick-search-box"><div class="search-input">${icon('search')}<input id="quick-search" type="search" autocomplete="off" maxlength="100" placeholder="Team, artist, show or city" aria-controls="quick-options" aria-describedby="quick-search-status"></div><div id="quick-options" class="quick-options" hidden></div></div><p id="quick-search-status" class="field-help" role="status">Search a team or event, then choose a match.</p><div class="quick-scopes" aria-label="What to watch"><button type="button" data-quick-kind="event" aria-pressed="true">This event</button><button type="button" data-quick-kind="team" aria-pressed="false">A whole team</button><button type="button" data-quick-kind="date" aria-pressed="false">Anything that day</button></div><div id="quick-day-fields" hidden><label class="field-label" for="quick-date">Event date</label><input id="quick-date" type="date" min="${todayISO()}" max="${todayISO(new Date(Date.now()+365*86400000))}"><label class="field-label" for="quick-city">City <span>optional</span></label><input id="quick-city" maxlength="60" placeholder="e.g. Minneapolis"></div><section id="quick-schedule" class="quick-schedule" aria-label="Team games" hidden><div class="quick-schedule-heading"><strong id="quick-team-title"></strong><button type="button" class="text-button" id="quick-change-team">Change team</button></div><label class="field-label" for="quick-opponent">Who do they play?</label><div class="search-input quick-opponent-box">${icon('search')}<input id="quick-opponent" type="search" placeholder="Opponent, date or city" maxlength="100" autocomplete="off" aria-controls="quick-games"></div><div id="quick-games-count" class="quick-games-count" role="status"></div><div id="quick-games" class="quick-games"></div><button id="quick-games-more" type="button" class="text-button" hidden>Show more games</button><p id="quick-game-selection" class="quick-game-selection" role="status"></p></section><div class="quick-price-fields"><fieldset class="quick-quantity"><legend class="field-label">2 · Seats together</legend><div class="quick-seats">${[1,2,3,4,5].map(n=>`<button type="button" data-quick-qty="${n}" aria-pressed="${n===2}">${n===5?'5+':n}</button>`).join('')}</div><label class="sr-only" for="quick-more-qty">Exact number of tickets</label><select id="quick-more-qty" hidden>${[5,6,7,8].map(n=>`<option value="${n}">${n} tickets together</option>`).join('')}</select></fieldset><div class="quick-target"><label class="field-label" for="quick-price">3 · Your price, per ticket</label><div class="currency-input"><span>$</span><input id="quick-price" type="number" inputmode="decimal" min="1" max="400000" step="0.01" placeholder="75" required><small>fees included</small></div></div></div><div id="quick-gap" class="quick-gap" aria-live="polite"><strong>The gap right now</strong><p>Choose a team or event to get started.</p></div><div class="quick-bottom"><div class="quick-delivery"><label><input id="quick-email" type="checkbox" checked> Email</label><label><input id="quick-text" type="checkbox"> Text</label></div><button class="button primary" id="quick-submit" type="submit">Start watching ${icon('arrow')}</button></div><p id="quick-error" class="quick-error" role="alert" hidden></p><p class="quick-footnote">Review before saving. Text delivery needs a carrier and number. <a href="./privacy.html">Search privacy</a>.</p></form></aside>`;}
+function heroCard(){return `<aside class="start-card quick-watch" aria-labelledby="start-title"><div class="start-card-head"><h2 id="start-title">Start a watch</h2><span>Your event. Your price.</span></div><form id="quick-watch-form"><label class="field-label" id="quick-search-label" for="quick-search">1 · What do you want to see?</label><div class="quick-search-box"><div class="search-input">${icon('search')}<input id="quick-search" type="search" autocomplete="off" maxlength="100" placeholder="Team, artist, show or city" aria-controls="quick-options" aria-describedby="quick-search-status"></div><div id="quick-options" class="quick-options" hidden></div></div><p id="quick-search-status" class="field-help" role="status">Search a team or event, then choose a match.</p><div class="quick-scopes" aria-label="What to watch"><button type="button" data-quick-kind="event" aria-pressed="true">This event</button><button type="button" data-quick-kind="team" aria-pressed="false">A whole team</button><button type="button" data-quick-kind="date" aria-pressed="false">Anything that day</button></div><div id="quick-day-fields" hidden><label class="field-label" for="quick-date">Event date</label><input id="quick-date" type="date" min="${todayISO()}" max="${todayISO(new Date(Date.now()+365*86400000))}"><label class="field-label" for="quick-city">City <span>optional</span></label><input id="quick-city" maxlength="60" placeholder="e.g. Minneapolis"></div><div class="quick-price-fields"><fieldset class="quick-quantity"><legend class="field-label">2 · Seats together</legend><div class="quick-seats">${[1,2,3,4,5].map(n=>`<button type="button" data-quick-qty="${n}" aria-pressed="${n===2}">${n===5?'5+':n}</button>`).join('')}</div><label class="sr-only" for="quick-more-qty">Exact number of tickets</label><select id="quick-more-qty" hidden>${[5,6,7,8].map(n=>`<option value="${n}">${n} tickets together</option>`).join('')}</select></fieldset><div class="quick-target"><label class="field-label" for="quick-price">3 · Your price, per ticket</label><div class="currency-input"><span>$</span><input id="quick-price" type="number" inputmode="decimal" min="1" max="400000" step="0.01" placeholder="75" required><small>fees included</small></div></div></div><div id="quick-gap" class="quick-gap" aria-live="polite"><strong>The gap right now</strong><p>Choose a team or event to get started.</p></div><div class="quick-bottom"><div class="quick-delivery"><label><input id="quick-email" type="checkbox" checked> Email</label><label><input id="quick-text" type="checkbox"> Text</label></div><button class="button primary" id="quick-submit" type="submit">Start watching ${icon('arrow')}</button></div><p id="quick-error" class="quick-error" role="alert" hidden></p><p class="quick-footnote">Review before saving. Text delivery needs a carrier and number. <a href="./privacy.html">Search privacy</a>.</p></form></aside>`;}
 function goToWatchSetup(url){location.href=url;}
 function quickWatchUrl(draft){
  const params=new URLSearchParams({quick:'1',qty:String(draft.qty),price:draft.price,email:draft.email?'1':'0',sms:draft.sms?'1':'0'});
@@ -67,78 +67,99 @@ function filterQuickGames(games,term){
  const words=String(term).toLowerCase().trim().split(/\s+/).filter(Boolean);
  return games.filter(game=>{const text=[game.name,game.event_date,quickGameDate(game),quickGameLocation(game)].join(' ').toLowerCase();return words.every(word=>text.includes(word));});
 }
+function automaticQuickTeam(rows,term){
+ const teams=rows.filter(row=>row._quickType==='team'),q=parseQuickSearch(term).text.toLowerCase();
+ const normalize=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+ const exact=teams.filter(t=>[t.label,...(t.aliases||[])].some(name=>normalize(name)===q));
+ if(exact.length===1)return exact[0];
+ const pro=teams.filter(t=>['nfl-football','nhl-hockey','nba-basketball','mlb-baseball','mls-soccer'].includes(t.category)&&normalize(t.label).endsWith(' '+q));
+ if(q&&pro.length===1)return pro[0];
+ return teams.length===1?teams[0]:null;
+}
 function bindQuickWatch(){
  const form=$('#quick-watch-form');if(!form)return;
- const draft={kind:'event',selected:null,qty:2,sample:null,rows:[],team:null,games:[],gamesShown:6};
+ const draft={kind:'event',selected:null,qty:2,sample:null,rows:[],team:null,games:[],searchTerm:'',teamTerm:''};
  const input=$('#quick-search'),options=$('#quick-options'),status=$('#quick-search-status'),gap=$('#quick-gap');
- let searchTimer,request=0,priceRequest=0,scheduleRequest=0;
+ let searchTimer,request=0,priceRequest=0,scheduleRequest=0,scheduleLoaded=false;
  const active=()=>typeof document!=='undefined'&&form.isConnected;
  const error=message=>{const box=$('#quick-error');box.textContent=message;box.hidden=!message;};
+ const hideOptions=()=>{options.hidden=true;input.setAttribute('aria-expanded','false');};
+ const showOptions=html=>{options.innerHTML=html;options.hidden=false;input.setAttribute('aria-expanded','true');};
  const syncScopes=()=>$$('[data-quick-kind]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.quickKind===draft.kind));
  const drawGap=()=>{
-  gap.innerHTML=draft.kind==='event'&&draft.selected?quickGapMarkup(draft.sample,draft.qty,Math.round(Number($('#quick-price').value)*100)):`<strong>${draft.kind==='team'?'A price for every game':draft.kind==='date'?'An alert for your day out':'The gap right now'}</strong><p>${draft.kind==='team'?'Each game is checked against your price and seat count.':draft.kind==='date'?'We’ll watch events on your chosen date and in your chosen city.':draft.team?'Choose a game from the schedule above to compare your price.':'Choose a team or event to get started.'}</p>`;
+  gap.innerHTML=draft.kind==='event'&&draft.selected?quickGapMarkup(draft.sample,draft.qty,Math.round(Number($('#quick-price').value)*100)):`<strong>${draft.kind==='team'?'A price for every game':draft.kind==='date'?'An alert for your day out':'The gap right now'}</strong><p>${draft.kind==='team'?'Each game is checked against your price and seat count.':draft.kind==='date'?'We’ll watch events on your chosen date and in your chosen city.':draft.team?'Choose a game from the search dropdown to compare your price.':'Choose a team or event to get started.'}</p>`;
   const price=Number($('#quick-price').value);$('#quick-submit').innerHTML=(price>0?'Start watching at '+money(Math.round(price*100)):'Start watching')+' '+icon('arrow');
  };
  const loadPrice=async(reset=true)=>{
   const event=draft.selected,id=++priceRequest;if(reset)draft.sample=null;drawGap();if(draft.kind!=='event'||!event)return;
   try{const rows=await sbGet('tix_event_market?event_id=eq.'+encodeURIComponent(event.event_id)+'&select=by_qty,checked_at,coverage&limit=1');if(!active()||id!==priceRequest||event!==draft.selected||draft.kind!=='event')return;draft.sample=rows[0]||null;drawGap();}catch{if(active()&&id===priceRequest)drawGap();}
  };
- const drawGames=()=>{
-  const games=filterQuickGames(draft.games,$('#quick-opponent').value),box=$('#quick-games');
-  $('#quick-games-count').textContent=games.length+' '+(games.length===1?'game':'games')+(draft.games.length===500?' (first 500 listed)':'');
-  box.innerHTML=games.length?games.slice(0,draft.gamesShown).map(game=>`<button type="button" class="quick-game" data-quick-game="${esc(game.event_id)}" aria-pressed="${draft.kind==='event'&&draft.selected?.event_id===game.event_id}"><strong>${esc(cap(game.name))}</strong><span>${esc(quickGameDate(game))}</span><small>${esc(quickGameLocation(game))}</small></button>`).join(''):`<p class="field-help">${draft.games.length?'No games match that opponent, date or place. Try another search.':'No upcoming games are listed for this team yet. You can still follow the whole team.'}</p>`;
-  $('#quick-games-more').hidden=games.length<=draft.gamesShown;
-  $$('[data-quick-game]',box).forEach(button=>button.onclick=()=>{
-   const game=draft.games.find(g=>g.event_id===button.dataset.quickGame);if(!game)return;
-   draft.kind='event';draft.selected=game;syncScopes();error('');$('#quick-game-selection').textContent='Selected: '+cap(game.name)+' · '+quickGameDate(game)+' · '+quickGameLocation(game);drawGames();loadPrice();
-  });
+ const selectGame=game=>{draft.kind='event';draft.selected=game;request++;priceRequest++;syncScopes();input.value=cap(game.name);status.textContent=quickGameDate(game)+' · '+quickGameLocation(game);hideOptions();error('');loadPrice();};
+ const followTeam=()=>{draft.kind='team';draft.selected=draft.team;input.value=draft.team.label;syncScopes();hideOptions();status.textContent='Every home game for '+draft.team.label;error('');drawGap();};
+ const dropdownHead=()=>`<div class="quick-dropdown-head"><strong>${esc(draft.team.label)} games</strong><button type="button" class="text-button" id="quick-back-results">Back to search</button></div>`;
+ const bindBack=()=>{$('#quick-back-results').onclick=()=>{scheduleRequest++;draft.team=null;draft.selected=null;draft.sample=null;input.value=draft.searchTerm;renderMatches();drawGap();};};
+ const drawGames=(filter='')=>{
+  const games=filterQuickGames(draft.games,filter);
+  showOptions(dropdownHead()+`<div class="quick-dropdown-count">${games.length} ${games.length===1?'game':'games'}${draft.games.length===500?' (first 500 listed)':''}</div>`+(games.length?games.map(game=>`<button type="button" class="quick-game-option" data-quick-game="${esc(game.event_id)}"><strong>${esc(cap(game.name))}</strong><small>${esc(quickGameDate(game))} · ${esc(quickGameLocation(game))}</small></button>`).join(''):`<p class="quick-dropdown-message">${draft.games.length?'No games match. Edit your search to try another opponent, date or place.':'No upcoming games are listed for this team yet.'}</p>`)+`<button type="button" id="quick-follow-team" class="quick-follow-team">Follow all ${esc(draft.team.label)} home games</button>`);
+  bindBack();$('#quick-follow-team').onclick=followTeam;
+  $$('[data-quick-game]',options).forEach(button=>button.onclick=()=>{const game=draft.games.find(g=>g.event_id===button.dataset.quickGame);if(game)selectGame(game);});
  };
  const loadSchedule=async()=>{
-  const team=draft.team,id=++scheduleRequest;$('#quick-games').innerHTML='<p class="field-help">Loading the schedule…</p>';$('#quick-games-count').textContent='';$('#quick-games-more').hidden=true;
+  const team=draft.team,id=++scheduleRequest;scheduleLoaded=false;showOptions(dropdownHead()+'<p class="quick-dropdown-message">Loading games…</p>');bindBack();
   try{
-   const rows=await sbPublicRpc('tix_search_team_events',{p_team_id:team.team_id,p_limit:500});if(!active()||id!==scheduleRequest||team!==draft.team||draft.kind==='date')return;
-   draft.games=(Array.isArray(rows)?rows:[]).filter(g=>g.event_date>=todayISO()).sort((a,b)=>String(a.event_date).localeCompare(String(b.event_date))||String(a.event_id).localeCompare(String(b.event_id)));draft.gamesShown=6;drawGames();
-  }catch{if(!active()||id!==scheduleRequest||team!==draft.team)return;$('#quick-games').innerHTML='<p class="field-help">The schedule could not load. Please try again.</p><button class="text-button" type="button" id="quick-retry-games">Try again</button>';$('#quick-retry-games').onclick=loadSchedule;}
+   const rows=await sbPublicRpc('tix_search_team_events',{p_team_id:team.team_id,p_limit:500});if(!active()||id!==scheduleRequest||team!==draft.team||draft.kind!=='event')return;
+   draft.games=(Array.isArray(rows)?rows:[]).filter(g=>g.event_date>=todayISO()).sort((a,b)=>String(a.event_date).localeCompare(String(b.event_date))||String(a.event_id).localeCompare(String(b.event_id)));scheduleLoaded=true;drawGames();status.textContent='Choose a '+team.label+' game from the dropdown.';
+  }catch{if(!active()||id!==scheduleRequest||team!==draft.team||draft.kind!=='event')return;showOptions(dropdownHead()+'<p class="quick-dropdown-message">Games could not load.</p><button type="button" id="quick-retry-games">Try again</button>');bindBack();$('#quick-retry-games').onclick=loadSchedule;}
  };
- const choose=async index=>{
-  const row=draft.rows[index];if(!row)return;request++;scheduleRequest++;priceRequest++;clearTimeout(searchTimer);options.hidden=true;error('');draft.sample=null;
-  if(row._quickType==='team'||draft.kind==='team'){
-   draft.team=row;draft.selected=draft.kind==='team'?row:null;input.value=row.label;draft.games=[];$('#quick-schedule').hidden=false;$('#quick-team-title').textContent=row.label;$('#quick-opponent').value='';$('#quick-game-selection').textContent='';status.textContent=leagueName(row.category)+' · Choose a game below, or follow the whole team.';drawGap();loadSchedule();
-  }else{
-   draft.team=null;draft.selected=row;input.value=row.name;$('#quick-schedule').hidden=true;status.textContent=quickGameDate(row)+' · '+quickGameLocation(row);loadPrice();
-  }
+ const chooseTeam=(team,term)=>{
+  request++;scheduleRequest++;priceRequest++;clearTimeout(searchTimer);draft.team=team;draft.teamTerm=term||team.label;draft.selected=null;draft.sample=null;draft.games=[];input.value=team.label;error('');
+  if(draft.kind==='team')followTeam();else{status.textContent='Loading '+team.label+' games…';drawGap();loadSchedule();}
+ };
+ const renderMatches=()=>{
+  showOptions(draft.rows.map((row,i)=>`<button type="button" data-quick-result="${i}" data-quick-result-type="${row._quickType}"><strong>${esc(row._quickType==='team'?row.label:cap(row.name))}</strong><small>${esc(row._quickType==='team'?'Team · '+leagueName(row.category)+' · View games':quickGameDate(row)+' · '+quickGameLocation(row))}</small></button>`).join(''));
+  if(!draft.rows.length)hideOptions();
+  $$('[data-quick-result]',options).forEach(button=>button.onclick=()=>{const row=draft.rows[Number(button.dataset.quickResult)];if(row._quickType==='team')chooseTeam(row,row.label);else{draft.team=null;selectGame(row);}});
+  status.textContent=draft.rows.length?'Choose a team to see its games, or choose an event.':'No matches. Try a team, school, artist or city.';
  };
  const search=async()=>{
-  const term=input.value.trim(),id=++request,kind=draft.kind;options.hidden=true;if(term.length<2){status.textContent='Type at least two letters to search.';return;}status.textContent='Finding teams and events…';
+  const term=input.value.trim(),id=++request,kind=draft.kind;hideOptions();if(term.length<2){status.textContent='Type at least two letters to search.';return;}status.textContent='Finding teams and events…';
   try{
    const rows=await quickSearchMatches(kind,term);if(!active()||id!==request||kind!==draft.kind||term!==input.value.trim())return;
-   draft.rows=Array.isArray(rows)?rows:[];const activity=newSearchActivity('submit',term);if(activity)recordSearchActivity({...activity,p_filters:{category:'',quantity:String(draft.qty)},p_result_count:draft.rows.length,p_has_more:draft.rows.length>=6,p_outcome:draft.rows.length?'results':'no_results'}).catch(()=>{});
-   options.innerHTML=draft.rows.map((row,i)=>`<button type="button" data-quick-result="${i}" data-quick-result-type="${row._quickType}"><strong>${esc(row._quickType==='team'?row.label:cap(row.name))}</strong><small>${esc(row._quickType==='team'?'Team · '+leagueName(row.category)+' · See opponents, dates and locations':quickGameDate(row)+' · '+quickGameLocation(row))}</small></button>`).join('');
-   options.hidden=!draft.rows.length;status.textContent=draft.rows.length?'Choose a team to see its games, or choose an event.':'No matches. Try a team, school, artist or city.';$$('[data-quick-result]',options).forEach(b=>b.onclick=()=>choose(Number(b.dataset.quickResult)));
+   draft.rows=Array.isArray(rows)?rows:[];draft.searchTerm=term;const activity=newSearchActivity('submit',term);if(activity)recordSearchActivity({...activity,p_filters:{category:'',quantity:String(draft.qty)},p_result_count:draft.rows.length,p_has_more:draft.rows.length>=6,p_outcome:draft.rows.length?'results':'no_results'}).catch(()=>{});
+   const team=kind==='event'?automaticQuickTeam(draft.rows,term):null;if(team)chooseTeam(team,term);else renderMatches();
   }catch{if(active()&&id===request)status.textContent='Search could not load. Try again, or browse the events below.';}
  };
- input.oninput=()=>{draft.selected=null;draft.team=null;draft.sample=null;request++;priceRequest++;scheduleRequest++;clearTimeout(searchTimer);options.hidden=true;$('#quick-schedule').hidden=true;drawGap();searchTimer=setTimeout(search,300);};
- input.onkeydown=e=>{if(e.key==='ArrowDown'&&!options.hidden){e.preventDefault();options.querySelector('button')?.focus();}if(e.key==='Escape')options.hidden=true;if(e.key==='Enter'&&!draft.selected){e.preventDefault();clearTimeout(searchTimer);search();}};
- options.onkeydown=e=>{const buttons=$$('button',options),index=buttons.indexOf(document.activeElement);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();buttons[(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}if(e.key==='Escape'){options.hidden=true;input.focus();}};
- $('#quick-opponent').oninput=()=>{draft.gamesShown=6;if(draft.kind==='event'&&draft.selected&&!filterQuickGames([draft.selected],$('#quick-opponent').value).length){draft.selected=null;draft.sample=null;priceRequest++;$('#quick-game-selection').textContent='';drawGap();}drawGames();};$('#quick-games-more').onclick=()=>{draft.gamesShown+=6;drawGames();};
- $('#quick-change-team').onclick=()=>{draft.team=null;draft.selected=null;draft.games=[];draft.sample=null;scheduleRequest++;priceRequest++;$('#quick-schedule').hidden=true;input.value='';input.focus();status.textContent='Search for another team or event.';drawGap();};
+ input.oninput=()=>{
+  draft.selected=null;draft.sample=null;request++;priceRequest++;clearTimeout(searchTimer);error('');
+  const value=input.value.trim().toLowerCase(),prefixes=draft.team?[draft.team.label,draft.teamTerm,...(draft.team.aliases||[])].filter(Boolean).sort((a,b)=>b.length-a.length):[];
+  const prefix=prefixes.find(p=>value===p.toLowerCase()||value.startsWith(p.toLowerCase()+' '));
+  if(prefix&&scheduleLoaded&&draft.kind==='event'){drawGames(value.slice(prefix.length).trim());drawGap();return;}
+  draft.team=null;draft.games=[];scheduleLoaded=false;scheduleRequest++;hideOptions();drawGap();searchTimer=setTimeout(search,300);
+ };
+ input.onfocus=()=>{if(draft.kind==='event'&&draft.team&&scheduleLoaded)drawGames();};
+ input.onkeydown=e=>{
+  if(e.key==='ArrowDown'){if(options.hidden&&draft.team&&scheduleLoaded)drawGames();if(!options.hidden){e.preventDefault();(options.querySelector('[data-quick-game],[data-quick-result]')||options.querySelector('button'))?.focus();}}
+  if(e.key==='Escape')hideOptions();
+  if(e.key==='Enter'&&!draft.selected){e.preventDefault();clearTimeout(searchTimer);if(draft.team&&scheduleLoaded)drawGames();else search();}
+ };
+ options.onkeydown=e=>{const buttons=$$('button',options),index=buttons.indexOf(document.activeElement);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();buttons[(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}if(e.key==='Escape'){input.focus();hideOptions();}};
+ document.addEventListener('pointerdown',e=>{if(active()&&!input.closest('.quick-search-box').contains(e.target))hideOptions();});
  $$('[data-quick-kind]').forEach(button=>button.onclick=()=>{
-  const old=draft.selected;draft.kind=button.dataset.quickKind;draft.selected=null;draft.sample=null;request++;priceRequest++;scheduleRequest++;clearTimeout(searchTimer);options.hidden=true;error('');syncScopes();
-  input.closest('.quick-search-box').hidden=draft.kind==='date';$('#quick-search-label').hidden=draft.kind==='date';status.hidden=draft.kind==='date';$('#quick-day-fields').hidden=draft.kind!=='date';$('#quick-date').required=draft.kind==='date';$('#quick-schedule').hidden=draft.kind==='date'||!draft.team;
+  const old=draft.selected;draft.kind=button.dataset.quickKind;draft.selected=null;draft.sample=null;request++;priceRequest++;scheduleRequest++;clearTimeout(searchTimer);hideOptions();error('');syncScopes();
+  input.closest('.quick-search-box').hidden=draft.kind==='date';$('#quick-search-label').hidden=draft.kind==='date';status.hidden=draft.kind==='date';$('#quick-day-fields').hidden=draft.kind!=='date';$('#quick-date').required=draft.kind==='date';
   if(draft.kind==='date'&&old?.event_date){$('#quick-date').value=old.event_date;$('#quick-city').value=old.city||'';}
   input.placeholder=draft.kind==='team'?'Team or school, e.g. Badger football':'Team, artist, show or city';
-  if(draft.kind!=='date'&&draft.team){draft.selected=draft.kind==='team'?draft.team:null;$('#quick-game-selection').textContent='';drawGames();if(!draft.games.length)loadSchedule();}
-  else if(draft.kind!=='date'&&input.value.trim().length>=2)search();
-  drawGap();
+  if(draft.kind!=='date'&&draft.team){input.value=draft.team.label;if(draft.kind==='team')followTeam();else if(scheduleLoaded)drawGames();else loadSchedule();}
+  else if(draft.kind!=='date'&&input.value.trim().length>=2)search();drawGap();
  });
  $$('[data-quick-qty]').forEach(button=>button.onclick=()=>{draft.qty=Number(button.dataset.quickQty);$('#quick-more-qty').hidden=draft.qty<5;$('#quick-more-qty').value=String(draft.qty);$$('[data-quick-qty]').forEach(b=>b.setAttribute('aria-pressed',b===button));drawGap();});
  $('#quick-more-qty').onchange=e=>{draft.qty=Number(e.target.value);drawGap();};$('#quick-price').oninput=drawGap;
  form.onsubmit=e=>{
-  e.preventDefault();error('');if(draft.kind!=='date'&&!draft.selected){error(draft.team?'Choose a game from the schedule, or select A whole team.':'Choose an event or team from the search results first.');(draft.team?$('#quick-opponent'):input).focus();return;}
+  e.preventDefault();error('');if(draft.kind!=='date'&&!draft.selected){error(draft.team?'Choose a game from the search dropdown, or select A whole team.':'Choose an event or team from the search results first.');input.focus();return;}
   if(!$('#quick-email').checked&&!$('#quick-text').checked){error('Choose email, text, or both.');return;}if(!form.reportValidity())return;
   goToWatchSetup(quickWatchUrl({...draft,price:$('#quick-price').value,email:$('#quick-email').checked,sms:$('#quick-text').checked,date:$('#quick-date').value,city:$('#quick-city').value.trim()}));
  };
- setInterval(()=>{if(form.isConnected&&!document.hidden){if(draft.kind==='event'&&draft.selected)loadPrice(false);else drawGap();}},30000);
+ setInterval(()=>{if(active()&&!document.hidden){if(draft.kind==='event'&&draft.selected)loadPrice(false);else drawGap();}},30000);
 }
 // Mirror the explore filters in the address bar so views can be shared, bookmarked and survive refresh/Back.
 function syncExploreUrl(){
