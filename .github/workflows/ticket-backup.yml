@@ -10,6 +10,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   backup:
+    if: ${{ vars.TIX_ENCRYPTED_BACKUP_ENABLED == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

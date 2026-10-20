@@ -12,7 +12,7 @@ The quote worker has no email credentials. It keeps recently viewed events warm 
 
 ## Daily backups
 
-The hosted backup takes one database snapshot of critical Ticketline private state and owner references. It includes alerts, settings, delivery history, admin allowlist and search records within their existing retention. It excludes authentication sessions, passwords, unrelated apps, and rebuildable public ticket inventory. Owner references preserve account IDs and confirmed email references; this is not a full Supabase Auth disaster-recovery image.
+Automatic backup runs remain disabled until the owner approves the encrypted export and the repository variable `TIX_ENCRYPTED_BACKUP_ENABLED` is set to `true`. The hosted backup takes one database snapshot of critical Ticketline private state and owner references. It includes alerts, settings, delivery history, admin allowlist and search records within their existing retention. It excludes authentication sessions, passwords, unrelated apps, and rebuildable public ticket inventory. Owner references preserve account IDs and confirmed email references; this is not a full Supabase Auth disaster-recovery image.
 
 The snapshot is compressed in memory, encrypted with AES-256-GCM, and its random key is encrypted with RSA-OAEP/SHA-256. Only encrypted `.json.enc` files are uploaded to GitHub artifacts, retained for 30 days. Backup health says `stored` only after upload succeeds. A private recovery key was placed in the owner's local task outputs/recovery folder with owner-only permissions. Copy that file to a separate secure location. Losing it makes these archives unreadable. Never put it in the repository or an Actions secret.
 
