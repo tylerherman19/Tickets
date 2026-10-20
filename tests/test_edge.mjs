@@ -168,3 +168,12 @@ test('fresh exact public quotes return without provider admission or network; bl
  let result=await (await handleRequest(request({event_id:id,qty:4},{authorization:'Bearer anon'}))).json();assert.equal(result.state,'cached');assert.equal(result.market.by_qty[4].low,5500);assert.equal(providerCalls(calls).length,0);assert.equal(calls.some(c=>c.url.endsWith('tix_request_quote')),false);
  calls=mockFetch({quoteAllowed:false,quotes:[{event_id:id,state:'advertised',min_total:3900}]});result=await (await handleRequest(request({event_id:id},{authorization:'Bearer anon'}))).json();assert.equal(result.state,'queued');assert.equal(result.min_total,3900);assert.equal(providerCalls(calls).length,0);
 });
+
+test('general browsing reuses advertised prices and never queues selected-seat work',async()=>{
+ let calls=mockFetch({quotes:[{event_id:id,state:'advertised',min_total:3900}]});
+ let result=await (await handleRequest(request({event_ids:[id],details:false},{authorization:'Bearer anon'}))).json();
+ assert.equal(result.results[0].state,'advertised');assert.equal(providerCalls(calls).length,0);assert.equal(calls.some(c=>c.url.endsWith('tix_touch_quotes')),false);
+ calls=mockFetch();result=await (await handleRequest(request({event_ids:[id],details:false},{authorization:'Bearer anon'}))).json();
+ assert.equal(JSON.parse(calls.find(c=>c.url.endsWith('tix_request_quote')).options.body).p_qty,0);
+ assert.equal(calls.some(c=>c.url.endsWith('tix_claim_detail_dispatch')),false);
+});

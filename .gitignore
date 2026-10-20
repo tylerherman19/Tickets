@@ -3,3 +3,7 @@ __pycache__/
 .DS_Store
 node_modules/
 .env*
+
+# Only encrypted backup artifacts leave the hosted job. Recovery keys stay local.
+backups/
+*backup-private.pem

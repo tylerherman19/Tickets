@@ -208,10 +208,10 @@ async function sbPublicRpc(name,body,{signal,token}={}) {
 // One request per call: a timed-out capture may already have committed history.
 // A search prices up to 12 events in one call without tracking them; opening
 // an event (track) also keeps its price history going.
-async function captureEventPrices(eventIds,{signal,track=false,qty=2}={}) {
+async function captureEventPrices(eventIds,{signal,track=false,qty=2,details=true}={}) {
  if(IS_DEV)return eventIds.map(event_id=>({event_id,state:'suspended',reason:'preview'}));
  const token=await accessToken();
- const r=await fetch(SB_URL+'/functions/v1/ticketline-prices',{method:'POST',headers:{...H,Authorization:'Bearer '+(token||SB_KEY)},body:JSON.stringify({event_ids:eventIds,track:!!token&&track,qty}),signal:signal?withTimeout(45000,signal):AbortSignal.timeout(45000)});
+ const r=await fetch(SB_URL+'/functions/v1/ticketline-prices',{method:'POST',headers:{...H,Authorization:'Bearer '+(token||SB_KEY)},body:JSON.stringify({event_ids:eventIds,track:!!token&&track,qty,...(!details?{details:false}:{})}),signal:signal?withTimeout(45000,signal):AbortSignal.timeout(45000)});
  const result=await readJson(r);
  // Older deployments have the discovery queue but no Edge capture route.
  // Fall back only for the explicit missing-route response, never auth or provider errors.

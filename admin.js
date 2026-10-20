@@ -1,7 +1,7 @@
 'use strict';
 chrome('admin');
 const adminState={dataset:'watches',search:'',offset:0,snapshot:null,rows:[],total:0,busy:false,generation:0};
-const ADMIN_DATASETS={searches:'Search activity',watches:'Alerts',users:'Users',deliveries:'Notifications',confirmations:'Save confirmations',destinations:'Text destinations',scans:'Latest alert checks',prices:'Alert price history',tracking:'Personal event follows',watch_audit:'Alert change log',admin_audit:'Admin access log',catalog:'Event catalog',teams:'Team coverage',jobs:'Price check queue',observations:'Market observations',listings:'Listing details',provider_requests:'Provider request log',team_events:'Team event mappings',team_demand:'Team refresh demand',discovery_interest:'Event refresh demand',search_limits:'Current search request limits',venue_clubs:'Venue sections',event_changes:'Event schedule changes',health:'Collector and notification health'};
+const ADMIN_DATASETS={send_queue:'Send safety queue',searches:'Search activity',watches:'Alerts',users:'Users',deliveries:'Notifications',confirmations:'Save confirmations',destinations:'Text destinations',scans:'Latest alert checks',prices:'Alert price history',tracking:'Personal event follows',watch_audit:'Alert change log',admin_audit:'Admin access log',catalog:'Event catalog',teams:'Team coverage',jobs:'Price check queue',observations:'Market observations',listings:'Listing details',provider_requests:'Provider request log',team_events:'Team event mappings',team_demand:'Team refresh demand',discovery_interest:'Event refresh demand',search_limits:'Current search request limits',venue_clubs:'Venue sections',event_changes:'Event schedule changes',health:'Collector and notification health'};
 async function adminRpc(name,body={}) {
  if(IS_DEV)return adminPreview(name,body);
  return sbRpc(name,body);
@@ -34,7 +34,7 @@ async function loadAdminData(reset=false){
  if(reset){adminState.offset=0;adminState.snapshot=null;}
  const holder=$('#admin-records');holder.innerHTML=loadingRows(2);$('#admin-data-status').textContent='Loading records…';
  try{
- const data=await adminRpc('tix_admin_data',{p_dataset:adminState.dataset,p_search:adminState.search,p_offset:adminState.offset,p_limit:50,p_snapshot:adminState.snapshot});
+ const data=await adminRpc(adminState.dataset==='send_queue'?'tix_admin_delivery_rows':'tix_admin_data',{...(adminState.dataset==='send_queue'?{}:{p_dataset:adminState.dataset}),p_search:adminState.search,p_offset:adminState.offset,p_limit:50,p_snapshot:adminState.snapshot});
  if(generation!==adminState.generation)return;
  adminState.rows=data.rows;adminState.total=data.total;adminState.snapshot=data.snapshot;
  holder.innerHTML=adminTable(data.rows);
@@ -58,7 +58,9 @@ function adminRecord(row){
 async function loadAdminOverview(){
  const holder=$('#admin-overview');holder.textContent='Loading usage…';
  const days=Number($('#admin-days').value);
- try{const data=await adminRpc('tix_admin_overview',{p_days:days});if(days!==Number($('#admin-days').value))return;holder.innerHTML=adminOverview(data);}
+ try{const data=await adminRpc('tix_admin_overview',{p_days:days});if(days!==Number($('#admin-days').value))return;holder.innerHTML=adminOverview(data);
+ const runtime=await adminRpc('tix_admin_runtime_health').catch(()=>null);
+ if(runtime?.schema&&days===Number($('#admin-days').value))holder.insertAdjacentHTML('beforeend',`<section class="settings-panel"><h3>Checks and delivery health</h3><p>${Number(runtime.overdue_alert_events)||0} alert events overdue · ${Number(runtime.unresolved_alerts)||0} alerts with no upcoming matched events · ${Number(runtime.delivery_uncertain)||0} sends needing review · ${Number(runtime.delivery_failed)||0} failed sends.</p><p>${Number(runtime.delivery_accepted_24h)||0} messages accepted by the mail server in 24 hours. Inbox receipt is not confirmed by Gmail.</p><p>Oldest requested quote: ${runtime.oldest_quote_wait_seconds==null?'none waiting':Math.max(0,Number(runtime.oldest_quote_wait_seconds))+' seconds'}. Quote worker: ${esc(runtime.quote_worker?.checked_at||'not reported')}. Backup: ${esc(runtime.backup?.status||'not yet verified')}.</p></section>`);}
  catch(e){holder.innerHTML=errorBox(e.message,'admin-overview-retry');$('#admin-overview-retry').onclick=loadAdminOverview;}
 }
 function searchTermsTable(rows){

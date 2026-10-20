@@ -24,6 +24,11 @@ class WatchdogTests(unittest.TestCase):
         self.assertTrue(watchdog.needs_recovery(None, now))
         self.assertTrue(watchdog.needs_recovery({'checked_at':'invalid'}, now))
 
+    def test_fresh_heartbeat_does_not_hide_overdue_alert_events(self):
+        now=datetime.now(timezone.utc)
+        self.assertTrue(watchdog.needs_recovery({'checked_at':(now-timedelta(minutes=12)).isoformat(),'overdue_alert_events':2},now))
+        self.assertFalse(watchdog.needs_recovery({'checked_at':(now-timedelta(minutes=2)).isoformat(),'overdue_alert_events':2},now))
+
     def test_healthy_watchdog_does_not_start_collector(self):
         with patch.object(watchdog, 'latest_health', return_value={'checked_at':datetime.now(timezone.utc).isoformat()}), patch.object(watchdog.subprocess, 'run') as run:
             watchdog.main()

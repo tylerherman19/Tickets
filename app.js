@@ -341,7 +341,7 @@ async function queuePriceChecks(rows,ctrl,force=false){
     await new Promise((resolve,reject)=>{const t=setTimeout(resolve,waitMs);ctrl.signal.addEventListener('abort',()=>{clearTimeout(t);reject(new DOMException('Aborted','AbortError'));},{once:true});});
     if(ctrl.signal.aborted)throw new DOMException('Aborted','AbortError');
    }
-   const results=await captureEventPrices(pending,{signal:ctrl.signal,qty:state.searchQty||2});
+   const results=await captureEventPrices(pending,{signal:ctrl.signal,qty:state.searchQty||2,details:state.searchQty>0});
    pending=results.filter(r=>r.state==='queued'&&r.next_attempt_at&&new Date(r.next_attempt_at).getTime()-Date.now()<70000).map(r=>r.event_id);
    const last=round===1||!pending.length;
    for(const r of results){latest.set(r.event_id,r);applyPriceResult(r,last||!pending.includes(r.event_id));}

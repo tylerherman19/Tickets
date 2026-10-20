@@ -9,7 +9,7 @@ sys.path.insert(0,os.path.join(os.path.dirname(__file__),'..','scripts'))
 import tickets_release_gate as gate
 
 class ReleaseGateTests(unittest.TestCase):
-    def test_only_explicit_missing_rpc_selects_existing_collector(self):
+    def test_missing_rpc_fails_release_preflight(self):
         error=urllib.error.HTTPError('https://database.invalid',404,'missing',{},io.BytesIO(b'{"code":"PGRST202"}'))
         with patch.dict(os.environ,{'SUPABASE_URL':'https://database.invalid','SUPABASE_SERVICE_KEY':'fixture'}),patch('urllib.request.urlopen',side_effect=error):
             self.assertFalse(gate.schema_ready())
@@ -19,10 +19,10 @@ class ReleaseGateTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'HTTP 401'):gate.schema_ready()
     def test_fast_search_schema_uses_current_collector(self):
         for guard_enabled in (False,True):
-            response=io.BytesIO(json.dumps({'guard_enabled':guard_enabled,'schema':20261016}).encode())
+            response=io.BytesIO(json.dumps({'guard_enabled':guard_enabled,'schema':20261022}).encode())
             with patch.dict(os.environ,{'SUPABASE_URL':'https://database.invalid','SUPABASE_SERVICE_KEY':'fixture'}),patch('urllib.request.urlopen',return_value=response):
                 self.assertTrue(gate.schema_ready())
-    def test_older_guarded_schema_keeps_existing_collector(self):
+    def test_older_schema_is_not_accepted(self):
         # 20261012 without 20261016 lacks the RPCs the current collector calls.
         response=io.BytesIO(json.dumps({'guard_enabled':False}).encode())
         with patch.dict(os.environ,{'SUPABASE_URL':'https://database.invalid','SUPABASE_SERVICE_KEY':'fixture'}),patch('urllib.request.urlopen',return_value=response):

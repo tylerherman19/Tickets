@@ -1,0 +1,37 @@
+name: encrypted Ticketline backup
+on:
+  schedule:
+    - cron: '41 7 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ticketline-private-backup
+  cancel-in-progress: false
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Encrypt Ticketline state using the public recovery key
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scripts/tickets_backup.mjs
+      - uses: actions/upload-artifact@v4
+        id: archive
+        with:
+          name: ticketline-encrypted-private-state
+          path: backups/*.json.enc
+          if-no-files-found: error
+          retention-days: 30
+      - name: Record the completed encrypted upload
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BACKUP_ARTIFACT_ID: ${{ steps.archive.outputs.artifact-id }}
+        run: node scripts/tickets_backup.mjs publish-health

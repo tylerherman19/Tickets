@@ -1,0 +1,31 @@
+name: release Ticketline backend
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ticketline-backend-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test && python3 -m unittest discover -s tests && python3 scripts/check_no_emoji.py
+      - name: Apply reviewed schema and deploy quote service
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: python scripts/ticketline_backend_release.py
+      - name: Verify deployed schema before enabling hosted workers
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/tickets_release_gate.py

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Keep the existing hosted collector until the new schema is available.
+"""Check that the hosted database supports this release.
 
-Only an explicit missing-RPC response selects the pinned prior collector.
+Missing or older schema stops the job before provider and email work.
 Authentication, transient network errors and unexpected payloads fail closed.
 This preflight never contacts Gametime or enables the guarded feature.
 """
@@ -12,22 +12,21 @@ import subprocess
 import urllib.error
 import urllib.request
 
-PREVIOUS_COLLECTOR = 'c035c809ed8ab933cde61d8bc6305e5c8bb8181c'
 # The current collector, performer sweep and Edge search need this migration.
-REQUIRED_SCHEMA = 20261016
+REQUIRED_SCHEMA = 20261022
 
 def schema_ready():
     base=os.environ['SUPABASE_URL'].rstrip('/')
     key=os.environ['SUPABASE_SERVICE_KEY']
-    req=urllib.request.Request(base+'/rest/v1/rpc/tix_event_capture_status',
-        data=json.dumps({'p_event_id':'rollout-preflight'}).encode(),method='POST',
+    req=urllib.request.Request(base+'/rest/v1/rpc/tix_runtime_health',
+        data=b'{}',method='POST',
         headers={'apikey':key,'Authorization':'Bearer '+key,'Content-Type':'application/json'})
     try:
         with urllib.request.urlopen(req,timeout=10) as response:
             result=json.load(response)
-        if not isinstance(result,dict) or type(result.get('guard_enabled')) is not bool:
+        if not isinstance(result,dict):
             raise RuntimeError('Unexpected capture schema response')
-        # 20261012 alone predates the RPCs the current collector calls.
+        # The delivery and quote workers require the full reliability migration.
         return type(result.get('schema')) is int and result['schema']>=REQUIRED_SCHEMA
     except urllib.error.HTTPError as error:
         try: code=json.load(error).get('code')
@@ -54,12 +53,6 @@ def main():
         path.write_text(preserve_college_categories(path.read_text()))
         print('Guarded schema available; using current collector.')
         return
-    # Existing collection continues unchanged while schema/function deployment
-    # is unavailable. Once the RPC exists, all collection switches to shared
-    # admission automatically; the new feature never uses this fallback.
-    subprocess.run(['git','fetch','--depth=1','origin',PREVIOUS_COLLECTOR],check=True)
-    prior=subprocess.check_output(['git','show',PREVIOUS_COLLECTOR+':scripts/tickets_collect.py'])
-    Path(__file__).with_name('tickets_collect.py').write_text(preserve_college_categories(prior.decode()))
-    print('Schema deployment pending; using pinned existing collector.')
+    raise RuntimeError('Ticketline database update is missing. Stopping before any provider or email work.')
 
 if __name__=='__main__':main()

@@ -113,6 +113,7 @@ export async function handleRequest(req:Request) {
     if (!ids.length||ids.length>MAX_EVENTS||ids.some(id=>typeof id!=='string'||!/^[a-f0-9]{24}$/.test(id))) return reply({error:'invalid_event'},400);
     const eventIds=ids as string[];
     const qty=body.qty===undefined?2:body.qty;
+    const details=body.details!==false;
     if(!Number.isInteger(qty)||qty<1||qty>8)return reply({error:'invalid_quantity'},400);
     const track=!anonymous&&(single||body.track===true)&&eventIds.length===1;
     if (track) {
@@ -123,17 +124,18 @@ export async function handleRequest(req:Request) {
     // Validate a legacy public JWT through PostgREST before any privileged work.
     const quotes=await rpc('tix_public_quotes',{p_event_ids:eventIds,p_qty:qty},anonymous?bearer:adminKey,anonymous?authorization:`Bearer ${adminKey}`);
     const saved=new Map<string,Result>((Array.isArray(quotes)?quotes:[]).map((q:Result)=>[q.event_id,q]));
-    const needed=eventIds.filter(id=>!['complete','unavailable'].includes(saved.get(id)?.state||''));
+    const usable=(id:string)=>['complete','unavailable',...(details?[]:['advertised'])].includes(saved.get(id)?.state||'');
+    const needed=eventIds.filter(id=>!usable(id));
     if(!needed.length){
-      EdgeRuntime.waitUntil(rpc('tix_touch_quotes',{p_event_ids:eventIds,p_qty:qty}).catch(()=>{}));
-      const rows=eventIds.map(id=>({...saved.get(id),event_id:id,state:saved.get(id)?.state==='complete'?'cached':'unavailable'}));
+      if(details)EdgeRuntime.waitUntil(rpc('tix_touch_quotes',{p_event_ids:eventIds,p_qty:qty}).catch(()=>{}));
+      const rows=eventIds.map(id=>({...saved.get(id),event_id:id,state:saved.get(id)?.state==='complete'?'cached':saved.get(id)?.state}));
       return reply(single?{...rows[0],qty,total_ms:Math.round(performance.now()-requestStarted)}:{results:rows,tracked:track,qty,total_ms:Math.round(performance.now()-requestStarted)});
     }
     const network=req.headers.get('x-real-ip')||req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown';
     const identity=owner?`owner:${owner}`:`public:${network}:${new Date().toISOString().slice(0,10)}`;
     const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(adminKey+':quotes:'+identity));
     const actor=Array.from(new Uint8Array(digest)).map(n=>n.toString(16).padStart(2,'0')).join('');
-    const admission=await rpc('tix_request_quote',{p_actor:actor,p_anonymous:anonymous,p_event_ids:needed,p_qty:qty});
+    const admission=await rpc('tix_request_quote',{p_actor:actor,p_anonymous:anonymous,p_event_ids:needed,p_qty:details?qty:0});
     if(!admission?.allowed){
       const rows=eventIds.map(id=>saved.get(id)?.state==='complete'?{...saved.get(id),event_id:id,state:'cached'}:{...saved.get(id),event_id:id,state:admission?.reason==='provider_suspended'?'suspended':'queued',reason:admission?.reason||'request_limit',next_attempt_at:admission?.next_attempt_at});
       return reply(single?rows[0]:{results:rows,tracked:track,qty});
@@ -144,7 +146,7 @@ export async function handleRequest(req:Request) {
     await Promise.all(Array.from({length:Math.min(CONCURRENCY,eventIds.length)},async()=>{
       for(let i;(i=next++)<eventIds.length;){
         // Provider blocking suspends everything; do not send further requests.
-        results[i]=saved.get(eventIds[i])?.state==='complete'?{...saved.get(eventIds[i]),event_id:eventIds[i],state:'cached'}:saved.get(eventIds[i])?.state==='unavailable'?{...saved.get(eventIds[i]),event_id:eventIds[i],state:'unavailable'}:stopped?{event_id:eventIds[i],state:'suspended',reason:'provider_suspended'}:await captureOne(eventIds[i],events.get(eventIds[i]),performers,qty);
+        results[i]=usable(eventIds[i])&&saved.get(eventIds[i])?.state==='advertised'?{...saved.get(eventIds[i]),event_id:eventIds[i]}:saved.get(eventIds[i])?.state==='complete'?{...saved.get(eventIds[i]),event_id:eventIds[i],state:'cached'}:saved.get(eventIds[i])?.state==='unavailable'?{...saved.get(eventIds[i]),event_id:eventIds[i],state:'unavailable'}:stopped?{event_id:eventIds[i],state:'suspended',reason:'provider_suspended'}:await captureOne(eventIds[i],events.get(eventIds[i]),performers,qty);
         if(results[i].state==='suspended')stopped=true;
       }
     }));
@@ -152,7 +154,7 @@ export async function handleRequest(req:Request) {
     const current=await rpc('tix_public_quotes',{p_event_ids:eventIds,p_qty:qty});
     for(const q of Array.isArray(current)?current:[]){const i=eventIds.indexOf(q.event_id);if(i>=0)results[i]={...results[i],...q,state:q.state==='complete'?'complete':results[i].state};}
     let detail_worker='not_needed';
-    if (eventIds.length===1&&['metadata_only','partial','cached'].includes(results[0].state)) {
+    if (details&&eventIds.length===1&&['metadata_only','partial','cached'].includes(results[0].state)) {
       // Rich browser collection may take a minute or longer once a runner starts.
       EdgeRuntime.waitUntil(dispatchDetail(eventIds[0]).catch(()=>{}));
       detail_worker=results[0].state==='cached'?'scheduled':'queued';

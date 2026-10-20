@@ -1,3 +1,4 @@
+from tests.fake_outbox import with_outbox
 import os
 import sys
 import unittest
@@ -137,6 +138,7 @@ class TransportTests(unittest.TestCase):
 
     def test_email_is_multipart_with_plain_fallback_identity_and_delivery_headers(self):
         smtp = MagicMock()
+        smtp.__enter__.return_value.send_message.return_value = {}
         with patch('smtplib.SMTP_SSL', return_value=smtp), patch.object(collector, 'write_state') as health:
             result = collector.send_sms('Ticketline: match\r\nX-Test: text', 'Plain fallback',
                                         recipient='reader@example.test', html_body='<h1>Matching tickets</h1>')
@@ -154,6 +156,7 @@ class TransportTests(unittest.TestCase):
 
     def test_carrier_text_keeps_plain_text_only_and_explicit_destination(self):
         smtp = MagicMock()
+        smtp.__enter__.return_value.send_message.return_value = {}
         with patch('smtplib.SMTP_SSL', return_value=smtp), patch.object(collector, 'write_state'):
             self.assertTrue(collector.send_sms('Tickets', 'Compact text', recipient='6125550148@tmomail.net', html_body='<p>Do not send HTML to carrier</p>'))
         sent = smtp.__enter__.return_value.send_message.call_args.args[0]
@@ -180,7 +183,7 @@ class TransportTests(unittest.TestCase):
             if path.startswith('tix_watches?'): return [{'threshold_cents':2500, 'qty':2, 'email_enabled':False,'sms_enabled':False}]
             if path.startswith('tix_destinations?'): return [{'phone_digits':'6125550148', 'provider':'tmobile'}]
             writes.append((path,body)); return []
-        with patch.object(collector,'sb',side_effect=db), patch.object(collector,'owner_email',return_value='reader@example.test'), patch.object(collector,'send_sms') as send:
+        with patch.object(collector,'sb',side_effect=with_outbox(db)), patch.object(collector,'owner_email',return_value='reader@example.test'), patch.object(collector,'send_sms') as send:
             self.assertEqual(collector.send_pending_confirmations(),0)
         send.assert_not_called()
         self.assertTrue(any(body.get('email_enabled') is False and body.get('sms_enabled') is False for _,body in writes))
@@ -197,7 +200,7 @@ class TransportTests(unittest.TestCase):
             if path.startswith('tix_destinations?'): return [{'phone_digits':'6125550148','provider':'tmobile'}]
             writes.append((path,body)); return []
         for accepted in (False, True):
-            with patch.object(collector,'sb',side_effect=db), patch.object(collector,'send_sms',return_value=accepted) as send:
+            with patch.object(collector,'sb',side_effect=with_outbox(db)), patch.object(collector,'send_sms',return_value=accepted) as send:
                 self.assertEqual(collector.send_pending_confirmations(),0 if accepted else 1)
             send.assert_called_once()
             self.assertEqual(send.call_args.kwargs['recipient'],'6125550148@tmomail.net')

@@ -585,10 +585,10 @@ def resolve_events(w):
                          and (home_away == "any" or row.get("is_home") is (home_away == "home"))}.values())
         slug = (m.get("slug") or "").lower()
         ha = m.get("home_away") or "any"
-        q = f"tix_events_v?slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&event_date=lte.{horizon}&select={cols}&limit=400"
+        q = f"tix_events_v?slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&event_date=lte.{horizon}&select={cols}&order=event_id"
         if m.get("category"):
-            q = f"tix_events_v?category=eq.{urllib.parse.quote(m['category'])}&slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&event_date=lte.{horizon}&select={cols}&limit=400"
-        rows = sb("GET", q)
+            q = f"tix_events_v?category=eq.{urllib.parse.quote(m['category'])}&slug=ilike.*{urllib.parse.quote(slug)}*&event_date=gte.{today}&event_date=lte.{horizon}&select={cols}&order=event_id"
+        rows = sb_all(q)
         out = []
         for c in rows:
             cslug = (c.get("slug") or "").lower()
@@ -602,10 +602,10 @@ def resolve_events(w):
     if kind == "date":
         d = m.get("date")
         if not d or d < today or d > horizon: return []
-        q = f"tix_events_v?event_date=eq.{d}&select={cols}&order=event_date,event_id&limit=400"
+        q = f"tix_events_v?event_date=eq.{d}&select={cols}&order=event_date,event_id"
         if m.get("state"): q += f"&state=eq.{urllib.parse.quote(m['state'])}"
         if m.get("city"): q += f"&city=ilike.{urllib.parse.quote(m['city'])}"
-        rows = sb("GET", q)
+        rows = sb_all(q)
         vslug = m.get("venue_slug")
         slug = (m.get("slug") or "").lower()
         return [c for c in rows
@@ -627,7 +627,10 @@ def owner_email(watch_id):
     rows = sb("POST", "rpc/tix_owner_email", {"p_watch_id": watch_id})
     return rows if valid_address(rows) else ""
 
-def send_sms(subject, body, recipient=None, test=False, html_body=None):
+class DeliveryUncertain(RuntimeError):
+    """SMTP may have accepted the message; never blindly resend it."""
+
+def send_sms(subject, body, recipient=None, test=False, html_body=None, message_id=None):
     if test and not recipient:
         recipient = SMS_GATEWAY
     channel = "carrier text" if recipient and recipient.rsplit("@", 1)[-1] in PROVIDER_GATEWAYS.values() else "email"
@@ -636,23 +639,45 @@ def send_sms(subject, body, recipient=None, test=False, html_body=None):
     import smtplib, ssl
     from email.message import EmailMessage
     from email.utils import formataddr, formatdate, make_msgid
+    sending = False
     try:
         msg = EmailMessage()
         msg["From"] = formataddr(("Ticketline", GMAIL_ADDRESS))
         msg["To"] = recipient
         msg["Subject"] = clean_text(subject, 200)
         msg["Date"] = formatdate(localtime=False, usegmt=True)
-        msg["Message-ID"] = make_msgid(domain=GMAIL_ADDRESS.rsplit("@", 1)[-1])
+        msg["Message-ID"] = message_id or make_msgid(domain=GMAIL_ADDRESS.rsplit("@", 1)[-1])
         msg.set_content(body)
         # Carrier gateways keep the compact text-only format.
         if html_body and channel == "email":
             msg.add_alternative(html_body, subtype="html")
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=30) as s:
             s.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD.replace(" ", ""))
-            s.send_message(msg)
+            sending = True
+            refused = s.send_message(msg)
+            if refused: return False
         print(f"alert: mail server accepted {channel} message (recipient receipt not confirmed)"); write_state("notification_health", {"status":"accepted", "channel":channel, "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return True
     except Exception as e:
+        if sending and message_id:
+            raise DeliveryUncertain(type(e).__name__) from e
         print(f"alert: gmail smtp failed: {type(e).__name__}"); write_state("notification_health", {"status":"failed", "channel":channel, "checked_at":datetime.now(timezone.utc).isoformat(), "test":test}); return False
+
+def delivery_send(subject, body, *, watch, channel, kind, event_id='', club='', payload=None, recipient=None, html_body=None):
+    """Persist and claim intent before SMTP. Only SQL acknowledges acceptance."""
+    claim=sb('POST','rpc/tix_begin_delivery',{'p_watch_id':watch['id'],'p_version':watch.get('criteria_version',1),
+        'p_event_id':event_id,'p_club':club,'p_channel':channel,'p_kind':kind,'p_payload':payload or {}})
+    if claim.get('state')=='already_accepted':return True
+    if claim.get('state')!='sending':return False
+    status='failed';error=None
+    try:
+        if send_sms(subject,body,recipient=recipient,message_id=claim['message_id'],**({'html_body':html_body} if html_body else {})):status='accepted'
+        else:error='smtp_rejected_or_not_configured'
+    except DeliveryUncertain:
+        status='uncertain';error='smtp_acceptance_unknown'
+    # No automatic retry of this write: an acknowledgment may have committed.
+    # If this fails, the sending lease becomes uncertain, not eligible to resend.
+    sb('POST','rpc/tix_finish_delivery',{'p_id':claim['id'],'p_lease':claim['lease'],'p_state':status,'p_error':error,'p_provider_id':claim['message_id'] if status=='accepted' else None})
+    return status=='accepted'
 
 def send_pending_confirmations():
     sms_rows = sb("GET", "tix_confirmation_queue?sms_enabled=eq.true&sent_at=is.null&attempts=lt.3&select=*&order=requested_at.asc&limit=25")
@@ -680,7 +705,7 @@ def send_pending_confirmations():
                         events = sb("GET", "tix_events_v?event_id=eq." + urllib.parse.quote(str(event_ids[0]), safe="") + "&select=event_id,name,event_date,datetime_local,venue,city,state&limit=1")
                         event = events[0] if events else None
                 message = confirmation_email({**watches[0], "id": watch_id}, event, queued.get("event_label")) if watches else None
-                ok = bool(recipient and message and send_sms(message.subject, message.text, recipient=recipient, html_body=message.html))
+                ok = bool(recipient and message and delivery_send(message.subject, message.text, watch={**watches[0],'id':watch_id}, channel='email', kind='confirmation', payload={'requested_at':queued.get('requested_at')},recipient=recipient, html_body=message.html))
             update.update(email_attempts=queued.get("email_attempts",0)+1,email_last_error=None if ok or update.get("email_enabled") is False else "email send failed")
             if ok: update["email_sent_at"] = datetime.now(timezone.utc).isoformat(); accepted += 1
         if queued.get("sms_enabled") and not queued.get("sent_at") and queued.get("attempts",0) < 3:
@@ -691,7 +716,7 @@ def send_pending_confirmations():
                 cancelled += 1
                 ok = False
             else:
-                ok = bool(recipient and watches and send_sms("Ticketline is on it", f"We're on the lookout for tickets to {label} at {target} or less. We'll text you when the price hits.", recipient=recipient))
+                ok = bool(recipient and watches and delivery_send("Ticketline is on it", f"We're on the lookout for tickets to {label} at {target} or less. We'll text you when the price hits.",watch={**watches[0],'id':watch_id},channel="sms",kind="confirmation",payload={"requested_at":queued.get("requested_at")},recipient=recipient))
             update.update(attempts=queued.get("attempts",0)+1,last_error=None if ok or update.get("sms_enabled") is False else "carrier gateway send failed")
             if ok: update["sent_at"] = datetime.now(timezone.utc).isoformat(); accepted += 1
         if update:
@@ -869,10 +894,15 @@ def main():
             events[eid] = cat
             watchers.setdefault(eid, []).append(w)
     print(f"{len(events)} unique watched events")
+    pairs=[{'watch_id':w['id'],'event_id':cat['event_id'],'criteria_version':w.get('criteria_version',1),'seen_at':datetime.now(timezone.utc).isoformat()} for w in watches for cat in resolved.get(w['id'],[])]
+    for offset in range(0,len(pairs),250):
+        sb('POST','tix_watch_events?on_conflict=watch_id,event_id',pairs[offset:offset+250],prefer='resolution=merge-duplicates,return=minimal')
     scans = {}
-    for w in watches:
-        for r in sb("GET", f"tix_scans?watch_id=eq.{w['id']}&select=*&limit=1000"):
-            scans[(w["id"], r["event_id"])] = r
+    # Stable pages, shared by all watches; no per-watch 1,000-row truncation.
+    for offset in range(0,len(watches),100):
+        ids=','.join(w['id'] for w in watches[offset:offset+100])
+        for r in sb_all('tix_scans?watch_id=in.('+ids+')&select=*&order=watch_id,event_id'):
+            scans[(r['watch_id'],r['event_id'])]=r
     due = []
     for eid, cat in events.items():
         days_out = (datetime.fromisoformat(cat["event_date"]).date() - NOW.date()).days
@@ -977,19 +1007,17 @@ def main():
                             if destinations is None:
                                 destinations = sb("GET", f"tix_destinations?watch_id=eq.{w['id']}&select=phone_digits,provider&limit=1")
                             recipient = destination_address(destinations[0]) if destinations else ""
+                        payload={'qty':w['qty'],'price_cents':price,'listing_id':lid,'listing_url':url,'deal':fields['deal'],'checked_at':checked_at}
                         if channel == "email":
                             message = price_alert_email(w, cat, price, url, club, sec, row, fields, checked_at)
-                            ok = send_sms(message.subject, message.text, recipient=recipient, html_body=message.html)
+                            ok = delivery_send(message.subject, message.text, watch=w,channel=channel,kind='alert',event_id=eid,club=club,payload=payload,recipient=recipient,html_body=message.html)
                         else:
-                            ok = send_sms(subject, body, recipient=recipient)
-                        sb("POST", "tix_alerts", [{"watch_id":w["id"], "event_id":eid, "club":club, "qty":w["qty"],
-                           "price_cents":price, "listing_id":lid, "listing_url":url, "status":"sent" if ok else "failed",
-                           "criteria_version":w.get('criteria_version',1), "channel":channel, "deal":fields['deal']}], prefer="return=minimal")
+                            ok = delivery_send(subject, body,watch=w,channel=channel,kind='alert',event_id=eid,club=club,payload=payload,recipient=recipient)
                         if ok: sent += 1
                         else: health["status"] = "error"
                 unknown=any(match_unknown(item,w) for item in listings)
                 if unknown: reasons.add('required_listing_fields_unknown')
-                outcome='ok' if found else 'provider_incomplete' if unknown else 'unavailable'
+                outcome='ok' if found else 'provider_incomplete' if unknown or provider_status=='partial' else 'unavailable'
                 if outcome=='provider_incomplete':
                     health['provider_incomplete']=health.get('provider_incomplete',0)+1
                     if health['status']=='ok': health['status']='degraded'
@@ -1074,6 +1102,10 @@ def main():
         health['status'] = 'error'
     elif health['discovery_failed'] and health['status'] == 'ok':
         health['status'] = 'degraded'
+    runtime=sb('POST','rpc/tix_runtime_health',{})
+    health['overdue_alert_events']=runtime.get('overdue_alert_events',0)
+    health['uncertain_deliveries']=runtime.get('delivery_uncertain',0)
+    if (health['overdue_alert_events'] or health['uncertain_deliveries']) and health['status']=='ok':health['status']='degraded'
     health["checked_at"] = datetime.now(timezone.utc).isoformat()
     write_state("collector_health", health)
     print(f"done. events checked: {health['checked_events']}, failed: {health['failed_events']}, alerts accepted: {sent}")

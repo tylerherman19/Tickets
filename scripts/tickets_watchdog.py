@@ -19,7 +19,7 @@ def needs_recovery(health, now=None):
         if checked_at.tzinfo is None:
             return True
         age = (now - checked_at).total_seconds() / 60
-        return age >= STALE_MINUTES or age < -5
+        return age >= STALE_MINUTES or age < -5 or (age>=10 and int(health.get('overdue_alert_events',0))>0)
     except (KeyError, TypeError, ValueError):
         return True
 

@@ -1,3 +1,4 @@
+from tests.fake_outbox import with_outbox
 import contextlib
 import json
 import os
@@ -148,7 +149,7 @@ class CollectorTests(unittest.TestCase):
                 if path.startswith('tix_watches?'):return [watch]
                 if method!='GET':writes.append((path,body))
                 return []
-            with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'send_pending_confirmations',return_value=0),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'discovery_due',return_value=[]),patch.object(c,'fetch_provider_page',return_value=('ok',{'event_id':'e'},[item])),patch.object(c,'owner_email',return_value='offline@example.test'),patch.object(c,'send_sms',return_value=True) as send,patch.object(c,'write_state'),patch.object(c.time,'sleep'):
+            with patch.object(c,'sb',side_effect=with_outbox(db)),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'send_pending_confirmations',return_value=0),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'discovery_due',return_value=[]),patch.object(c,'fetch_provider_page',return_value=('ok',{'event_id':'e'},[item])),patch.object(c,'owner_email',return_value='offline@example.test'),patch.object(c,'send_sms',return_value=True) as send,patch.object(c,'write_state'),patch.object(c.time,'sleep'):
                 c.main()
             self.assertEqual(send.called,expect_send)
             price=next(body[0] for path,body in writes if path=='tix_prices')
@@ -172,7 +173,7 @@ class CollectorTests(unittest.TestCase):
             if path.startswith('tix_watches?'):return [watch]
             if method!='GET':writes.append((path,body))
             return []
-        with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'send_pending_confirmations',return_value=0),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'discovery_due',return_value=[]),patch.object(c,'fetch_provider_page',return_value=('ok',{'event_id':'e'},[item])),patch.object(c,'send_sms') as send,patch.object(c,'write_state') as state,patch.object(c.time,'sleep'):
+        with patch.object(c,'sb',side_effect=with_outbox(db)),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'send_pending_confirmations',return_value=0),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'discovery_due',return_value=[]),patch.object(c,'fetch_provider_page',return_value=('ok',{'event_id':'e'},[item])),patch.object(c,'send_sms') as send,patch.object(c,'write_state') as state,patch.object(c.time,'sleep'):
             c.main()
         send.assert_not_called()
         self.assertFalse(any(path=='tix_prices' for path,_ in writes))
@@ -293,7 +294,7 @@ class CollectorTests(unittest.TestCase):
             if path.startswith('tix_destinations?'): return [{'phone_digits':'6125550148','provider':'tmobile'}]
             if path.startswith('tix_watches?'): return [{'threshold_cents':15000}]
             writes.append((path,body)); return []
-        with patch.object(c,'sb',side_effect=db),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send:
+        with patch.object(c,'sb',side_effect=with_outbox(db)),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send:
             self.assertEqual(c.send_pending_confirmations(),0)
         self.assertEqual({call.kwargs['recipient'] for call in send.call_args_list},
                          {'owner@example.com','6125550148@tmomail.net'})
@@ -308,7 +309,7 @@ class CollectorTests(unittest.TestCase):
             if path.startswith('tix_confirmation_queue?') and method=='GET': return []
             if path.startswith('tix_watches?'): return [{'threshold_cents':15000}]
             return []
-        with patch.object(c,'sb',side_effect=db),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send:
+        with patch.object(c,'sb',side_effect=with_outbox(db)),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send:
             self.assertEqual(c.send_pending_confirmations(),0)
         send.assert_called_once()
         self.assertEqual(send.call_args.kwargs['recipient'],'owner@example.com')
@@ -325,7 +326,7 @@ class CollectorTests(unittest.TestCase):
     def test_price_alert_deduplication_is_independent_by_channel(self):
         def db(method,path,body=None,prefer=None):
             return [{'sent_at':c.NOW.isoformat()}] if 'channel=eq.sms' in path else []
-        with patch.object(c,'sb',side_effect=db):
+        with patch.object(c,'sb',side_effect=with_outbox(db)):
             self.assertTrue(c.already_alerted('w','e','Club',criteria_version=2,channel='sms'))
             self.assertFalse(c.already_alerted('w','e','Club',criteria_version=2,channel='email'))
     def test_adaptive_intervals_respect_workflow_cadence(self):
@@ -375,7 +376,7 @@ class CollectorTests(unittest.TestCase):
                'name':'A game','url':'https://gametime.co/events/abc'}
         def db(method,path,body=None,prefer=None):
             return [watch] if path.startswith('tix_watches?') else []
-        with patch.object(c,'sb',side_effect=db), \
+        with patch.object(c,'sb',side_effect=with_outbox(db)), \
              patch.object(c,'catalog_stale',return_value=False), \
              patch.object(c,'send_pending_confirmations',return_value=0), \
              patch.object(c,'resolve_events',return_value=[event]), \
@@ -402,7 +403,7 @@ class CollectorTests(unittest.TestCase):
         def db(method,path,body=None,prefer=None):
             if path.startswith('tix_watches?'): return [watch]
             writes.append((path,body));return []
-        with patch.object(c,'sb',side_effect=db), \
+        with patch.object(c,'sb',side_effect=with_outbox(db)), \
              patch.object(c,'catalog_stale',return_value=False), \
              patch.object(c,'send_pending_confirmations',return_value=0), \
              patch.object(c,'resolve_events',return_value=[event]), \
@@ -426,7 +427,7 @@ class CollectorTests(unittest.TestCase):
             if method=='GET':return []
             writes.append((path,body));return []
         meta={'event_id':'abc','name':'A game','datetime_local':'2026-09-27T18:00:00','min_total':None}
-        with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[])),patch.object(c.time,'sleep'):
+        with patch.object(c,'sb',side_effect=with_outbox(db)),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[])),patch.object(c.time,'sleep'):
             c.main()
         self.assertEqual(self.captures[-1]['meta']['datetime_local'],meta['datetime_local'])
     def test_event_watch_excludes_past_events(self):
@@ -447,7 +448,7 @@ class CollectorTests(unittest.TestCase):
                 if method=='GET': return []
                 writes.append((path,body)); return []
             meta={'event_id':'abc','name':'A game','datetime_local':None,'min_total':price}
-            with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[listing(price)])),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send,patch.object(c.time,'sleep'):
+            with patch.object(c,'sb',side_effect=with_outbox(db)),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[listing(price)])),patch.object(c,'owner_email',return_value='owner@example.com'),patch.object(c,'send_sms',return_value=True) as send,patch.object(c.time,'sleep'):
                 c.main();self.assertEqual(send.called,expect_send)
                 self.assertTrue(any(path.startswith('tix_scans') and body[0]['outcome']=='ok' for path,body in writes))
     def test_no_matching_lots_records_unavailable(self):
@@ -455,7 +456,7 @@ class CollectorTests(unittest.TestCase):
         event={'event_id':'abc','event_date':c.NOW.date().isoformat(),'name':'A game','url':'https://gametime.co/event'}
         def db(method,path,body=None,prefer=None): return [watch] if path.startswith('tix_watches?') else []
         meta={'event_id':'abc','name':'A game','datetime_local':None,'min_total':1000}
-        with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[listing(1000,lots=[1,3,4])])),patch.object(c,'send_sms') as send,patch.object(c,'scan_result') as scan,patch.object(c.time,'sleep'):
+        with patch.object(c,'sb',side_effect=with_outbox(db)),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[listing(1000,lots=[1,3,4])])),patch.object(c,'send_sms') as send,patch.object(c,'scan_result') as scan,patch.object(c.time,'sleep'):
             c.main();send.assert_not_called();self.assertEqual(scan.call_args[0][2],'unavailable')
 
 if __name__=='__main__':unittest.main()

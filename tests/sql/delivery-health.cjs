@@ -1,0 +1,35 @@
+const {PGlite}=require('@electric-sql/pglite');
+const fs=require('node:fs'),assert=require('node:assert/strict');
+(async()=>{
+ const db=new PGlite();
+ await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('test.uid',true),'')::uuid$$;grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;`);
+ await db.exec(fs.readFileSync('scripts/tickets_schema.sql','utf8'));
+ for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_coverage_query.sql','20261017_admin.sql','20261018_general_search.sql','20261018_search_activity.sql','20261020_runtime_reliability.sql','20261020_delivery_health.sql','20261020_delivery_health.sql'])
+ await db.exec(fs.readFileSync('scripts/'+file,'utf8').replace(/^.*(?:create extension.*pg_trgm|create index.*gin_trgm_ops).*$/gm,''));
+ const rpc=async(name,args=[]) => (await db.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) r`,args)).rows[0].r;
+ const one=async(sql,args=[]) => (await db.query(sql,args)).rows[0];
+ const owner='11111111-1111-1111-1111-111111111111',watch='22222222-2222-2222-2222-222222222222',event='a'.repeat(24);
+ await db.query("insert into auth.users(id,email,email_confirmed_at) values($1,'fixture@example.test',now())",[owner]);
+ await db.query("insert into tix_watches(id,owner_id,label,kind,match,qty,threshold_cents) values($1,$2,'Fixture','event',$3,2,7500)",[watch,owner,JSON.stringify({event_ids:[event]})]);
+ await db.query("insert into tix_catalog(event_id,event_date,url) values($1,current_date+1,$2)",[event,'https://gametime.co/events/'+event]);
+ const payload={qty:2,price_cents:5000,checked_at:new Date().toISOString(),listing_url:'https://gametime.co/events/'+event};
+ const begin=()=>rpc('tix_begin_delivery',[watch,1,event,'Any section','email','alert',JSON.stringify(payload)]);
+ await db.exec('set role anon');await assert.rejects(begin());await assert.rejects(db.query('select * from tix_delivery_outbox'));await assert.rejects(rpc('tix_admin_runtime_health'));await db.exec('reset role');
+ const claimed=await begin();assert.equal(claimed.state,'sending');assert.match(claimed.message_id,/ticketline/);assert.equal((await begin()).state,'busy');
+ await rpc('tix_finish_delivery',[claimed.id,claimed.lease,'accepted',null,'fixture-message']);
+ await rpc('tix_finish_delivery',[claimed.id,claimed.lease,'accepted',null,'fixture-message']);
+ assert.equal((await begin()).state,'already_accepted');assert.equal((await one('select count(*)::int n from tix_alerts')).n,1);
+ await db.query("update tix_watches set threshold_cents=7600 where id=$1",[watch]);
+ assert.equal((await begin()).state,'cancelled','old criteria cannot send');
+ const next=()=>rpc('tix_begin_delivery',[watch,2,event,'Any section','email','alert',JSON.stringify(payload)]);
+ const uncertain=await next();await db.query("update tix_delivery_outbox set lease_until=now()-interval '1 minute' where id=$1",[uncertain.id]);assert.equal((await next()).state,'uncertain');assert.equal((await next()).state,'uncertain');
+ await db.query("insert into tix_watch_events(watch_id,event_id,criteria_version) values($1,$2,2)",[watch,event]);assert.equal((await rpc('tix_runtime_health')).overdue_alert_events,1);
+ await db.query("insert into tix_scans(watch_id,event_id,criteria_version,outcome) values($1,$2,2,'ok')",[watch,event]);assert.equal((await rpc('tix_runtime_health')).overdue_alert_events,0);
+ await db.query("update tix_scans set outcome='failed',checked_at=now()+interval '1 minute' where watch_id=$1",[watch]);assert.ok((await one('select checked_at>last_success_at preserved from tix_scans')).preserved);
+ assert.equal((await rpc('tix_runtime_health')).delivery_uncertain,1);
+ await rpc('tix_finish_delivery',[uncertain.id,uncertain.lease,'accepted',null,'manually-verified']);assert.equal((await rpc('tix_runtime_health')).delivery_uncertain,0);
+ assert.equal((await next()).state,'already_accepted');
+ const snapshot=await rpc('tix_backup_snapshot');assert.equal(snapshot.scope,'ticketline_private_state');assert.ok(snapshot.tables.tix_watches.length);assert.equal(snapshot.tables.tix_searches.length,0);
+ const {verifyRestore}=await import('../../scripts/tickets_restore_check.mjs');assert.equal((await verifyRestore(snapshot)).status,'restore_verified');
+ await db.close();console.log('Durable delivery: private claims, deduplication, crash uncertainty, criteria edits and per-alert successful progress passed.');
+})().catch(e=>{console.error({message:e.message,position:e.position,internalQuery:e.internalQuery});process.exitCode=1;});

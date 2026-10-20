@@ -69,6 +69,7 @@ class DiscoveryLoopTests(unittest.TestCase):
     def run_main(self, discovery, guard, fetch=None):
         writes=[];rpcs=[]
         def db(method,path,body=None,prefer=None):
+            if path=='rpc/tix_runtime_health': return {}
             if path=='rpc/tix_note_performers': rpcs.append(body); return len(body['p_paths'])
             if method!='GET': writes.append((path,body))
             return []
@@ -176,6 +177,7 @@ class PerformerSweepTests(unittest.TestCase):
             if path.startswith('tix_state?'): return [{'v':state}] if state is not None else []
             if path.startswith('tix_performers?next_check_at'): return due
             if path=='rpc/tix_apply_get_in_prices': applied.append(body['p_rows']); return {'updated':len(body['p_rows']),'history':1}
+            if path=='rpc/tix_runtime_health': return {}
             if path=='rpc/tix_note_performers': writes.append(('note',body)); return 0
             writes.append((path,body)); return []
         def fetch(url,timeout=25):
