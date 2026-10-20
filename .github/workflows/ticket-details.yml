@@ -7,7 +7,7 @@ on:
         type: string
         required: true
 concurrency:
-  group: tickets-collector
+  group: ticketline-targeted-details
   cancel-in-progress: false
 jobs:
   capture:

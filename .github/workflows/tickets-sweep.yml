@@ -20,7 +20,7 @@ on:
         options: ['', college-basketball]
         default: ''
 concurrency:
-  group: tickets-collector
+  group: ticketline-background-sweep
   cancel-in-progress: false
 permissions:
   contents: read

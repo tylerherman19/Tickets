@@ -12,13 +12,15 @@ function request(body={event_id:id},headers={}){return new Request('https://edge
 const response=(body,status=200)=>Response.json(body,{status});
 const page=eventId=>'window.__data='+JSON.stringify({redux:{data:{fullEvents:{events:{[eventId]:{event:{id:eventId,minPrice:{total:1234},performers:[{seoUrl:'https://gametime.co/minnesota-vikings-tickets/performers/nflmin'}]}}}}}}});
 const moved=eventId=>'https://gametime.co/nfl-football/bills-at-vikings-tickets/11-8-2026-minneapolis-mn-u-s-bank-stadium/events/'+eventId;
-function mockFetch({user=true,claim=()=>({state:'checking',token:'lease'}),admitted=()=>true,providerStatus=()=>200,providerHeaders=()=>({}),
+function mockFetch({quotes=[],quoteAllowed=true,user=true,claim=()=>({state:'checking',token:'lease'}),admitted=()=>true,providerStatus=()=>200,providerHeaders=()=>({}),
  noteRedirect=body=>response(body.p_location?{state:'queued',reason:'url_moved',next_attempt_at:'2026-10-16T00:00:00Z'}:{state:'failed',reason:'redirected',next_attempt_at:'2026-10-16T06:00:00Z'})}={}){
  const calls=[];let inFlight=0;calls.maxInFlight=0;
  globalThis.fetch=async(url,options)=>{
   calls.push({url,options});
   const body=options?.body?JSON.parse(options.body):{};
   if(url.endsWith('/auth/v1/user'))return response(user?{id:'owner'}:{},user?200:401);
+  if(url.includes('/rpc/tix_public_quotes'))return response(quotes);
+  if(url.includes('/rpc/tix_request_quote'))return response({allowed:quoteAllowed,reason:'caller_limit'});
   if(url.includes('/rpc/tix_request_capture'))return response({state:'queued',tracked:true});
   if(url.includes('/rpc/tix_claim_capture')){const c=claim(body.p_event_id);return response(c.state==='checking'?{...c,token:'lease-'+body.p_event_id}:c);}
   if(url.includes('/tix_events_v')){const list=decodeURIComponent(url).match(/in\.\(([^)]*)\)/)[1].split(',');return response(list.map(e=>({event_id:e,url:'https://gametime.co/events/'+e})));}
@@ -27,7 +29,7 @@ function mockFetch({user=true,claim=()=>({state:'checking',token:'lease'}),admit
   if(url.includes('/rpc/tix_note_redirect'))return noteRedirect(body);
   if(url.includes('/rpc/'))return response(null);
   if(url.startsWith('https://gametime.co/')){
-   const eventId=url.split('/').at(-1);inFlight++;calls.maxInFlight=Math.max(calls.maxInFlight,inFlight);
+   const eventId=new URL(url).pathname.split('/').at(-1);inFlight++;calls.maxInFlight=Math.max(calls.maxInFlight,inFlight);
    await new Promise(r=>setTimeout(r,5));inFlight--;
    return new Response(page(eventId),{status:providerStatus(eventId),headers:providerHeaders(eventId)});
   }
@@ -153,4 +155,16 @@ test('a blocking page is still detected first, even on a redirect status',async(
  assert.deepEqual(result.results.map(r=>r.state),['suspended']);
  assert.ok(calls.some(c=>c.url.endsWith('tix_suspend_provider')));
  assert.equal(calls.some(c=>c.url.endsWith('tix_note_redirect')),false);
+});
+
+test('anonymous quick pulls use selected seats, never write owner tracking and reserve admission',async()=>{
+ const calls=mockFetch();const result=await (await handleRequest(request({event_id:id,qty:4},{authorization:'Bearer anon'}))).json();
+ assert.equal(result.qty,4);assert.equal(providerCalls(calls)[0].url,'https://gametime.co/events/'+id+'?quantity=4');
+ assert.equal(calls.some(c=>c.url.endsWith('/auth/v1/user')||c.url.endsWith('tix_request_capture')),false);
+ const body=JSON.parse(calls.find(c=>c.url.endsWith('tix_request_quote')).options.body);assert.equal(body.p_anonymous,true);assert.equal(body.p_qty,4);assert.match(body.p_actor,/^[a-f0-9]{64}$/);
+});
+test('fresh exact public quotes return without provider admission or network; blocked callers keep saved prices',async()=>{
+ let calls=mockFetch({quotes:[{event_id:id,state:'complete',market:{by_qty:{4:{low:5500}}}}]});
+ let result=await (await handleRequest(request({event_id:id,qty:4},{authorization:'Bearer anon'}))).json();assert.equal(result.state,'cached');assert.equal(result.market.by_qty[4].low,5500);assert.equal(providerCalls(calls).length,0);assert.equal(calls.some(c=>c.url.endsWith('tix_request_quote')),false);
+ calls=mockFetch({quoteAllowed:false,quotes:[{event_id:id,state:'advertised',min_total:3900}]});result=await (await handleRequest(request({event_id:id},{authorization:'Bearer anon'}))).json();assert.equal(result.state,'queued');assert.equal(result.min_total,3900);assert.equal(providerCalls(calls).length,0);
 });

@@ -3,11 +3,11 @@ const assert=require('node:assert/strict');
 const {JSDOM}=require('jsdom');
 const fs=require('node:fs');
 const app=fs.readFileSync('app.js','utf8');
-const eventCode=app.slice(app.indexOf('async function eventDetail(){'),app.indexOf('// Last-resort error page'));
+const eventCode=app.slice(app.indexOf('async function eventDetail('),app.indexOf('// Last-resort error page'));
 test('event page renders comparable history and escaped seat details; quantity changes reload exact listings',async()=>{
  const dom=new JSDOM('<main id="main"></main>',{url:'http://localhost/event.html?event=fixture',runScripts:'outside-only'});
  const w=dom.window,requests=[];
- const prelude=`const main=document.querySelector('#main'),query=new URLSearchParams(location.search),session=null;
+ const prelude=`const main=document.querySelector('#main'),query=new URLSearchParams(location.search),session=null;const IS_DEV=true;
  ${app.slice(app.indexOf('function layout('),app.indexOf('function heroCard'))}`;
  w.mockGet=async path=> path.includes('tix_events_v')?[{event_id:'fixture',name:'Fixture event',venue:'Arena',event_date:'2026-11-15',min_total:1200,price_checked_at:new Date().toISOString(),url:'https://gametime.co/events/fixture'}]:path.includes('tix_event_market')?[{by_qty:{2:{low:1400,basis:'fees_included_tax_reported'}},groups:[],listing_count:1,checked_at:new Date().toISOString()}]:[];
  w.mockRpc=async(name,body)=>{
@@ -128,12 +128,12 @@ test('a signed-in search prices its results right away and retries a rate-limite
  assert.equal(d.querySelector('#price-request-status').textContent,'2 live prices updated.');
  w.close();
 });
-test('signed-out searches show saved prices and never start a live check',async()=>{
+test('signed-out searches show saved prices and start bounded public checks',async()=>{
  let called=false;
  const w=explorePage(searchRows,{capture:async()=>{called=true;return [];}});
  await new Promise(r=>setTimeout(r,550));
- assert.equal(called,false);
- assert.match(w.document.querySelector('#price-request-status').textContent,/Sign in to load live prices/);
+ assert.equal(called,true);
+ assert.doesNotMatch(w.document.querySelector('#price-request-status').textContent,/Sign in/);
  assert.match(w.document.getElementById('price-unpriced').textContent,/Price not checked/);
  w.close();
 });

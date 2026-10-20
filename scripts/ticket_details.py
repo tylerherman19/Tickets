@@ -14,6 +14,8 @@ def main():
     if not re.fullmatch(r'[a-f0-9]{24}',event_id):
         raise ValueError('Invalid event ID')
     rows=collect.sb('GET',f'tix_events_v?event_id=eq.{event_id}&select=*&limit=1')
+    jobs=collect.sb('GET',f'tix_capture_jobs?event_id=eq.{event_id}&select=requested_quantities,warm_quantities&limit=1')
+    quantities=set((jobs[0].get('requested_quantities') or jobs[0].get('warm_quantities') or [2]) if jobs else [2])
     if not rows: return
     try:
         with collect.GUARD.capture(event_id,'detail'):
@@ -21,9 +23,9 @@ def main():
             if not meta or status=='parser_failure':
                 raise ValueError('parser_failure')
             if status=='metadata_only':
-                # One quantity first. Subsequent scheduled passes can gather
-                # others; DOM cards never imply complete seat coverage.
-                richer=collect.rendered_quantity_listings(rows[0]['url'],{2})
+                # Use the requested seat counts. DOM cards never imply complete
+                # coverage of the event inventory.
+                richer=collect.rendered_quantity_listings(rows[0]['url'],quantities)
                 if richer:
                     listings=richer
                     status='partial' if any(l.get('verified_quantity') for l in richer) else 'ok'

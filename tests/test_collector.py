@@ -24,7 +24,8 @@ class CollectorTests(unittest.TestCase):
             guard.event_id=event_id
             return contextlib.nullcontext(guard)
         guard.capture.side_effect=capture
-        for name,value in [('GUARD',guard),('expire_event_storage',lambda:0),('persist_capture',lambda *a,**k:None)]:
+        self.captures=[]
+        for name,value in [('GUARD',guard),('expire_event_storage',lambda:0),('persist_capture',lambda meta,listings,status,**kw:self.captures.append(c.capture_payload(meta,listings,status)))]:
             patched=patch.object(c,name,value);patched.start();self.addCleanup(patched.stop)
 
     def test_saved_pages_select_same_exact_quantity_offline(self):
@@ -125,21 +126,15 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(c.page_outcome(page,meta),expected)
         self.assertEqual(c.page_outcome('<p>listings listingsResponse availableLots</p>',{'event_id':'e'}),'parser_failure')
 
-    def test_incomplete_market_keeps_previous_inventory_sample(self):
+    def test_incomplete_market_uses_atomic_database_capture_without_overwriting_catalog(self):
         writes=[]
         with patch.object(c,'sb',side_effect=lambda method,path,body=None,prefer=None:writes.append((path,body)) or []):
-            event={'event_id':'e'};meta={'event_id':'e'}
-            c.record_event_market(event,meta,[listing()], '2026-10-11T00:00:00Z')
-            c.record_event_market(event,meta,[], '2026-10-11T00:01:00Z','metadata_only')
-            samples=[body[0] for path,body in writes if path.startswith('tix_event_market?')]
-            self.assertEqual(len(samples),1)
-            self.assertEqual(samples[0]['listing_count'],1)
-            self.assertEqual(samples[0]['checked_at'],'2026-10-11T00:00:00Z')
-            self.assertNotIn('hist',repr(samples))
-            c.record_event_market(event,meta,[], '2026-10-11T00:02:00Z')
-        samples=[body[0] for path,body in writes if path.startswith('tix_event_market?')]
-        self.assertEqual(samples[-1]['listing_count'],0)
-        self.assertTrue(samples[-1]['coverage']['complete'])
+            c.record_event_market({'event_id':'e','min_total':3900},{'event_id':'e','min_total':None},[], '2026-10-11T00:01:00Z','metadata_only')
+        self.assertFalse(any(path.startswith('tix_catalog?') or path.startswith('tix_event_market?') for path,body in writes))
+        capture=self.captures[-1]
+        self.assertEqual(capture['state'],'metadata_only')
+        self.assertIsNone(capture['min_total'])
+        # Database integration tests verify preservation of the prior value and age.
 
     def test_extra_fields_saved_and_unknown_deal_never_alerts(self):
         for minimum,deal,expected_reason,expect_send in [(None,None,None,True),('great',None,'deal_missing',False),('great','synthetic-tier','deal_ranking_unverified',False),(None,'synthetic-tier',None,True)]:
@@ -192,18 +187,14 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(result['selected_price_cents'],15000)
                 self.assertEqual(result['fields']['basis'],'fees_included_tax_unknown')
 
-    def test_successful_empty_provider_market_clears_old_get_in_price(self):
-        event={'event_id':'abc','name':'A game','event_date':'2026-10-04','url':'https://gametime.co/events/abc'}
+    def test_successful_empty_provider_market_passes_verified_empty_to_atomic_save(self):
         writes=[]
-        with patch.object(c,'sb',side_effect=lambda method,path,body=None,prefer=None: writes.append((path,body)) or []):
-            c.record_event_market(event,{'event_id':'abc','name':'A game','min_total':None},[],c.NOW.isoformat())
-        patch_body=next(body for path,body in writes if path.startswith('tix_catalog?'))
-        self.assertIn('min_total',patch_body)
-        self.assertIsNone(patch_body['min_total'])
-        self.assertEqual(patch_body['discovery_status'],'ok')
-        sample=next(body for path,body in writes if path.startswith('tix_event_market?'))
-        self.assertEqual(sample[0]['event_id'],'abc')
-        self.assertEqual(sample[0]['listing_count'],0)
+        with patch.object(c,'sb',side_effect=lambda method,path,body=None,prefer=None:writes.append((path,body)) or []):
+            c.record_event_market({'event_id':'abc'},{'event_id':'abc','name':'A game','min_total':None},[],c.NOW.isoformat())
+        payload=self.captures[-1]
+        self.assertEqual(payload['state'],'empty')
+        self.assertTrue(payload['coverage']['complete'])
+        self.assertFalse(any(path.startswith('tix_catalog?') for path,body in writes))
 
     def test_discovery_seeds_local_cities_and_major_sports_then_queries_other_markets(self):
         with patch.object(c,'sb',return_value=[]) as db:
@@ -373,9 +364,9 @@ class CollectorTests(unittest.TestCase):
         writes=[]
         with patch.object(c,'sb',side_effect=lambda method,path,body=None,prefer=None:writes.append((path,body)) or []):
             c.record_event_market({'event_id':'e','url':'https://gametime.co/events/e'},meta,[],c.NOW.isoformat(),status)
-        catalog=next(body for path,body in writes if path.startswith('tix_catalog?'))
+        catalog=self.captures[-1]
         self.assertEqual(catalog['min_total'],3300)
-        self.assertEqual(catalog['discovery_status'],'metadata_only')
+        self.assertEqual(catalog['state'],'metadata_only')
     def test_metadata_only_watch_marks_collector_degraded(self):
         watch={'id':'w','kind':'event','match':{'event_ids':['abc']},'clubs':[],'qty':2,
                'threshold_cents':7000,'alert_style':'first','active':True,
@@ -437,7 +428,7 @@ class CollectorTests(unittest.TestCase):
         meta={'event_id':'abc','name':'A game','datetime_local':'2026-09-27T18:00:00','min_total':None}
         with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False),patch.object(c,'resolve_events',return_value=[event]),patch.object(c,'get_text',return_value='html'),patch.object(c,'page_outcome',return_value='ok'),patch.object(c,'parse_event_page',return_value=(meta,[])),patch.object(c.time,'sleep'):
             c.main()
-        self.assertTrue(any(path=='tix_event_changes' and body[0]['field']=='datetime_local' for path,body in writes))
+        self.assertEqual(self.captures[-1]['meta']['datetime_local'],meta['datetime_local'])
     def test_event_watch_excludes_past_events(self):
         with patch.object(c,'sb',return_value=[]) as db:
             c.resolve_events({'kind':'event','match':{'event_ids':['abc']}})

@@ -52,20 +52,29 @@ def sb(method, path, body=None, prefer=None):
     if prefer: h["Prefer"] = prefer
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers=h, method=method)
-    for i in range(3):
+    for i in range(3 if method == 'GET' else 1):
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 raw = r.read().decode()
                 return json.loads(raw) if raw else []
         except urllib.error.HTTPError as e:
             err = e.read().decode()[:400]
-            if i == 2:
+            if method != 'GET' or i == 2:
                 print(f"SB {method} {path} -> {e.code}: {err}", file=sys.stderr)
                 raise
             time.sleep(2)
         except Exception:
-            if i == 2: raise
+            if method != 'GET' or i == 2: raise
             time.sleep(2)
+
+def sb_all(path, page_size=500):
+    """Service-side stable pages; never silently stop at the API row ceiling."""
+    result=[];offset=0
+    while True:
+        page=sb('GET',path+('&' if '?' in path else '?')+f'limit={page_size}&offset={offset}')
+        result.extend(page)
+        if len(page)<page_size:return result
+        offset+=len(page)
 
 from ticketline_guard import Guard, CaptureDeferred
 GUARD = Guard(lambda name,body: sb('POST','rpc/'+name,body))
@@ -329,7 +338,7 @@ def fetch_provider_page(url, discovery=False):
         print(f"provider response {outcome}: {page_shape(page,meta,listings)}")
     if meta and meta.get('event_id') != GUARD.event_id:
         raise ValueError('event_unavailable: event ID mismatch')
-    if meta and outcome != 'parser_failure':
+    if meta and outcome == 'metadata_only':
         persist_capture(meta,listings,outcome,finish=False)
     return outcome,meta,listings
 
@@ -775,45 +784,15 @@ def expire_event_storage():
     return total
 
 def record_event_market(cat, meta, listings, checked_at, status='ok'):
-    """Persist a successful provider parse, including a genuine empty market."""
-    eid = cat['event_id']
-    persist_capture(meta,listings,status)
-    new_date = (meta.get('datetime_local') or '')[:10]
-    changes = []
-    for field, new_value in [('datetime_local', meta.get('datetime_local')),
-                             ('event_date', new_date), ('venue', meta.get('venue'))]:
-        old_value = cat.get(field)
-        if new_value and old_value and new_value != old_value and (field != 'event_date' or cat.get('datetime_local')):
-            changes.append({'event_id':eid,'field':field,'old_value':old_value,
-                            'new_value':new_value,'detected_at':checked_at})
-    if changes: sb('POST','tix_event_changes',changes,prefer='return=minimal')
-    listing_prices = [(l.get('price') or {}).get('total') for l in listings]
-    real_prices = [p for p in listing_prices if cents_value(p,positive=True) is not None]
-    provider_min = meta.get('min_total')
-    minimum = provider_min if cents_value(provider_min,positive=True) is not None else min(real_prices,default=None)
-    patch = {'price_checked_at':checked_at,'discovery_attempt_at':checked_at,
-             'discovery_status':'metadata_only' if status=='metadata_only' else 'ok','min_total':minimum,'last_seen':checked_at}
-    for key, value in [('name',meta.get('name')),('datetime_local',meta.get('datetime_local')),
-                       ('event_date',new_date or None),('venue',meta.get('venue'))]:
-        if value is not None: patch[key] = value
-    sb('PATCH',f'tix_catalog?event_id=eq.{eid}',patch)
-    if meta.get('name'): cat['name'] = meta['name']
-    if meta.get('datetime_local'): cat['datetime_local'] = meta['datetime_local']
-    groups = club_groups(listings)
-    if status == 'metadata_only': return groups,len(changes)
-    sorted_groups = sorted(groups.values(),key=lambda g:g['cheapest'])
-    coverage={'complete':not any(item.get('verified_quantity') for item in listings),
-              'quantities':sorted({item['verified_quantity'] for item in listings if type(item.get('verified_quantity')) is int}),
-              'unknown_lots':sum(listing_fields(item)['lots'] is None and not item.get('verified_quantity') for item in listings),
-              'unknown_seats':sum(not isinstance(item.get('seats'),list) and not item.get('verified_quantity') for item in listings)}
-    sb('POST','tix_event_market?on_conflict=event_id',[{'event_id':eid,'checked_at':checked_at,
-       'by_qty':market_spreads(listings),'groups':sorted_groups,'listing_count':len(listings),'coverage':coverage}],
-       prefer='resolution=merge-duplicates,return=minimal')
-    if cat.get('venue_slug'):
-        sb('POST','tix_venue_clubs?on_conflict=venue_slug',[{'venue_slug':cat['venue_slug'],
-           'venue':cat.get('venue'),'clubs':sorted_groups,'sample_event_id':eid,
-           'updated_at':checked_at}],prefer='resolution=merge-duplicates,return=minimal')
-    return groups, len(changes)
+    """One database transaction owns prices, metadata, changes and job completion."""
+    old = dict(cat)
+    persist_capture(meta, listings, status)
+    changes = sum(bool(meta.get(field) and old.get(field) and meta[field] != old[field])
+                  for field in ('datetime_local', 'venue'))
+    for field in ('name', 'datetime_local', 'venue'):
+        if meta.get(field): cat[field] = meta[field]
+    return club_groups(listings), changes
+
 
 def note_deferral(health, error):
     """Count guard deferrals; a provider-blocking pause is an error to surface."""
@@ -869,7 +848,7 @@ def main():
     if send_pending_confirmations():
         health["status"] = "error"
 
-    watches = sb("GET", "tix_watches?active=eq.true&select=*")
+    watches = sb_all("tix_watches?active=eq.true&select=*&order=id")
     invalid = [w for w in watches if not valid_watch(w)]
     if invalid:
         print(f"{len(invalid)} invalid watches skipped", file=sys.stderr)
@@ -907,9 +886,7 @@ def main():
             ts = datetime.fromisoformat(last["checked_at"].replace("Z", "+00:00"))
             oldest = min(oldest, ts)
             criteria_ts = datetime.fromisoformat((w.get("criteria_updated_at") or w["created_at"]).replace("Z", "+00:00"))
-            last_price = sb("GET", f"tix_prices?watch_id=eq.{w['id']}&event_id=eq.{eid}&criteria_version=eq.{w.get('criteria_version',1)}&select=price_cents&order=checked_at.desc&limit=1")
-            price = last_price[0]['price_cents'] if last_price else None
-            interval = check_interval_minutes(days_out, price, w['threshold_cents'])
+            interval = check_interval_minutes(days_out)
             if (last.get('criteria_version',1) != w.get('criteria_version',1) or ts < criteria_ts
                 or (NOW - ts) >= timedelta(minutes=interval)
                 or (last["outcome"] in ("failed","parser_failure","http_failure") and (NOW-ts) >= timedelta(minutes=15))):

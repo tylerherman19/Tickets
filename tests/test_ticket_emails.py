@@ -61,7 +61,7 @@ class ContentTests(unittest.TestCase):
         from pathlib import Path
         from urllib.parse import parse_qs, urlsplit
         source = (Path(__file__).resolve().parents[1] / 'app.js').read_text()
-        match = re.search(r"async function eventDetail\(\)\{\s*const id=query.get\('([^']+)'\)", source)
+        match = re.search(r"async function eventDetail\([^)]*\)\{\s*const id=query.get\('([^']+)'\)", source)
         self.assertIsNotNone(match, 'Keep this link contract in sync with eventDetail')
         for content in (mail.confirmation_email(self.watch, self.event), self.alert()):
             links = re.findall(r'href="([^"]+)"', content.html)

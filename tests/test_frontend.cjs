@@ -223,9 +223,9 @@ test('a search sends one batch without tracking; opening an event tracks it',asy
  sandbox.accessToken=async()=> 'user';sandbox.IS_DEV=false;sandbox.AbortSignal=AbortSignal;
  sandbox.fetch=async(url,options)=>{bodies.push(JSON.parse(options.body));const ids=JSON.parse(options.body).event_ids;return {status:200,ok:true,text:async()=>JSON.stringify({results:ids.map(event_id=>({event_id,state:'metadata_only',min_total:1500}))})};};
  const results=await run('captureEventPrices(["a","b"])');
- assert.deepEqual(bodies[0],{event_ids:['a','b'],track:false});assert.equal(results.length,2);
+ assert.deepEqual(bodies[0],{event_ids:['a','b'],track:false,qty:2});assert.equal(results.length,2);
  assert.equal((await run('captureEventPrice("a")')).min_total,1500);
- assert.deepEqual(bodies[1],{event_ids:['a'],track:true});
+ assert.deepEqual(bodies[1],{event_ids:['a'],track:true,qty:2});
  sandbox.fetch=async()=>({status:200,ok:true,text:async()=>JSON.stringify({results:[{event_id:'a',state:'failed'}]})});
  await assert.rejects(run('captureEventPrice("a")'),/saved price is still available/);
 });

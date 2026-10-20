@@ -1,0 +1,39 @@
+const {PGlite}=require('@electric-sql/pglite');
+const fs=require('node:fs'),assert=require('node:assert/strict');
+(async()=>{
+ const db=new PGlite();
+ await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('test.uid',true),'')::uuid$$;grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;`);
+ await db.exec(fs.readFileSync('scripts/tickets_schema.sql','utf8'));
+ for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_coverage_query.sql','20261017_admin.sql','20261018_general_search.sql','20261018_search_activity.sql','20261020_runtime_reliability.sql','20261020_runtime_reliability.sql'])
+ await db.exec(fs.readFileSync('scripts/'+file,'utf8').replace(/^.*(?:create extension.*pg_trgm|create index.*gin_trgm_ops).*$/gm,''));
+ const rpc=async(name,args=[]) => (await db.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) r`,args)).rows[0].r;
+ const one=async(sql,args=[]) => (await db.query(sql,args)).rows[0];
+ const id='a'.repeat(24),actor='b'.repeat(64);
+ await db.query("insert into tix_catalog(event_id,event_date,url,name,min_total,price_checked_at) values($1,current_date+5,$2,'Fixture',3900,now()-interval '1 hour')",[id,'https://gametime.co/events/'+id]);
+ await db.exec('set role anon');
+ assert.equal((await rpc('tix_public_quotes',[[id],4]))[0].state,'queued');
+ await assert.rejects(rpc('tix_request_quote',[actor,true,[id],4]));await assert.rejects(db.query('select * from tix_quote_requests'));
+ await db.exec('reset role');
+ assert.equal((await rpc('tix_request_quote',[actor,true,[id],4])).allowed,true);
+ assert.deepEqual((await rpc('tix_quick_due',[3]))[0].requested_quantities,[4]);
+ let lease=await rpc('tix_claim_capture',[id,'interactive']);assert.equal(lease.state,'checking');
+ await rpc('tix_finish_capture',[lease.token,JSON.stringify({meta:{event_id:id,name:'New fixture'},state:'metadata_only',min_total:null,listings:[],coverage:{},by_qty:{},groups:[]})]);
+ let row=await one('select name,min_total,price_checked_at from tix_catalog where event_id=$1',[id]);
+ assert.equal(row.min_total,3900);assert.equal(row.name,'New fixture');assert.ok(Date.now()-new Date(row.price_checked_at)>3000000,'missing price retains real age');
+ assert.deepEqual((await rpc('tix_quick_due',[3]))[0].requested_quantities,[4]);
+ lease=await rpc('tix_claim_capture',[id,'detail']);
+ await rpc('tix_finish_capture',[lease.token,JSON.stringify({meta:{event_id:id},state:'partial',min_total:4200,listings:[],coverage:{complete:false},by_qty:{4:{low:4200,basis:'fees_included_tax_unknown',listings:2}},groups:[]})]);
+ let q=(await rpc('tix_public_quotes',[[id],4]))[0];assert.equal(q.state,'complete');assert.equal(q.market.by_qty[4].low,4200);assert.ok(q.market.by_qty[4].checked_at);
+ assert.equal((await rpc('tix_quick_due',[3])).length,0);
+ // A different quantity cannot inherit a refreshed timestamp from an unrelated capture.
+ await db.exec("update tix_event_market set by_qty=jsonb_set(by_qty,'{4,checked_at}',to_jsonb((now()-interval '1 hour')::text))");
+ await rpc('tix_request_quote',[actor,true,[id],2]);
+ lease=await rpc('tix_claim_capture',[id,'detail']);
+ await rpc('tix_finish_capture',[lease.token,JSON.stringify({meta:{event_id:id},state:'partial',min_total:3000,listings:[],coverage:{complete:false},by_qty:{2:{low:3000,basis:'fees_included_tax_unknown',listings:3}},groups:[]})]);
+ assert.notEqual((await rpc('tix_public_quotes',[[id],4]))[0].state,'complete');assert.equal((await rpc('tix_public_quotes',[[id],2]))[0].state,'complete');
+ for(let n=0;n<4;n++)await rpc('tix_request_quote',[actor,true,[id],2]);
+ assert.equal((await rpc('tix_request_quote',[actor,true,[id],2])).allowed,false,'caller limit');
+ await assert.rejects(rpc('tix_request_quote',[null,true,[id],2]));await assert.rejects(rpc('tix_request_quote',[actor,true,null,2]));
+ assert.deepEqual([...(await one('select minute_limit,hour_limit,day_limit from tix_provider_guard')?Object.values(await one('select minute_limit,hour_limit,day_limit from tix_provider_guard')):[])],[40,420,5000]);
+ await db.close();console.log('Runtime: atomic prices, public quotes, requested quantities, private admission and quote age passed.');
+})().catch(e=>{console.error({message:e.message,position:e.position,internalPosition:e.internalPosition,internalQuery:e.internalQuery,near:e.query?.slice(Number(e.position)-150,Number(e.position)+150)});process.exitCode=1;});

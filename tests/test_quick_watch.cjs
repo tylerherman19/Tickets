@@ -106,10 +106,10 @@ test('a full team name immediately opens its games in the original dropdown',asy
  }finally{h.close();}
 });
 test('choosing a game triggers one instant pull and renders its fresh advertised price while exact seats are pending',async()=>{
- const h=setup('explore','',true);try{await tick();const {w,d}=h;const timers=[],originalTimeout=w.setTimeout.bind(w);w.setTimeout=(callback,ms,...args)=>ms===5000?(timers.push(callback),98765):originalTimeout(callback,ms,...args);
+ const h=setup('explore','',true);try{await tick();const {w,d}=h;const timers=[],originalTimeout=w.setTimeout.bind(w);w.setTimeout=(callback,ms,...args)=>ms===1500?(timers.push(callback),98765):originalTimeout(callback,ms,...args);
  let quote=null,market=[];w.readQuote=async path=>path.includes('tix_event_market')?market:path.includes('tix_events_v')?(quote?[quote]:[]):[];w.pullQuote=async id=>{w.captureCalls.push(id);quote={min_total:4500,price_checked_at:new Date().toISOString()};return {event_id:id,min_total:4500,checked_at:quote.price_checked_at,state:'metadata_only'};};w.eval('sbGet=window.readQuote;captureEventPrice=window.pullQuote');
  const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-game]').click();await tick();await tick();
- assert.deepEqual(w.captureCalls,['fixture']);const detail=w.saved.find(r=>r.name==='tix_request_capture');assert.equal(detail.body.p_details,true);assert.equal(w.saved.some(r=>r.name==='tix_save_alert'),false);
+ assert.deepEqual(w.captureCalls,['fixture']);assert.equal(w.saved.some(r=>r.name==='tix_request_capture'),false);assert.equal(w.saved.some(r=>r.name==='tix_save_alert'),false);
  assert.match(d.querySelector('#quick-gap').textContent,/Lowest advertised ticket.*\$45/);assert.match(d.querySelector('#quick-gap').textContent,/Seat count and tax are not confirmed/);assert.doesNotMatch(d.querySelector('#quick-gap').textContent,/above your price|below your price/);assert.equal(timers.length,1);
  d.querySelector('#quick-refresh-price').click();await tick();assert.equal(w.captureCalls.length,1,'one provider request per event per minute');
  market=[{checked_at:new Date().toISOString(),by_qty:{2:{low:7420,listings:228,basis:'fees_included_tax_unknown'}}}];await timers.pop()();assert.match(d.querySelector('#quick-gap').textContent,/Current price · 2 tickets together/);assert.match(d.querySelector('#quick-gap').textContent,/\$74.20/);assert.match(d.querySelector('#quick-gap').textContent,/228 matching listings/);assert.equal(w.captureCalls.length,1);
@@ -120,7 +120,7 @@ test('an old quick-pull result cannot overwrite the newly selected game',async()
  const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-game=fixture]').click();await tick();input.focus();d.querySelector('[data-quick-game=second]').click();await tick();firstResult({state:'metadata_only',min_total:1000,checked_at:new Date().toISOString()});await tick();assert.match(input.value,/Lions/);assert.match(d.querySelector('#quick-gap').textContent,/\$90/);assert.doesNotMatch(d.querySelector('#quick-gap').textContent,/\$10/);
  }finally{h.close();}
 });
-test('guests see a fresh saved exact-seat price without issuing an authenticated pull',async()=>{
- const h=setup();try{await tick();const {w,d}=h;const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-game]').click();await tick();assert.match(d.querySelector('#quick-gap').textContent,/Current price · 2 tickets together/);assert.match(d.querySelector('#quick-gap').textContent,/\$117.91/);assert.equal(w.captureCalls.length,0);assert.equal(w.saved.some(r=>r.name==='tix_request_capture'),false);
+test('guests see fresh saved prices and may request a bounded public refresh',async()=>{
+ const h=setup();try{await tick();const {w,d}=h;const input=d.querySelector('#quick-search');input.value='Vikings';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));await tick();d.querySelector('[data-quick-game]').click();await tick();assert.match(d.querySelector('#quick-gap').textContent,/Current price · 2 tickets together/);assert.match(d.querySelector('#quick-gap').textContent,/\$117.91/);assert.equal(w.captureCalls.length,1);assert.equal(w.saved.some(r=>r.name==='tix_request_capture'),false);
  }finally{h.close();}
 });

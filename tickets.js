@@ -41,15 +41,15 @@ function marketQuantityText(sample,qty,metadataOnly=false){
  return `Exactly ${qty} together: not confirmed. Seller lot coverage is incomplete.`;
 }
 function marketQuantitySummary(sample,qty,metadataOnly=false){
- const age=ageMinutes(sample?.checked_at),spread=sample?.by_qty?.[String(qty)];
- if(!Number.isFinite(age)||age>=15||new Date(sample?.checked_at).getTime()>Date.now()+60000)
+ const spread=sample?.by_qty?.[String(qty)],checkedAt=spread?.checked_at||sample?.checked_at,age=ageMinutes(checkedAt);
+ if(!Number.isFinite(age)||age>=15||new Date(checkedAt).getTime()>Date.now()+60000)
    return '<p>Updating prices for '+esc(qty)+' tickets together.</p>';
  if(metadataOnly||!spread||!knownPriceBasis(spread.basis)||!Number.isInteger(spread.low)||spread.low<=0){
    const complete=!metadataOnly&&sample?.coverage?.complete&&!sample.coverage.unknown_lots&&!sample.coverage.unknown_seats;
    return '<p>'+esc(complete&&!spread?'No listings found for '+qty+' tickets together.':'Prices for '+qty+' tickets together are not confirmed yet.')+'</p>';
  }
  const fees=spread.basis==='fees_included_tax_reported'?'Fees and reported tax included.':'Fees included. Tax may be added.';
- return `<p><strong>From ${money(spread.low)} per ticket</strong> · ${money(spread.low*qty)} for ${esc(qty)} together</p><small>${esc(fees)} Any section. Checked ${esc(ago(sample.checked_at).toLowerCase())}.</small>`;
+ return `<p><strong>From ${money(spread.low)} per ticket</strong> · ${money(spread.low*qty)} for ${esc(qty)} together</p><small>${esc(fees)} Any section. Checked ${esc(ago(checkedAt).toLowerCase())}.</small>`;
 }
 const todayISO = (d=new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const dateObj = iso => new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso||'') ? iso+'T12:00:00' : iso);
@@ -208,14 +208,15 @@ async function sbPublicRpc(name,body,{signal,token}={}) {
 // One request per call: a timed-out capture may already have committed history.
 // A search prices up to 12 events in one call without tracking them; opening
 // an event (track) also keeps its price history going.
-async function captureEventPrices(eventIds,{signal,track=false}={}) {
+async function captureEventPrices(eventIds,{signal,track=false,qty=2}={}) {
  if(IS_DEV)return eventIds.map(event_id=>({event_id,state:'suspended',reason:'preview'}));
- const token=await accessToken();if(!token)return eventIds.map(event_id=>({event_id,state:'sign_in_required'}));
- const r=await fetch(SB_URL+'/functions/v1/ticketline-prices',{method:'POST',headers:{...H,Authorization:'Bearer '+token},body:JSON.stringify({event_ids:eventIds,track}),signal:signal?withTimeout(45000,signal):AbortSignal.timeout(45000)});
+ const token=await accessToken();
+ const r=await fetch(SB_URL+'/functions/v1/ticketline-prices',{method:'POST',headers:{...H,Authorization:'Bearer '+(token||SB_KEY)},body:JSON.stringify({event_ids:eventIds,track:!!token&&track,qty}),signal:signal?withTimeout(45000,signal):AbortSignal.timeout(45000)});
  const result=await readJson(r);
  // Older deployments have the discovery queue but no Edge capture route.
  // Fall back only for the explicit missing-route response, never auth or provider errors.
  if(r.status===404&&result?.code==='NOT_FOUND'){
+   if(!token)return eventIds.map(event_id=>({event_id,state:'queued',reason:'backend_updating'}));
    const out=[];
    for(const event_id of eventIds.slice(0,3)){const queued=await sbPublicRpc('tix_request_price_check',{p_event_id:event_id},{signal,token});out.push({event_id,state:queued?'scheduled':'saved_only'});}
    return out;
@@ -223,8 +224,8 @@ async function captureEventPrices(eventIds,{signal,track=false}={}) {
  if(!r.ok)throw new Error(result?.reason==='capture_failed'?'Price check failed. The saved price is still available.':'Could not refresh prices.');
  return Array.isArray(result?.results)?result.results:[];
 }
-async function captureEventPrice(eventId,{signal}={}) {
- const [result]=await captureEventPrices([eventId],{signal,track:true});
+async function captureEventPrice(eventId,{signal,qty=2}={}) {
+ const [result]=await captureEventPrices([eventId],{signal,track:true,qty});
  if(!result)throw new Error('Could not refresh prices.');
  if(result.state==='failed')throw new Error('Price check failed. The saved price is still available.');
  return result;
