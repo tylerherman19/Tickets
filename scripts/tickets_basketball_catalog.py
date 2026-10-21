@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import tickets_collect as collect
 from tickets_sweep import fetch_once
 import tickets_team_catalog as teams
+from ticketline_guard import CaptureDeferred
 
 
 def page_data(page):
@@ -130,6 +131,11 @@ def import_pages(pages,load,coverage,save,workers=4,on_checked=None,on_failed=No
                     coverage.setdefault('errors',{}).pop(team_code(url),None)
                     checked[team_code(url)]={'checked_at':datetime.now(timezone.utc).isoformat(),
                                             'events':len(rows),'priced':sum('min_total' in row for row in rows)}
+                except CaptureDeferred as error:
+                    # Admission is postponed work, not a failed provider page.
+                    # Save completed teams without marking this team inspected.
+                    coverage['deferred']={'reason':error.reason,'at':datetime.now(timezone.utc).isoformat()}
+                    failure=failure or error
                 except Exception as error:
                     code=team_code(url)
                     if on_failed: on_failed(code,error)
@@ -147,7 +153,7 @@ def import_pages(pages,load,coverage,save,workers=4,on_checked=None,on_failed=No
             if failure: raise failure
 
 
-def main():
+def run_import():
     if os.environ.get('GITHUB_ACTIONS')!='true': raise RuntimeError('Catalog import is hosted-only')
     guard=getattr(collect,'GUARD',None)
     def load(url):
@@ -196,4 +202,12 @@ def main():
     if not seen and covered!=len(pages): raise RuntimeError('No provider-identified college basketball events found')
     print(f'Imported {len(seen)} events and {len(priced)} get-in prices; provider team coverage {covered}/{len(pages)}',flush=True)
 
+def main():
+    try:
+        run_import()
+    except CaptureDeferred as error:
+        # A later scheduled run resumes from saved coverage under the same budget.
+        print(f'College basketball import deferred: {error.reason}; saved coverage retained.',flush=True)
+
 if __name__=='__main__': main()
+

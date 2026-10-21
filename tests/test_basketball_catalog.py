@@ -9,6 +9,25 @@ os.environ.setdefault('SUPABASE_SERVICE_KEY','test')
 import tickets_basketball_catalog as catalog
 
 class BasketballCatalogTests(unittest.TestCase):
+    def test_budget_exhaustion_defers_without_claiming_a_team_failed_or_checked(self):
+        from ticketline_guard import CaptureDeferred
+        coverage={'teams':{}}
+        pages=['https://gametime.co/team/performers/cbbone','https://gametime.co/team/performers/cbbtwo']
+        with patch.object(catalog.collect,'write_state') as saved:
+            with self.assertRaises(CaptureDeferred):
+                catalog.import_pages(pages,lambda url: (_ for _ in ()).throw(CaptureDeferred('request_limit')),coverage,lambda data:[],workers=1)
+        self.assertEqual(coverage['teams'],{})
+        self.assertNotIn('errors',coverage)
+        self.assertEqual(coverage['deferred']['reason'],'request_limit')
+        saved.assert_called_once()
+
+    def test_directory_admission_deferral_is_a_clean_scheduled_exit(self):
+        from ticketline_guard import CaptureDeferred
+        with patch.object(catalog,'run_import',side_effect=CaptureDeferred('request_limit')):
+            catalog.main()
+        with patch.object(catalog,'run_import',side_effect=RuntimeError('database failed')):
+            with self.assertRaisesRegex(RuntimeError,'database failed'):catalog.main()
+
     def test_only_upcoming_college_games_import_without_overwriting_prices(self):
         date=datetime.now(timezone.utc).date()+timedelta(days=5)
         def url(category,eid):
@@ -134,3 +153,4 @@ class BasketballCatalogTests(unittest.TestCase):
                 else:
                     catalog.import_pages(pages,load,{'teams':{}},lambda _:[],workers=4)
             self.assertEqual(len(attempted),expected)
+

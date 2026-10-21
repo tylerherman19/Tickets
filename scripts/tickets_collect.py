@@ -52,13 +52,26 @@ def sb(method, path, body=None, prefer=None):
     if prefer: h["Prefer"] = prefer
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers=h, method=method)
-    for i in range(3 if method == 'GET' else 1):
+    # PostgreSQL 57014 cancels and rolls back the entire RPC transaction. Retry
+    # that known rollback once with the same lease/payload, never a provider
+    # fetch or an uncertain network write (which may already have committed).
+    capture_write = method == 'POST' and path == 'rpc/tix_finish_capture'
+    attempts = 3 if method == 'GET' else 2 if capture_write else 1
+    for i in range(attempts):
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 raw = r.read().decode()
                 return json.loads(raw) if raw else []
         except urllib.error.HTTPError as e:
-            err = e.read().decode()[:400]
+            raw_error = e.read().decode()
+            err = raw_error[:400]
+            if capture_write and i == 0 and e.code == 500:
+                try: rolled_back = json.loads(raw_error).get('code') == '57014'
+                except (ValueError,AttributeError): rolled_back = False
+                if rolled_back:
+                    print('Capture write rolled back on statement timeout; retrying the saved batch once.',file=sys.stderr)
+                    time.sleep(2)
+                    continue
             if method != 'GET' or i == 2:
                 print(f"SB {method} {path} -> {e.code}: {err}", file=sys.stderr)
                 raise
@@ -1132,3 +1145,4 @@ if __name__ == "__main__":
         print(json.dumps(offline_fixture(args.fixture,args.qty,args.group)))
     else:
         main()
+
