@@ -146,7 +146,7 @@ export async function handleRequest(req:Request) {
     await Promise.all(Array.from({length:Math.min(CONCURRENCY,eventIds.length)},async()=>{
       for(let i;(i=next++)<eventIds.length;){
         // Provider blocking suspends everything; do not send further requests.
-        results[i]=usable(eventIds[i])&&saved.get(eventIds[i])?.state==='advertised'?{...saved.get(eventIds[i]),event_id:eventIds[i]}:saved.get(eventIds[i])?.state==='complete'?{...saved.get(eventIds[i]),event_id:eventIds[i],state:'cached'}:saved.get(eventIds[i])?.state==='unavailable'?{...saved.get(eventIds[i]),event_id:eventIds[i],state:'unavailable'}:stopped?{event_id:eventIds[i],state:'suspended',reason:'provider_suspended'}:await captureOne(eventIds[i],events.get(eventIds[i]),performers,qty);
+        results[i]=saved.get(eventIds[i])?.state==='advertised'?{...saved.get(eventIds[i]),event_id:eventIds[i]}:saved.get(eventIds[i])?.state==='complete'?{...saved.get(eventIds[i]),event_id:eventIds[i],state:'cached'}:saved.get(eventIds[i])?.state==='unavailable'?{...saved.get(eventIds[i]),event_id:eventIds[i],state:'unavailable'}:stopped?{event_id:eventIds[i],state:'suspended',reason:'provider_suspended'}:await captureOne(eventIds[i],events.get(eventIds[i]),performers,qty);
         if(results[i].state==='suspended')stopped=true;
       }
     }));

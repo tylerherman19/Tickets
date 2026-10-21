@@ -342,7 +342,7 @@ def fetch_provider_page(url, discovery=False):
         persist_capture(meta,listings,outcome,finish=False)
     return outcome,meta,listings
 
-def rendered_quantity_listings(url, quantities):
+def rendered_quantity_listings(url, quantities, meta_out=None):
     """Read all-in cards from the ordinary, quantity-filtered event page.
 
     Return None for an incomplete render. Never turn a browser failure into
@@ -400,6 +400,7 @@ def rendered_quantity_listings(url, quantities):
                 embedded_meta,embedded = parse_event_page(page.content())
                 if not embedded_meta or embedded_meta.get('event_id') != GUARD.event_id:
                     return None
+                if meta_out is not None:meta_out.update(embedded_meta)
                 if embedded_meta and embedded_meta.get('_inventory_state') != 'parser_failure':
                     persist_capture(embedded_meta,embedded,embedded_meta['_inventory_state'],finish=False)
                 if embedded and any(allows_quantity(l,qty) for l in embedded):
@@ -787,7 +788,7 @@ def capture_payload(meta,listings,status):
     state='metadata_only' if status=='metadata_only' else 'partial' if partial else 'complete' if listings else 'empty'
     prices=[n['price_cents'] for n in normalized if n['price_cents'] is not None]
     return {'meta':meta,'format':'rendered' if partial else 'embedded','state':state,
-      'min_total':cents_value(meta.get('min_total'),positive=True) or min(prices,default=None),
+      'min_total':cents_value(meta.get('min_total'),positive=True) or (None if partial else min(prices,default=None)),
       'listings':normalized,'by_qty':market_spreads(listings),
       'groups':list(club_groups(listings).values()),
       'coverage':{'complete':state in ('complete','empty'),

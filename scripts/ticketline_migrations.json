@@ -21,5 +21,7 @@
   "20261018_search_activity.sql",
   "20261020_runtime_reliability.sql",
   "20261020_delivery_health.sql",
-  "20261020_quote_priority.sql"
+  "20261020_quote_priority.sql",
+  "20261020_quick_latency.sql",
+  "20261020_storage_policy.sql"
 ]

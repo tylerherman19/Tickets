@@ -177,3 +177,9 @@ test('general browsing reuses advertised prices and never queues selected-seat w
  assert.equal(JSON.parse(calls.find(c=>c.url.endsWith('tix_request_quote')).options.body).p_qty,0);
  assert.equal(calls.some(c=>c.url.endsWith('tix_claim_detail_dispatch')),false);
 });
+
+test('a fresh advertised amount queues exact seats without fetching the same metadata again',async()=>{
+ const calls=mockFetch({quotes:[{event_id:id,state:'advertised',min_total:3900}]});
+ const result=await (await handleRequest(request({event_ids:[id],qty:4},{authorization:'Bearer anon'}))).json();
+ assert.equal(result.results[0].state,'advertised');assert.equal(providerCalls(calls).length,0);assert.equal(JSON.parse(calls.find(c=>c.url.endsWith('tix_request_quote')).options.body).p_qty,4);
+});

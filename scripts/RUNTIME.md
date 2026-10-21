@@ -34,3 +34,11 @@ Management endpoints are documented by [Supabase's function deployment guide](ht
 ## Handling an uncertain send
 
 Review the Gmail sent folder or provider evidence before retrying. Do not clear a sending/uncertain row merely to get a green dashboard. If it was accepted, acknowledge that same outbox ID and lease through the service-only completion function; its alert insert is idempotent. A resend requires a deliberate reviewed operation after establishing that no copy was accepted. This is intentionally separate from automatic delivery.
+
+## Approved listing retention
+
+The owner approved preserving price history and permanently removing individual listing copies older than 24 hours. The `20261020_storage_policy.sql` migration first builds price-history summaries for each event sample, quantity, fee/tax basis and section. Future captures save these summaries in the same transaction. Price-history charts read the summaries. Cleanup touches only `tix_listing_observations`; it never deletes watch prices, alerts, destinations, users, or event observations.
+
+The database flag `tix_storage_policy.listing_retention_enabled` and repository variable `TIX_LISTING_RETENTION_ENABLED` must both be enabled after owner approval. Maintenance runs every six hours. A one-time `VACUUM FULL public.tix_listing_observations` returns the initially reclaimed space to the database disk; this can briefly block listing-detail access. Routine retention reuses freed pages and does not compact the whole table each time.
+
+For interactive speed, the quote worker checks its queue every second and takes one job at a time so a newly selected game can take priority between captures. Fresh advertised metadata is reused; the browser verifies seat prices without repeating that metadata fetch.

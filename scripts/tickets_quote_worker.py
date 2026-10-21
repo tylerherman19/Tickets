@@ -13,10 +13,17 @@ def capture(job):
     quantities={q for q in quantities if type(q) is int and 1<=q<=8}
     source='detail' if job.get('detail_requested') else 'warm'
     with collect.GUARD.capture(event_id,source):
-        status,meta,listings=collect.fetch_provider_page(job['url'])
+        try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(job.get('price_checked_at','').replace('Z','+00:00'))).total_seconds()
+        except (ValueError,TypeError):age=900
+        fresh_metadata=0<=age<900 and job.get('min_total',0)>0
+        if fresh_metadata:
+            # Skip a second metadata fetch; only the real browser can refresh it.
+            meta={k:job.get(k) for k in ('event_id','name','venue','datetime_local','category','url')};meta['min_total']=None
+            status,listings='metadata_only',[]
+        else:status,meta,listings=collect.fetch_provider_page(job['url'])
         if not meta or status=='parser_failure':raise ValueError('parser_failure')
         if status=='metadata_only':
-            richer=collect.rendered_quantity_listings(job['url'],quantities)
+            richer=collect.rendered_quantity_listings(job['url'],quantities,meta_out=meta) if fresh_metadata else collect.rendered_quantity_listings(job['url'],quantities)
             if richer:
                 listings=richer;status='partial' if any(l.get('verified_quantity') for l in richer) else 'ok'
         collect.record_event_market(job,meta,listings,datetime.now(timezone.utc).isoformat(),status)
@@ -28,7 +35,7 @@ def main():
     health_at=0;checked=failed=deferred=0
     while time.monotonic()<deadline:
         if deadline-time.monotonic()<80:break # Give an admitted browser capture time to finish.
-        jobs=collect.sb('POST','rpc/tix_quick_due',{'p_limit':3})
+        jobs=collect.sb('POST','rpc/tix_quick_due',{'p_limit':1})
         for job in jobs:
             try:capture(job);checked+=1
             except CaptureDeferred as error:
@@ -41,7 +48,7 @@ def main():
         if time.monotonic()-health_at>=60:
             collect.write_state('quote_worker_health',{'checked_at':datetime.now(timezone.utc).isoformat(),'status':'degraded' if failed else 'ok','checked_events':checked,'failed_events':failed,'deferred_events':deferred})
             health_at=time.monotonic()
-        time.sleep(2 if jobs else 5)
+        time.sleep(0.25 if jobs else 1)
     print(f'Quote worker: checked {checked}, failed {failed}, deferred {deferred}.')
 
 if __name__=='__main__':main()

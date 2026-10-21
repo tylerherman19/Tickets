@@ -22,6 +22,13 @@ class QuoteWorkerTests(unittest.TestCase):
         with patch.object(worker.collect,'GUARD',guard), patch.object(worker.collect,'fetch_provider_page',return_value=('ok',{'event_id':'fixture'},[])), patch.object(worker.collect,'record_event_market'):
             worker.capture({'event_id':'fixture','url':'https://gametime.co/events/fixture','warm_quantities':[2,4]})
             guard.capture.assert_called_once_with('fixture','warm')
+    def test_fresh_metadata_skips_redundant_fetch_and_never_relabels_old_amount(self):
+        from datetime import datetime,timezone
+        guard=MagicMock();guard.capture.return_value=contextlib.nullcontext()
+        job={'event_id':'fixture','url':'https://gametime.co/events/fixture','warm_quantities':[4],'price_checked_at':datetime.now(timezone.utc).isoformat(),'min_total':3900}
+        with patch.object(worker.collect,'GUARD',guard),patch.object(worker.collect,'fetch_provider_page',side_effect=AssertionError('duplicate metadata request')),patch.object(worker.collect,'rendered_quantity_listings',return_value=None),patch.object(worker.collect,'record_event_market') as save:
+            worker.capture(job)
+            self.assertIsNone(save.call_args.args[1]['min_total'])
     def test_local_execution_cannot_fetch_provider(self):
         with patch.dict(os.environ,{'GITHUB_ACTIONS':'false'}),patch.object(worker.collect,'sb',side_effect=AssertionError('no network')):
             with self.assertRaisesRegex(RuntimeError,'hosted-only'):worker.main()

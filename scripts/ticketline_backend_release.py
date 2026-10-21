@@ -23,7 +23,7 @@ def main():
     def sql(query):return api('/database/query',json.dumps({'query':query}).encode())
     existing=sql('select version from public.tix_schema_versions')
     versions={row['version'] for row in existing}
-    for version,name in [(20261020,'20261020_runtime_reliability.sql'),(20261021,'20261020_delivery_health.sql'),(20261022,'20261020_quote_priority.sql')]:
+    for version,name in [(20261020,'20261020_runtime_reliability.sql'),(20261021,'20261020_delivery_health.sql'),(20261022,'20261020_quote_priority.sql'),(20261023,'20261020_quick_latency.sql'),(20261024,'20261020_storage_policy.sql')]:
         if version not in versions:
             sql((ROOT/'scripts'/name).read_text());print('Applied reviewed schema',version)
     boundary='ticketline-'+uuid.uuid4().hex
