@@ -2,7 +2,7 @@
 """Apply reviewed additive migrations and publish the exact bundled quote source.
 Requires an owner-supplied Supabase Management API token; never reads browser login.
 """
-import json,os,urllib.request,uuid
+import json,os,sys,urllib.request,uuid
 from pathlib import Path
 PROJECT='aahqagqztanltejsqjom'
 ROOT=Path(__file__).resolve().parents[1]
@@ -23,7 +23,16 @@ def main():
     def sql(query):return api('/database/query',json.dumps({'query':query}).encode())
     existing=sql('select version from public.tix_schema_versions')
     versions={row['version'] for row in existing}
-    for version,name in [(20261020,'20261020_runtime_reliability.sql'),(20261021,'20261020_delivery_health.sql'),(20261022,'20261020_quote_priority.sql'),(20261023,'20261020_quick_latency.sql'),(20261024,'20261020_storage_policy.sql')]:
+    if '--capture-write-fix' in sys.argv:
+        if 20261024 not in versions:
+            raise RuntimeError('Apply the existing storage-policy release before the capture-write repair')
+        if 20261025 not in versions:
+            sql((ROOT/'scripts/20261021_capture_write_performance.sql').read_text())
+        if not sql('select version from public.tix_schema_versions where version=20261025'):
+            raise RuntimeError('Capture-write repair verification failed')
+        print('Verified capture-write repair 20261025; quote service unchanged')
+        return
+    for version,name in [(20261020,'20261020_runtime_reliability.sql'),(20261021,'20261020_delivery_health.sql'),(20261022,'20261020_quote_priority.sql'),(20261023,'20261020_quick_latency.sql'),(20261024,'20261020_storage_policy.sql'),(20261025,'20261021_capture_write_performance.sql')]:
         if version not in versions:
             sql((ROOT/'scripts'/name).read_text());print('Applied reviewed schema',version)
     boundary='ticketline-'+uuid.uuid4().hex
@@ -32,6 +41,7 @@ def main():
     result=api('/functions/deploy?slug=ticketline-prices',body,'multipart/form-data; boundary='+boundary)
     if result.get('status')!='ACTIVE':raise RuntimeError('Function did not report ACTIVE')
     print('Published quote function version',result.get('version'))
-    if sql('select max(version) version from public.tix_schema_versions')[0]['version']<20261022:raise RuntimeError('Schema verification failed')
+    if sql('select max(version) version from public.tix_schema_versions')[0]['version']<20261025:raise RuntimeError('Schema verification failed')
 
 if __name__=='__main__':main()
+

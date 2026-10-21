@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import sys
 import os
 import unittest
@@ -10,6 +11,24 @@ from ticketline_guard import Guard,CaptureDeferred,moved_event_url
 import tickets_collect as collect
 
 class GuardTests(unittest.TestCase):
+    def test_capture_statement_rollback_retries_only_the_database_write_once(self):
+        failure=urllib.error.HTTPError('https://database.test',500,'timeout',{},io.BytesIO(b'{"code":"57014"}'))
+        response=io.BytesIO(b'"observation"')
+        with patch('urllib.request.urlopen',side_effect=[failure,response]) as request,patch.object(collect.time,'sleep'):
+            self.assertEqual(collect.sb('POST','rpc/tix_finish_capture',{'p_token':'lease'}),'observation')
+        self.assertEqual(request.call_count,2)
+        self.assertEqual(request.call_args_list[0].args[0].data,request.call_args_list[1].args[0].data)
+
+    def test_uncertain_or_unrelated_writes_are_never_retried(self):
+        for path,code in [('rpc/tix_finish_capture','XX000'),('rpc/tix_finish_delivery','57014')]:
+            failure=urllib.error.HTTPError('https://database.test',500,'failed',{},io.BytesIO(json.dumps({'code':code}).encode()))
+            with patch('urllib.request.urlopen',side_effect=failure) as request:
+                with self.assertRaises(urllib.error.HTTPError):collect.sb('POST',path,{})
+                self.assertEqual(request.call_count,1)
+        with patch('urllib.request.urlopen',side_effect=TimeoutError('unknown commit')) as request:
+            with self.assertRaises(TimeoutError):collect.sb('POST','rpc/tix_finish_capture',{})
+            self.assertEqual(request.call_count,1)
+
     def setUp(self):
         self.calls=[]
         self.admitted=True
@@ -108,3 +127,4 @@ class GuardTests(unittest.TestCase):
         workflow=Path('.github/workflows/ticket-details.yml').read_text()
         self.assertNotIn('GMAIL',workflow)
         self.assertNotIn('send_sms',Path('scripts/ticket_details.py').read_text())
+

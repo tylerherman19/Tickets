@@ -8,6 +8,33 @@ function page(dev=true){
  return {w,close:()=>dom.window.close(),set:(name,value)=>w.eval('state.'+name+'='+JSON.stringify(value)),run:s=>w.eval(s)};
 }
 const watch={id:'vikings',kind:'team',active:true,label:'Vikings Home',qty:2,threshold_cents:7000,criteria_version:1,created_at:'2026-01-01',clubs:[],match:{slug:'minnesota-vikings',category:'nfl-football'}};
+test('custom event alerts show the actual matchup and date while updating or paused',()=>{
+ const {w,set,run,close}=page();try{
+ const eventWatch={...watch,kind:'event',label:'Wild-Helen',match:{event_ids:['game'],event_date:'2026-11-01'}};
+ set('eventMarkets',{game:{event_id:'game',name:'St. Louis Blues at Minnesota Wild',event_date:'2026-11-03',category:'nhl-hockey'}});
+ for(const active of [true,false]){
+  set('watches',[{...eventWatch,active}]);run('renderWatches()');
+  const card=w.document.querySelector('.watch-card');
+  assert.equal(card.querySelector('h2').textContent,'Wild-Helen');
+  assert.match(card.querySelector('.watch-event').textContent,/St. Louis Blues at Minnesota WildTue, Nov 3, 2026/);
+  assert.equal(card.querySelector('.watch-event a').getAttribute('href'),'./event.html?event=game');
+ }
+ set('eventMarkets',{});run('renderWatches()');
+ assert.match(w.document.querySelector('.watch-event').textContent,/Event details unavailableSun, Nov 1, 2026/);
+ }finally{close();}
+});
+test('event details are escaped, include every selected game, and do not appear on team alerts',()=>{
+ const {w,set,run,close}=page();try{
+ set('watches',[{...watch,kind:'event',match:{event_ids:['one','two']}},watch]);
+ set('eventMarkets',{one:{name:'<script>alert(1)</script>',event_date:'2027-01-02'},two:{name:'Wild at Blues',event_date:'2027-02-03'}});
+ run('renderWatches()');
+ const cards=w.document.querySelectorAll('.watch-card');
+ assert.equal(cards[0].querySelectorAll('.watch-event').length,2);
+ assert.equal(cards[0].querySelector('script'),null);
+ assert.match(cards[0].textContent,/2027/);
+ assert.equal(cards[1].querySelector('.watch-event-details'),null);
+ }finally{close();}
+});
 test('Vikings and Wild use the correct team logos; unrelated custom labels cannot invent a team',()=>{
  const {run,close}=page();try{
  assert.equal(run(`watchTeamLogo(${JSON.stringify(watch)},null).name`),'Minnesota Vikings');
@@ -51,3 +78,4 @@ test('a failed refresh request produces an honest retry message instead of a cur
  assert.match(run(`watchDiagnostic(${JSON.stringify(watch)},null,null,null)`),/Could not request current prices/);
  }finally{close();}
 });
+
