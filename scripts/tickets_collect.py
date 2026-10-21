@@ -65,6 +65,9 @@ def sb(method, path, body=None, prefer=None):
         except urllib.error.HTTPError as e:
             raw_error = e.read().decode()
             err = raw_error[:400]
+            e.database_path = path
+            try: e.postgres_code = json.loads(raw_error).get('code')
+            except (ValueError,AttributeError): e.postgres_code = None
             if capture_write and i == 0 and e.code == 500:
                 try: rolled_back = json.loads(raw_error).get('code') == '57014'
                 except (ValueError,AttributeError): rolled_back = False
@@ -351,8 +354,9 @@ def fetch_provider_page(url, discovery=False):
         print(f"provider response {outcome}: {page_shape(page,meta,listings)}")
     if meta and meta.get('event_id') != GUARD.event_id:
         raise ValueError('event_unavailable: event ID mismatch')
-    if meta and outcome == 'metadata_only':
-        persist_capture(meta,listings,outcome,finish=False)
+    # Parsing is read-only. Commit the final metadata/inventory once after the
+    # quantity checks; intermediate saves run the same costly rollup and can
+    # mark the job complete before its browser check has actually finished.
     return outcome,meta,listings
 
 def rendered_quantity_listings(url, quantities, meta_out=None):
@@ -414,8 +418,6 @@ def rendered_quantity_listings(url, quantities, meta_out=None):
                 if not embedded_meta or embedded_meta.get('event_id') != GUARD.event_id:
                     return None
                 if meta_out is not None:meta_out.update(embedded_meta)
-                if embedded_meta and embedded_meta.get('_inventory_state') != 'parser_failure':
-                    persist_capture(embedded_meta,embedded,embedded_meta['_inventory_state'],finish=False)
                 if embedded and any(allows_quantity(l,qty) for l in embedded):
                     results.extend(embedded)
                     continue
@@ -435,7 +437,6 @@ def rendered_quantity_listings(url, quantities, meta_out=None):
                 parsed = parse_rendered_cards(cards,qty)
                 if not parsed:
                     return None
-                persist_capture(embedded_meta,parsed,'partial',finish=False)
                 results.extend(parsed)
         finally:
             browser.close()
@@ -809,10 +810,9 @@ def capture_payload(meta,listings,status):
         'unknown_lots':sum(n['lots'] is None for n in normalized),
         'unknown_seats':sum(not isinstance(n['provider'].get('seats'),list) for n in normalized)}}
 
-def persist_capture(meta,listings,status,finish=True):
+def persist_capture(meta,listings,status):
     capture=capture_payload(meta,listings,status)
-    if finish: return GUARD.finish(capture)
-    return sb('POST','rpc/tix_save_capture',{'p_token':GUARD.token,'p_capture':capture})
+    return GUARD.finish(capture)
 
 def expire_event_storage():
     total=0
@@ -832,6 +832,19 @@ def record_event_market(cat, meta, listings, checked_at, status='ok'):
         if meta.get(field): cat[field] = meta[field]
     return club_groups(listings), changes
 
+
+def failure_outcome(error):
+    # Supabase HTTP 500/57014 is not a failure from the ticket provider.
+    if getattr(error,'database_path',None): return 'failed'
+    if 'parser_failure' in str(error): return 'parser_failure'
+    if 'event_unavailable' in str(error) or isinstance(error,urllib.error.HTTPError) and error.code in (404,410):
+        return 'event_unavailable'
+    return 'http_failure'
+
+def failure_detail(error):
+    if not getattr(error,'database_path',None): return {}
+    return {'source':'database','operation':error.database_path,
+            'postgres_code':getattr(error,'postgres_code',None)}
 
 def note_deferral(health, error):
     """Count guard deferrals; a provider-blocking pause is an error to surface."""
@@ -1046,9 +1059,9 @@ def main():
         except Exception as e:
             health["failed_events"] += 1
             print(f"check {eid} failed: {type(e).__name__}: {e}", file=sys.stderr)
-            outcome = ('parser_failure' if 'parser_failure' in str(e) else
-                       'event_unavailable' if 'event_unavailable' in str(e) or
-                       isinstance(e, urllib.error.HTTPError) and e.code in (404,410) else 'http_failure')
+            outcome = failure_outcome(e)
+            if getattr(e,'database_path',None):
+                health['database_write_failures']=health.get('database_write_failures',0)+1
             if outcome in ('parser_failure', 'event_unavailable') and cat.get("event_date", "") <= NOW.date().isoformat():
                 # Game day (or past): the provider pulls listing data once the
                 # event starts, so an empty page is expected, not a collector
@@ -1059,7 +1072,7 @@ def main():
                 health["status"] = "error"
             health.setdefault('outcomes',{})[outcome] = health.setdefault('outcomes',{}).get(outcome,0)+1
             for w in watchers[eid]:
-                try: scan_result(w["id"], eid, outcome, checked_at, w.get('criteria_version',1))
+                try: scan_result(w["id"], eid, outcome, checked_at, w.get('criteria_version',1),failure_detail(e))
                 except Exception: pass  # watch may have been deleted during the fetch
         finally:
             capture_context.__exit__(None,None,None)
@@ -1099,14 +1112,17 @@ def main():
             if e.state == 'suspended' or e.reason == 'request_limit': break
             continue
         except Exception as e:
-            outcome = ('parser_failure' if 'parser_failure' in str(e) else
-                       'event_unavailable' if 'event_unavailable' in str(e) or
-                       isinstance(e,urllib.error.HTTPError) and e.code in (404,410) else 'http_failure')
+            outcome = failure_outcome(e)
+            if getattr(e,'database_path',None):
+                health['database_write_failures']=health.get('database_write_failures',0)+1
             health['discovery_failed'] += 1
             health.setdefault('discovery_outcomes',{})[outcome] = health.setdefault('discovery_outcomes',{}).get(outcome,0)+1
             print(f'discovery {eid} failed: {outcome}: {type(e).__name__}',file=sys.stderr)
-            sb('PATCH',f'tix_catalog?event_id=eq.{eid}',
-               {'discovery_attempt_at':checked_at,'discovery_status':outcome})
+            if getattr(e,'database_path',None):
+                health['status']='error'
+            else:
+                sb('PATCH',f'tix_catalog?event_id=eq.{eid}',
+                   {'discovery_attempt_at':checked_at,'discovery_status':outcome})
         time.sleep(1 if tracked else BACKGROUND_PAUSE_SECONDS)
     try:
         health['performers_added'] = note_performers()

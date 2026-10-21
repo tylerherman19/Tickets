@@ -11,6 +11,27 @@ import urllib.error
 from datetime import datetime, timezone, timedelta
 import tickets_collect as collect
 
+RECOVERY_CHECKS = 3
+
+def incident_state(previous, assessment):
+    """One incident survives a single good poll between recurring failures.
+
+    The latest assessment remains accurate; only notification history waits
+    for three consecutive healthy polls before declaring recovery.
+    """
+    notified=list(previous.get('incident_reasons') or [])
+    # Adopt an already-notified legacy incident when this update rolls out.
+    if not notified and previous.get('status')=='error':
+        notified=list(previous.get('critical') or [])
+    critical=assessment['critical']
+    healthy=0 if critical else min(RECOVERY_CHECKS,int(previous.get('healthy_checks') or 0)+1)
+    new_reasons=[reason for reason in critical if reason not in notified]
+    if healthy>=RECOVERY_CHECKS:
+        notified=[]
+    else:
+        notified=list(dict.fromkeys(notified+critical))
+    return {'incident_reasons':notified,'healthy_checks':healthy},new_reasons
+
 
 def assess(health,now=None):
     now=now or datetime.now(timezone.utc)
@@ -46,13 +67,14 @@ def main():
         except ValueError: previous={}
     previous=previous if isinstance(previous,dict) else {}
     assessment=assess(health)
-    result={**health,**assessment}
-    changed=previous.get('status')!='error' or previous.get('critical')!=assessment['critical']
+    incident,new_reasons=incident_state(previous,assessment)
+    result={**health,**assessment,**incident}
     collect.write_state('catalog_coverage_health',result)
     print(json.dumps(result,indent=2,sort_keys=True))
-    # Alert only when a new outage appears or its actionable reasons change.
-    # Repeated monitor runs retain the red dashboard state without repeated mail.
-    if assessment['critical'] and changed:
-        raise RuntimeError('Catalog coverage alert: '+' '.join(assessment['critical']))
+    # Keep reporting the current outage, without a second email every time
+    # one good collector run briefly interrupts the same ongoing failure.
+    if new_reasons:
+        raise RuntimeError('Catalog coverage alert: '+' '.join(new_reasons))
 
 if __name__=='__main__': main()
+
