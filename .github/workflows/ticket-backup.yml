@@ -23,7 +23,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/tickets_backup.mjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: archive
         with:
           name: ticketline-encrypted-private-state
