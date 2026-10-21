@@ -113,4 +113,26 @@ class CoverageTransitionTests(unittest.TestCase):
             current['provider_paused']=False
             health.main()
             current['provider_paused']=True
+            health.main() # One successful poll did not resolve this incident.
+            current['events']=0
+            with self.assertRaisesRegex(RuntimeError,'No upcoming catalog events'):health.main()
+            current['events']=100
+            current['provider_paused']=False
+            for _ in range(health.RECOVERY_CHECKS):health.main()
+            current['provider_paused']=True
             with self.assertRaisesRegex(RuntimeError,'coverage alert'):health.main()
+
+    def test_rollout_preserves_legacy_incidents_and_never_hides_the_current_outage(self):
+        assessment=health.assess({**CoverageHealthTests().base(),'collector_state':'failed'})
+        previous={'status':'error','critical':assessment['critical']}
+        incident,new=health.incident_state(previous,assessment)
+        self.assertEqual(new,[])
+        self.assertEqual(incident['incident_reasons'],assessment['critical'])
+        self.assertEqual(assessment['status'],'error')
+        for _ in range(5):
+            recovered=health.assess(CoverageHealthTests().base())
+            incident,new=health.incident_state(incident,recovered)
+            incident,new=health.incident_state(incident,assessment)
+            self.assertEqual(new,[])
+            self.assertEqual(incident['healthy_checks'],0)
+

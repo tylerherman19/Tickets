@@ -29,6 +29,17 @@ class GuardTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):collect.sb('POST','rpc/tix_finish_capture',{})
             self.assertEqual(request.call_count,1)
 
+    def test_database_timeouts_are_identified_separately_from_provider_http_errors(self):
+        failure=urllib.error.HTTPError('https://database.test',500,'timeout',{},io.BytesIO(b'{"code":"57014"}'))
+        with patch('urllib.request.urlopen',side_effect=failure):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                collect.sb('POST','rpc/tix_save_capture',{})
+        self.assertEqual(collect.failure_outcome(raised.exception),'failed')
+        self.assertEqual(collect.failure_detail(raised.exception),{'source':'database','operation':'rpc/tix_save_capture','postgres_code':'57014'})
+        provider=urllib.error.HTTPError('https://gametime.co/events/e',500,'unavailable',{},io.BytesIO(b''))
+        self.assertEqual(collect.failure_outcome(provider),'http_failure')
+        self.assertEqual(collect.failure_detail(provider),{})
+
     def setUp(self):
         self.calls=[]
         self.admitted=True
