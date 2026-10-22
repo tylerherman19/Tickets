@@ -4,7 +4,7 @@ const app=fs.readFileSync('app.js','utf8');
 function page(dev=true){
  const dom=new JSDOM('<body data-page="watches"><div id="watches"></div><dialog id="dialog"></dialog>',{url:'https://ticketline.example/watches.html',runScripts:'outside-only'});
  const w=dom.window;w.matchSummary=()=> 'Home games';w.teamName=(category,slug)=>slug;
- w.eval(fs.readFileSync('tickets.js','utf8')+'\n'+fs.readFileSync('team-logos.js','utf8')+`;const IS_DEV=${dev};var state={watches:[],prices:[],scans:[],intelligence:[],eventMarkets:{},filter:'all'};`+app.slice(app.indexOf('function watchCheckFresh('),app.indexOf('async function builder(){'))+app.slice(app.indexOf('let watchPollTimer='),app.indexOf('async function watches(){')));
+ w.eval(fs.readFileSync('tickets.js','utf8')+'\n'+fs.readFileSync('team-logos.js','utf8')+`;const IS_DEV=${dev};var state={watches:[],prices:[],scans:[],intelligence:[],eventMarkets:{},filter:'all'};`+app.slice(app.indexOf('function alertFrequencyLabel('),app.indexOf('async function builder(){'))+app.slice(app.indexOf('let watchPollTimer='),app.indexOf('async function watches(){')));
  return {w,close:()=>dom.window.close(),set:(name,value)=>w.eval('state.'+name+'='+JSON.stringify(value)),run:s=>w.eval(s)};
 }
 const watch={id:'vikings',kind:'team',active:true,label:'Vikings Home',qty:2,threshold_cents:7000,criteria_version:1,created_at:'2026-01-01',clubs:[],match:{slug:'minnesota-vikings',category:'nfl-football'}};
@@ -15,7 +15,7 @@ test('custom event alerts show the actual matchup and date while updating or pau
  for(const active of [true,false]){
   set('watches',[{...eventWatch,active}]);run('renderWatches()');
   const card=w.document.querySelector('.watch-card');
-  assert.equal(card.querySelector('h2').textContent,'Wild-Helen');
+  assert.equal(card.querySelector('h2').textContent,'St. Louis Blues at Minnesota Wild');assert.equal(card.querySelector('.watch-personal-label').textContent,'Wild-Helen');
   assert.match(card.querySelector('.watch-event').textContent,/St. Louis Blues at Minnesota WildTue, Nov 3, 2026/);
   assert.equal(card.querySelector('.watch-event a').getAttribute('href'),'./event.html?event=game');
  }
@@ -50,7 +50,8 @@ test('an outdated card hides old prices, old matching counts, and old unavailabl
  set('watches',[watch]);set('intelligence',[{watch_id:'vikings',criteria_version:1,last_checked_at:old,price_checked_at:old,scan_outcome:'ok',current_price_cents:12500,basis:'fees_included_tax_unknown',scan_detail:{matching_listings:201,available_lots:[1,2,3,4,5,6,7,8]}}]);
  set('prices',[{watch_id:'vikings',price_cents:12500,basis:'fees_included_tax_unknown',checked_at:old}]);
  run('renderWatches()');const card=w.document.querySelector('.watch-card');
- assert.match(card.textContent,/Updating prices/);assert.doesNotMatch(card.textContent,/\$125|201 listings|3 hr|No 2-seat|Previous verified/);
+ assert.match(card.textContent,/Updating prices/);assert.doesNotMatch(card.textContent,/\$125|201 listings|No 2-seat|Previous verified/);
+ assert.match(card.querySelector('.watch-progress').textContent,/Last attempt 3 hr ago/);
  assert.equal(card.querySelector('.team-logo').alt,'Minnesota Vikings');
  card.querySelector('.team-logo').dispatchEvent(new w.Event('error'));
  assert.equal(card.querySelector('.team-logo'),null);assert.equal(card.querySelector('.sport-stamp').classList.contains('has-team-logo'),false);
@@ -79,3 +80,46 @@ test('a failed refresh request produces an honest retry message instead of a cur
  }finally{close();}
 });
 
+test('cards distinguish first checks, stale checks, successful empty scans and database failures',()=>{
+ const {run,close}=page();try{
+ const w=JSON.stringify(watch),now=new Date().toISOString();
+ assert.equal(run(`watchStatus(${w},null,null,null,false,false)`),'First check pending');
+ assert.equal(run(`watchStatus(${w},{last_checked_at:'2020-01-01'},null,null,false,false)`),'Check pending');
+ assert.equal(run(`watchStatus(${w},{last_checked_at:'${now}',scan_outcome:'unavailable'},null,null,false,false)`),'No matching seats');
+ assert.match(run(`watchDiagnostic(${w},{last_checked_at:'${now}',scan_outcome:'failed',scan_detail:{source:'database'}},null,null)`),/database save/);
+ assert.match(run(`watchProgress(${w},{last_checked_at:'${now}',last_success_at:'${now}',criteria_version:1})`),/Last successful check/);
+ assert.match(run(`watchGap(${w},{price_cents:9200,basis:'fees_included_tax_unknown'})`),/\$22 above your target/);
+ assert.match(run(`watchGap(${w},{price_cents:9200,basis:'fees_included_tax_unknown'})`),/\$184 total for 2/);
+ }finally{close();}
+});
+test('inline target edits save narrowly and show failures without losing input',async()=>{
+ const {w,set,run,close}=page();try{
+ w.toast=()=>{};let saved;
+ w.sbRpc=async(name,body)=>{saved={name,body};return {...watch,threshold_cents:7500,criteria_version:2};};
+ set('watches',[watch]);run('renderWatches()');w.document.querySelector('[data-action="target"]').click();
+ const form=w.document.querySelector('.watch-target-editor');form.querySelector('input').value='75';await form.onsubmit({preventDefault(){}});
+ assert.equal(saved.name,'tix_update_watch_controls');assert.equal(saved.body.p_threshold_cents,7500);assert.equal(saved.body.p_expected_version,1);assert.match(w.document.querySelector('.watch-score').textContent,/\$75/);
+ w.sbRpc=async()=>{throw Error('Refresh before editing.');};w.document.querySelector('[data-action="target"]').click();const failed=w.document.querySelector('.watch-target-editor');failed.querySelector('input').value='80';await failed.onsubmit({preventDefault(){}});assert.match(failed.textContent,/Refresh before editing/);assert.equal(failed.querySelector('input').value,'80');
+ }finally{close();}
+});
+test('team schedules show quantity-verified prices and save game exclusions',async()=>{
+ const {w,set,run,close}=page();try{
+ w.quickGameDate=g=>g.event_date;
+ w.sbPublicRpc=async()=>[{event_id:'game1',name:'Colts at Vikings',event_date:'2027-11-01',is_home:true},{event_id:'away',name:'Vikings at Bears',event_date:'2027-11-02',is_home:false}];
+ w.sbGet=async()=>[{event_id:'game1',checked_at:new Date().toISOString(),by_qty:{2:{low:6500,basis:'fees_included_tax_unknown'}}}];
+ let saved;w.sbRpc=async(name,body)=>{saved=body;return {...watch,criteria_version:2,match:{...watch.match,team_id:'nflmin',home_away:'home',excluded_event_ids:body.p_excluded_event_ids}};};
+ set('watches',[{...watch,match:{...watch.match,team_id:'nflmin',home_away:'home'}}]);run('renderWatches()');
+ const details=w.document.querySelector('.watch-schedule');await run('loadWatchSchedule(state.watches[0],document.querySelector(".watch-schedule"))');
+ assert.match(details.textContent,/Colts at Vikings/);assert.doesNotMatch(details.textContent,/Vikings at Bears/);assert.match(details.textContent,/\$65 per ticket · under your target/);
+ const input=details.querySelector('input');input.checked=true;await input.onchange();assert.deepEqual(Array.from(saved.p_excluded_event_ids),['game1']);assert.equal(saved.p_expected_version,1);assert.match(details.textContent,/preferences saved/);
+ }finally{close();}
+});
+
+test('background snapshots preserve an unfinished target edit and resume after cancellation',async()=>{
+ const {w,set,run,close}=page();try{
+ let callback,reads=0;w.setTimeout=fn=>{callback=fn;return 1;};w.clearTimeout=()=>{};Object.defineProperty(w.document,'hidden',{value:false,configurable:true});w.sbGet=async()=>{reads++;return [];};
+ set('watches',[watch]);run('renderWatches()');w.document.querySelector('[data-action="target"]').click();const input=w.document.querySelector('.watch-target-editor input');input.value='81';
+ run('scheduleWatchSnapshot()');await callback();assert.equal(reads,0);assert.equal(input.value,'81');assert.ok(input.isConnected);
+ w.document.querySelector('.watch-target-editor [type="button"]').click();await callback();assert.equal(reads,1);assert.equal(w.document.querySelector('.watch-target-editor'),null);
+ }finally{close();}
+});

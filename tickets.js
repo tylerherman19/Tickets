@@ -63,7 +63,7 @@ const eventSearchUrl = (market,label) => {
  const bases={tickpick:'https://www.tickpick.com/search?q=',seatgeek:'https://seatgeek.com/search?search=',vivid:'https://www.vividseats.com/search?searchTerm='};
  return bases[market]+q;
 };
-const marketLinks = label => `<div class="market-links" aria-label="Compare ticket marketplaces"><span>Compare</span><a href="${eventSearchUrl('tickpick',label)}" target="_blank" rel="noopener">TickPick</a><a href="${eventSearchUrl('seatgeek',label)}" target="_blank" rel="noopener">SeatGeek</a><a href="${eventSearchUrl('vivid',label)}" target="_blank" rel="noopener">Vivid Seats</a></div>`;
+const marketLinks = label => `<div class="market-links" aria-label="Search other ticket sellers"><span>Search other sellers</span><a href="${eventSearchUrl('tickpick',label)}" target="_blank" rel="noopener">TickPick</a><a href="${eventSearchUrl('seatgeek',label)}" target="_blank" rel="noopener">SeatGeek</a><a href="${eventSearchUrl('vivid',label)}" target="_blank" rel="noopener">Vivid Seats</a></div>`;
 const watchHistory = (prices,watchId) => prices.filter(p=>p.watch_id===watchId).sort((a,b)=>new Date(a.checked_at)-new Date(b.checked_at));
 function sparkline(rows,wide=false,target=null,alerts=[]){
  if(!rows.length)return '';
@@ -310,3 +310,4 @@ async function recordSearchActivity(body){
  return res.ok;
  }catch{return false;}finally{clearTimeout(timer);}
 }
+

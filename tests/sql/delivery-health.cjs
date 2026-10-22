@@ -4,7 +4,7 @@ const fs=require('node:fs'),assert=require('node:assert/strict');
  const db=new PGlite();
  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('test.uid',true),'')::uuid$$;grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;`);
  await db.exec(fs.readFileSync('scripts/tickets_schema.sql','utf8'));
- for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_coverage_query.sql','20261017_admin.sql','20261018_general_search.sql','20261018_search_activity.sql','20261020_runtime_reliability.sql','20261020_delivery_health.sql','20261020_delivery_health.sql'])
+ for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_coverage_query.sql','20261017_admin.sql','20261018_general_search.sql','20261018_search_activity.sql','20261020_runtime_reliability.sql','20261020_delivery_health.sql','20261021_alert_streamlining.sql','20261021_alert_streamlining.sql'])
  await db.exec(fs.readFileSync('scripts/'+file,'utf8').replace(/^.*(?:create extension.*pg_trgm|create index.*gin_trgm_ops).*$/gm,''));
  const rpc=async(name,args=[]) => (await db.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) r`,args)).rows[0].r;
  const one=async(sql,args=[]) => (await db.query(sql,args)).rows[0];
@@ -31,5 +31,35 @@ const fs=require('node:fs'),assert=require('node:assert/strict');
  assert.equal((await next()).state,'already_accepted');
  const snapshot=await rpc('tix_backup_snapshot');assert.equal(snapshot.scope,'ticketline_private_state');assert.ok(snapshot.tables.tix_watches.length);assert.equal(snapshot.tables.tix_searches.length,0);
  const {verifyRestore}=await import('../../scripts/tickets_restore_check.mjs');assert.equal((await verifyRestore(snapshot)).status,'restore_verified');
+ // New preferences are enforced atomically across sections, while legacy behavior remains.
+ const teamWatch='33333333-3333-3333-3333-333333333333';
+ await db.query("insert into tix_watches(id,owner_id,label,kind,match,qty,threshold_cents) values($1,$2,'Team','team',$3,2,7500)",[teamWatch,owner,JSON.stringify({slug:'vikings',notification_mode:'first_event'})]);
+ let version=1;
+ const claim=(club,price=5000)=>rpc('tix_begin_delivery',[teamWatch,version,event,club,'email','alert',JSON.stringify({...payload,price_cents:price})]);
+ const accepted=await claim('Club A');await rpc('tix_finish_delivery',[accepted.id,accepted.lease,'accepted',null,null]);assert.equal((await claim('Club B')).state,'already_accepted','one first match per game, not per section');
+ await db.query("update tix_watches set match=jsonb_set(match,'{notification_mode}','\"drop\"'),alert_style='repeat' where id=$1",[teamWatch]);version=(await one('select criteria_version v from tix_watches where id=$1',[teamWatch])).v;
+ const firstDrop=await claim('Club A');await rpc('tix_finish_delivery',[firstDrop.id,firstDrop.lease,'accepted',null,null]);
+ assert.equal((await claim('Club B',4000)).state,'already_accepted','drop alerts still observe hourly cap');
+ await db.query("update tix_alerts set sent_at=now()-interval '2 hours' where watch_id=$1",[teamWatch]);await db.query("update tix_delivery_outbox set accepted_at=now()-interval '2 hours' where watch_id=$1",[teamWatch]);
+ assert.equal((await claim('Club B',4700)).state,'already_accepted','a $3 drop is too small');
+ const nextDrop=await claim('Club B',4500);assert.equal(nextDrop.state,'sending');await rpc('tix_finish_delivery',[nextDrop.id,nextDrop.lease,'accepted',null,null]);
+ // Concurrent edits fail instead of overwriting a target or another exclusion.
+ await db.query("select set_config('test.uid',$1,false)",[owner]);
+ let edited=await rpc('tix_update_watch_controls',[teamWatch,8000,null,version]);assert.equal(edited.threshold_cents,8000);
+ await assert.rejects(rpc('tix_update_watch_controls',[teamWatch,9000,null,version]),/changed/);
+ edited=await rpc('tix_update_watch_controls',[teamWatch,null,JSON.stringify([event]),edited.criteria_version]);version=edited.criteria_version;
+ assert.equal((await claim('Club A',4000)).state,'cancelled','excluded games cannot send');
+ await assert.rejects(rpc('tix_update_watch_controls',[teamWatch,1,null,version]),/target/);
+ await db.query("select set_config('test.uid','44444444-4444-4444-4444-444444444444',false)");
+ await assert.rejects(rpc('tix_update_watch_controls',[teamWatch,9000,null,version]),/not found/);
+ await assert.rejects(rpc('tix_request_delivery_test',[teamWatch]),/own/);
+ await db.query("select set_config('test.uid',$1,false)",[owner]);
+ assert.equal((await rpc('tix_request_delivery_test',[teamWatch])).state,'queued');
+ await assert.rejects(rpc('tix_request_delivery_test',[teamWatch]),/10 minutes/);
+ assert.equal((await one('select event_label from tix_confirmation_queue where watch_id=$1',[teamWatch])).event_label,'__ticketline_delivery_test__');
+ // Browser roles can execute only the owner-scoped controls, never delivery claims.
+ await db.exec('set role authenticated');await assert.rejects(claim('Club A'));await assert.rejects(db.query('select * from tix_delivery_outbox'));await db.exec('reset role');
+
  await db.close();console.log('Durable delivery: private claims, deduplication, crash uncertainty, criteria edits and per-alert successful progress passed.');
 })().catch(e=>{console.error({message:e.message,position:e.position,internalQuery:e.internalQuery});process.exitCode=1;});
+

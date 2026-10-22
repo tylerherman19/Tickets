@@ -19,7 +19,7 @@ class ReleaseGateTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'HTTP 401'):gate.schema_ready()
     def test_fast_search_schema_uses_current_collector(self):
         for guard_enabled in (False,True):
-            response=io.BytesIO(json.dumps({'guard_enabled':guard_enabled,'schema':20261022}).encode())
+            response=io.BytesIO(json.dumps({'guard_enabled':guard_enabled,'schema':20261026}).encode())
             with patch.dict(os.environ,{'SUPABASE_URL':'https://database.invalid','SUPABASE_SERVICE_KEY':'fixture'}),patch('urllib.request.urlopen',return_value=response):
                 self.assertTrue(gate.schema_ready())
     def test_older_schema_is_not_accepted(self):
@@ -40,3 +40,10 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn('category=eq.college-basketball&select=event_id',patched)
         self.assertEqual(gate.preserve_college_categories(patched),patched)
         with self.assertRaises(RuntimeError): gate.preserve_college_categories('changed format')
+
+
+class DeploymentRaceTests(unittest.TestCase):
+    def test_workers_wait_for_an_in_progress_schema_release(self):
+        with patch.dict(os.environ,{'GITHUB_ACTIONS':'true'}),patch.object(gate,'schema_ready',side_effect=[False,True]),patch.object(gate.time,'sleep') as sleep:
+            gate.main()
+            sleep.assert_called_once_with(15)

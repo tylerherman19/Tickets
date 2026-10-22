@@ -12,7 +12,7 @@ Use --fixture PATH for offline parsing/selection without database writes or aler
 """
 import html as html_lib, json, os, re, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone, timedelta
-from ticket_emails import confirmation_email, price_alert_email, clean_text, valid_address
+from ticket_emails import confirmation_email, price_alert_email, clean_text, valid_address, EmailContent
 
 OFFLINE = '--fixture' in sys.argv
 SB_URL = ('https://offline.invalid' if OFFLINE else os.environ["SUPABASE_URL"]).rstrip("/")
@@ -571,6 +571,10 @@ def catalog_stale():
 
 # ---------- watch resolution ----------
 def resolve_events(w):
+    excluded=set((w.get('match') or {}).get('excluded_event_ids') or [])
+    return [row for row in _resolve_events(w) if row.get('event_id') not in excluded]
+
+def _resolve_events(w):
     m = w.get("match") or {}
     kind = w.get("kind")
     today = NOW.date().isoformat()
@@ -681,8 +685,11 @@ def delivery_send(subject, body, *, watch, channel, kind, event_id='', club='', 
     """Persist and claim intent before SMTP. Only SQL acknowledges acceptance."""
     claim=sb('POST','rpc/tix_begin_delivery',{'p_watch_id':watch['id'],'p_version':watch.get('criteria_version',1),
         'p_event_id':event_id,'p_club':club,'p_channel':channel,'p_kind':kind,'p_payload':payload or {}})
-    if claim.get('state')=='already_accepted':return True
-    if claim.get('state')!='sending':return False
+    if claim.get('state')=='already_accepted':return None if kind=='alert' else True
+    if claim.get('state')!='sending':
+        # Expected deduplication is a skip, not a failed send. Keep real failures visible.
+        if kind=='alert' and claim.get('state') in ('already_accepted','cancelled','busy'):return None
+        return False
     status='failed';error=None
     try:
         if send_sms(subject,body,recipient=recipient,message_id=claim['message_id'],**({'html_body':html_body} if html_body else {})):status='accepted'
@@ -719,7 +726,7 @@ def send_pending_confirmations():
                     if len(event_ids) == 1:
                         events = sb("GET", "tix_events_v?event_id=eq." + urllib.parse.quote(str(event_ids[0]), safe="") + "&select=event_id,name,event_date,datetime_local,venue,city,state&limit=1")
                         event = events[0] if events else None
-                message = confirmation_email({**watches[0], "id": watch_id}, event, queued.get("event_label")) if watches else None
+                message = (EmailContent("Ticketline delivery test", "Your Ticketline email alerts are connected. This is a delivery test, not a ticket offer.", "<p>Your Ticketline email alerts are connected.</p><p>This is a delivery test, not a ticket offer.</p>") if queued.get("event_label")=="__ticketline_delivery_test__" else confirmation_email({**watches[0], "id": watch_id}, event, queued.get("event_label"))) if watches else None
                 ok = bool(recipient and message and delivery_send(message.subject, message.text, watch={**watches[0],'id':watch_id}, channel='email', kind='confirmation', payload={'requested_at':queued.get('requested_at')},recipient=recipient, html_body=message.html))
             update.update(email_attempts=queued.get("email_attempts",0)+1,email_last_error=None if ok or update.get("email_enabled") is False else "email send failed")
             if ok: update["email_sent_at"] = datetime.now(timezone.utc).isoformat(); accepted += 1
@@ -731,7 +738,7 @@ def send_pending_confirmations():
                 cancelled += 1
                 ok = False
             else:
-                ok = bool(recipient and watches and delivery_send("Ticketline is on it", f"We're on the lookout for tickets to {label} at {target} or less. We'll text you when the price hits.",watch={**watches[0],'id':watch_id},channel="sms",kind="confirmation",payload={"requested_at":queued.get("requested_at")},recipient=recipient))
+                ok = bool(recipient and watches and delivery_send("Ticketline delivery test" if queued.get("event_label")=="__ticketline_delivery_test__" else "Ticketline is on it", "Your Ticketline text alerts are connected. This is a delivery test, not a ticket offer." if queued.get("event_label")=="__ticketline_delivery_test__" else f"We're on the lookout for tickets to {label} at {target} or less. We'll text you when the price hits.",watch={**watches[0],'id':watch_id},channel="sms",kind="confirmation",payload={"requested_at":queued.get("requested_at")},recipient=recipient))
             update.update(attempts=queued.get("attempts",0)+1,last_error=None if ok or update.get("sms_enabled") is False else "carrier gateway send failed")
             if ok: update["sent_at"] = datetime.now(timezone.utc).isoformat(); accepted += 1
         if update:
@@ -1027,7 +1034,7 @@ def main():
                     destinations = None
                     for channel in ("email", "sms"):
                         if not w.get(f"{channel}_enabled", channel == "email"): continue
-                        if already_alerted(w["id"], eid, club, 60 if w["alert_style"] == "repeat" else None,
+                        if (w.get("match") or {}).get("notification_mode", "legacy")=="legacy" and already_alerted(w["id"], eid, club, 60 if w["alert_style"] == "repeat" else None,
                                            w.get('criteria_version',1), channel=channel): continue
                         if channel == "email": recipient = owner_email(w["id"])
                         else:
@@ -1041,7 +1048,7 @@ def main():
                         else:
                             ok = delivery_send(subject, body,watch=w,channel=channel,kind='alert',event_id=eid,club=club,payload=payload,recipient=recipient)
                         if ok: sent += 1
-                        else: health["status"] = "error"
+                        elif ok is False: health["status"] = "error"
                 unknown=any(match_unknown(item,w) for item in listings)
                 if unknown: reasons.add('required_listing_fields_unknown')
                 outcome='ok' if found else 'provider_incomplete' if unknown or provider_status=='partial' else 'unavailable'

@@ -136,3 +136,10 @@ class CoverageTransitionTests(unittest.TestCase):
             self.assertEqual(new,[])
             self.assertEqual(incident['healthy_checks'],0)
 
+
+class AlertProgressMonitorTests(unittest.TestCase):
+    def test_individual_alert_delays_and_uncertain_delivery_are_actionable(self):
+        for key in ('overdue_alert_events','delivery_uncertain'):
+            result=health.assess({**CoverageHealthTests().base(),key:1})
+            self.assertEqual(result['status'],'error')
+            self.assertTrue(result['critical'])
