@@ -115,6 +115,11 @@ test('team schedules show quantity-verified prices and save game exclusions',asy
  }finally{close();}
 });
 
-test('background snapshots leave open editors and expanded alert controls alone',()=>{
- assert.match(app,/!document\.querySelector\('\.watch-target-editor,\.watch-schedule\[open\],\.watch-menu\[open\],\.watch-expanded\[open\]'\)/);
+test('background snapshots preserve an unfinished target edit and resume after cancellation',async()=>{
+ const {w,set,run,close}=page();try{
+ let callback,reads=0;w.setTimeout=fn=>{callback=fn;return 1;};w.clearTimeout=()=>{};Object.defineProperty(w.document,'hidden',{value:false,configurable:true});w.sbGet=async()=>{reads++;return [];};
+ set('watches',[watch]);run('renderWatches()');w.document.querySelector('[data-action="target"]').click();const input=w.document.querySelector('.watch-target-editor input');input.value='81';
+ run('scheduleWatchSnapshot()');await callback();assert.equal(reads,0);assert.equal(input.value,'81');assert.ok(input.isConnected);
+ w.document.querySelector('.watch-target-editor [type="button"]').click();await callback();assert.equal(reads,1);assert.equal(w.document.querySelector('.watch-target-editor'),null);
+ }finally{close();}
 });
