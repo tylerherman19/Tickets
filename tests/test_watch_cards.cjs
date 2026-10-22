@@ -114,3 +114,7 @@ test('team schedules show quantity-verified prices and save game exclusions',asy
  const input=details.querySelector('input');input.checked=true;await input.onchange();assert.deepEqual(Array.from(saved.p_excluded_event_ids),['game1']);assert.equal(saved.p_expected_version,1);assert.match(details.textContent,/preferences saved/);
  }finally{close();}
 });
+
+test('background snapshots leave open editors and expanded alert controls alone',()=>{
+ assert.match(app,/!document\.querySelector\('\.watch-target-editor,\.watch-schedule\[open\],\.watch-menu\[open\],\.watch-expanded\[open\]'\)/);
+});

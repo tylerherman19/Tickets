@@ -504,7 +504,7 @@ function scheduleWatchSnapshot(){
  clearTimeout(watchPollTimer);
  watchPollTimer=setTimeout(async()=>{
    if(document.body.dataset.page!=='watches')return;
-   if(!document.hidden&&!watchSnapshotBusy){
+   if(!document.hidden&&!watchSnapshotBusy&&!document.querySelector('.watch-target-editor,.watch-schedule[open],.watch-menu[open],.watch-expanded[open]')){
      watchSnapshotBusy=true;
      try{
        state.intelligence=await sbGet('tix_alert_intelligence_v?select=*');
