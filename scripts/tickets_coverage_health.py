@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 import tickets_collect as collect
 
 RECOVERY_CHECKS = 3
+ALERT_DELAY_CONFIRM_MINUTES = 10
 
 def incident_state(previous, assessment):
     """One incident survives a single good poll between recurring failures.
@@ -24,7 +25,7 @@ def incident_state(previous, assessment):
     if not notified and previous.get('status')=='error':
         notified=list(previous.get('critical') or [])
     critical=assessment['critical']
-    healthy=0 if critical else min(RECOVERY_CHECKS,int(previous.get('healthy_checks') or 0)+1)
+    healthy=0 if critical or assessment.get('overdue_since') else min(RECOVERY_CHECKS,int(previous.get('healthy_checks') or 0)+1)
     new_reasons=[reason for reason in critical if reason not in notified]
     if healthy>=RECOVERY_CHECKS:
         notified=[]
@@ -33,9 +34,23 @@ def incident_state(previous, assessment):
     return {'incident_reasons':notified,'healthy_checks':healthy},new_reasons
 
 
-def assess(health,now=None):
+def assess(health,now=None,previous=None):
     now=now or datetime.now(timezone.utc)
     critical=[];warnings=[]
+    overdue_since=None
+    if health.get('overdue_alert_events',0):
+        # The monitor and collector start together. A 30-minute-old sample can
+        # be replaced by an already-running collector a minute later. Persist
+        # the first observation and confirm on a later poll, never by retry count.
+        try:
+            since=datetime.fromisoformat(str((previous or {}).get('overdue_since')).replace('Z','+00:00'))
+            if since.tzinfo is None or since>now:since=now
+        except (ValueError,TypeError):since=now
+        overdue_since=since.isoformat()
+        if now-since>=timedelta(minutes=ALERT_DELAY_CONFIRM_MINUTES):
+            critical.append('Some active alert events remain overdue across coverage checks.')
+        else:
+            warnings.append('Some alert checks are late; waiting for the collector to finish before confirming an outage.')
     if health.get('collector_state')=='failed': critical.append('The latest collector run reported a failure.')
     if health.get('provider_paused'): critical.append('Provider checks are paused; saved prices remain available.')
     if not health.get('events'): critical.append('No upcoming catalog events are available.')
@@ -48,11 +63,10 @@ def assess(health,now=None):
     if health.get('teams_failed',0): warnings.append('Some team pages failed their latest inspection.')
     if health.get('unpriced',0): warnings.append('Some event get-in prices are unconfirmed.')
     if health.get('stale',0)>max(100,health.get('priced',0)//2): warnings.append('More than half of saved get-in prices are older than 24 hours.')
-    if health.get('overdue_alert_events',0): critical.append('Some active alert events have no successful check within 30 minutes.')
     if health.get('unresolved_alerts',0): warnings.append('Some active alerts have no resolved upcoming events after 30 minutes.')
     if health.get('delivery_uncertain',0): critical.append('A delivery needs review before it can safely be retried.')
     if health.get('failed_checks',0): warnings.append('Some event checks failed; saved samples remain available.')
-    return {'status':'error' if critical else 'warning' if warnings else 'ok','critical':critical,'warnings':warnings}
+    return {'status':'error' if critical else 'warning' if warnings else 'ok','critical':critical,'warnings':warnings,'overdue_since':overdue_since}
 
 
 def main():
@@ -75,7 +89,7 @@ def main():
         try: previous=json.loads(previous)
         except ValueError: previous={}
     previous=previous if isinstance(previous,dict) else {}
-    assessment=assess(health)
+    assessment=assess(health,previous=previous)
     incident,new_reasons=incident_state(previous,assessment)
     recovered=bool(previous.get('incident_reasons')) and not incident['incident_reasons']
     result={**health,**assessment,**incident,'recovered_at':datetime.now(timezone.utc).isoformat() if recovered else previous.get('recovered_at')}
