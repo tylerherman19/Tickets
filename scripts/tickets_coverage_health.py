@@ -48,6 +48,9 @@ def assess(health,now=None):
     if health.get('teams_failed',0): warnings.append('Some team pages failed their latest inspection.')
     if health.get('unpriced',0): warnings.append('Some event get-in prices are unconfirmed.')
     if health.get('stale',0)>max(100,health.get('priced',0)//2): warnings.append('More than half of saved get-in prices are older than 24 hours.')
+    if health.get('overdue_alert_events',0): critical.append('Some active alert events have no successful check within 30 minutes.')
+    if health.get('unresolved_alerts',0): warnings.append('Some active alerts have no resolved upcoming events after 30 minutes.')
+    if health.get('delivery_uncertain',0): critical.append('A delivery needs review before it can safely be retried.')
     if health.get('failed_checks',0): warnings.append('Some event checks failed; saved samples remain available.')
     return {'status':'error' if critical else 'warning' if warnings else 'ok','critical':critical,'warnings':warnings}
 
@@ -60,6 +63,12 @@ def main():
             print('Catalog reliability schema is not deployed; coverage monitoring is pending deployment.')
             return
         raise
+    try:
+        runtime=collect.sb('POST','rpc/tix_runtime_health',{})
+        if isinstance(runtime,dict):
+            health.update({k:runtime.get(k,0) for k in ('overdue_alert_events','unresolved_alerts','delivery_uncertain')})
+    except urllib.error.HTTPError as error:
+        if error.code!=404:raise
     previous_rows=collect.sb('GET','tix_state?k=eq.catalog_coverage_health&select=v&limit=1')
     previous=previous_rows[0].get('v') if previous_rows else {}
     if isinstance(previous,str):
@@ -68,7 +77,9 @@ def main():
     previous=previous if isinstance(previous,dict) else {}
     assessment=assess(health)
     incident,new_reasons=incident_state(previous,assessment)
-    result={**health,**assessment,**incident}
+    recovered=bool(previous.get('incident_reasons')) and not incident['incident_reasons']
+    result={**health,**assessment,**incident,'recovered_at':datetime.now(timezone.utc).isoformat() if recovered else previous.get('recovered_at')}
+    if recovered:print('Coverage incident recovered after three consecutive healthy checks.')
     collect.write_state('catalog_coverage_health',result)
     print(json.dumps(result,indent=2,sort_keys=True))
     # Keep reporting the current outage, without a second email every time

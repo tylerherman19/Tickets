@@ -23,5 +23,7 @@
   "20261020_delivery_health.sql",
   "20261020_quote_priority.sql",
   "20261020_quick_latency.sql",
-  "20261020_storage_policy.sql"
+  "20261020_storage_policy.sql",
+  "20261021_capture_write_performance.sql",
+  "20261021_alert_streamlining.sql"
 ]

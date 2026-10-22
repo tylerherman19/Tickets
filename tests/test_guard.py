@@ -139,3 +139,9 @@ class GuardTests(unittest.TestCase):
         self.assertNotIn('GMAIL',workflow)
         self.assertNotIn('send_sms',Path('scripts/ticket_details.py').read_text())
 
+
+class ExcludedGameTests(unittest.TestCase):
+    def test_exclusions_apply_to_every_resolution_source(self):
+        for kind in ('team','event','date'):
+            with patch.object(collect,'_resolve_events',return_value=[{'event_id':'keep'},{'event_id':'skip'}]):
+                self.assertEqual(collect.resolve_events({'kind':kind,'match':{'excluded_event_ids':['skip']}}),[{'event_id':'keep'}])

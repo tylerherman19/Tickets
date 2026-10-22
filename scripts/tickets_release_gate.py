@@ -9,11 +9,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 import urllib.error
 import urllib.request
 
 # The current collector, performer sweep and Edge search need this migration.
-REQUIRED_SCHEMA = 20261022
+REQUIRED_SCHEMA = 20261026
 
 def schema_ready():
     base=os.environ['SUPABASE_URL'].rstrip('/')
@@ -48,7 +49,17 @@ def preserve_college_categories(source):
 def main():
     if os.environ.get('GITHUB_ACTIONS')!='true':
         raise RuntimeError('Release preflight is hosted-only')
-    if schema_ready():
+    # A merge starts schema publication and workers independently. Allow the
+    # additive release to finish before reporting a genuinely missing migration.
+    ready=False
+    for attempt in range(21):
+        if schema_ready():
+            ready=True
+            break
+        if attempt<20:
+            print('Waiting for the reviewed database release before any provider or email work.',flush=True)
+            time.sleep(15)
+    if ready:
         path=Path(__file__).with_name('tickets_collect.py')
         path.write_text(preserve_college_categories(path.read_text()))
         print('Guarded schema available; using current collector.')
@@ -56,3 +67,4 @@ def main():
     raise RuntimeError('Ticketline database update is missing. Stopping before any provider or email work.')
 
 if __name__=='__main__':main()
+
