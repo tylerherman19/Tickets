@@ -115,3 +115,5 @@ Schema `20261027` scans the visible catalog once for health totals and job count
 Watched-event scheduling allows two minutes of runner jitter around the fifteen-minute cadence, under the existing provider admission limits. Read-only health RPCs retry known statement timeouts and transient transport failures up to three times. Persistent RPC failures preserve the last sample, mark current health unavailable, and notify once per incident until three healthy polls confirm recovery.
 
 The backend release applies the additive migration and verifies three live catalog RPC reads under an eight-second database statement limit. Offline regressions cover rotating overdue events, independent stalled events, transient/persistent RPC failures, scheduling jitter, catalog visibility and runtime access boundaries.
+
+Schema `20261028` also applies the two-minute collector tolerance inside capture admission. Recent interactive caches retain fifteen minutes; genuinely fresh duplicate collector captures stay cached. This prevents admission from undoing the worker's scheduling tolerance.
