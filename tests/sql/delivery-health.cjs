@@ -4,7 +4,7 @@ const fs=require('node:fs'),assert=require('node:assert/strict');
  const db=new PGlite();
  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('test.uid',true),'')::uuid$$;grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;`);
  await db.exec(fs.readFileSync('scripts/tickets_schema.sql','utf8'));
- for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_coverage_query.sql','20261017_admin.sql','20261018_general_search.sql','20261018_search_activity.sql','20261020_runtime_reliability.sql','20261020_delivery_health.sql','20261021_alert_streamlining.sql','20261021_alert_streamlining.sql'])
+ for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_coverage_query.sql','20261017_admin.sql','20261018_general_search.sql','20261018_search_activity.sql','20261020_runtime_reliability.sql','20261020_delivery_health.sql','20261021_alert_streamlining.sql','20261021_alert_streamlining.sql','20261023_coverage_monitor.sql','20261023_coverage_monitor.sql'])
  await db.exec(fs.readFileSync('scripts/'+file,'utf8').replace(/^.*(?:create extension.*pg_trgm|create index.*gin_trgm_ops).*$/gm,''));
  const rpc=async(name,args=[]) => (await db.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) r`,args)).rows[0].r;
  const one=async(sql,args=[]) => (await db.query(sql,args)).rows[0];
@@ -24,6 +24,7 @@ const fs=require('node:fs'),assert=require('node:assert/strict');
  const next=()=>rpc('tix_begin_delivery',[watch,2,event,'Any section','email','alert',JSON.stringify(payload)]);
  const uncertain=await next();await db.query("update tix_delivery_outbox set lease_until=now()-interval '1 minute' where id=$1",[uncertain.id]);assert.equal((await next()).state,'uncertain');assert.equal((await next()).state,'uncertain');
  await db.query("insert into tix_watch_events(watch_id,event_id,criteria_version) values($1,$2,2)",[watch,event]);assert.equal((await rpc('tix_runtime_health')).overdue_alert_events,1);
+ const overdue=await rpc('tix_runtime_health');assert.equal(Object.keys(overdue.overdue_alert_progress).length,1);assert.equal(Object.values(overdue.overdue_alert_progress)[0],null);assert.ok(!JSON.stringify(overdue).includes(watch));
  await db.query("insert into tix_scans(watch_id,event_id,criteria_version,outcome) values($1,$2,2,'ok')",[watch,event]);assert.equal((await rpc('tix_runtime_health')).overdue_alert_events,0);
  await db.query("update tix_scans set outcome='failed',checked_at=now()+interval '1 minute' where watch_id=$1",[watch]);assert.ok((await one('select checked_at>last_success_at preserved from tix_scans')).preserved);
  assert.equal((await rpc('tix_runtime_health')).delivery_uncertain,1);
@@ -60,6 +61,8 @@ const fs=require('node:fs'),assert=require('node:assert/strict');
  // Browser roles can execute only the owner-scoped controls, never delivery claims.
  await db.exec('set role authenticated');await assert.rejects(claim('Club A'));await assert.rejects(db.query('select * from tix_delivery_outbox'));await db.exec('reset role');
 
+ assert.ok((await rpc('tix_catalog_health',[null])).events);
+ await db.exec('set role anon');assert.ok((await rpc('tix_catalog_health',[null])).events);await assert.rejects(rpc('tix_runtime_health'));await db.exec('reset role');
  await db.close();console.log('Durable delivery: private claims, deduplication, crash uncertainty, criteria edits and per-alert successful progress passed.');
 })().catch(e=>{console.error({message:e.message,position:e.position,internalQuery:e.internalQuery});process.exitCode=1;});
 

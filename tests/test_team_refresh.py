@@ -205,3 +205,54 @@ class AlertProgressRaceTests(unittest.TestCase):
             runtime['overdue_alert_events']=0
             for _ in range(health.RECOVERY_CHECKS):health.main()
             self.assertFalse(previous['incident_reasons']);self.assertTrue(previous['recovered_at'])
+
+class CoverageReadTests(unittest.TestCase):
+    def timeout(self):
+        error=urllib.error.HTTPError('https://example.test',500,'timeout',{},None)
+        error.postgres_code='57014'
+        return error
+
+    def test_timeout_retries_read_only_rpc_and_recovers(self):
+        with patch.object(health.collect,'sb',side_effect=[self.timeout(),CoverageHealthTests().base()]) as db,patch.object(health.time,'sleep'):
+            self.assertEqual(health.read_health('rpc/tix_catalog_health',{})['events'],100)
+            self.assertEqual(db.call_count,2)
+            self.assertTrue(all(call.args[:2]==('POST','rpc/tix_catalog_health') for call in db.call_args_list))
+
+    def test_persistent_read_outage_notifies_once_and_preserves_sample(self):
+        previous={**CoverageHealthTests().base(),'last_successful_health_at':'saved'}
+        def db(method,path,body=None,prefer=None):
+            if method=='GET':return [{'v':dict(previous)}]
+            raise self.timeout()
+        def save(key,value):previous.clear();previous.update(value)
+        with patch.dict(os.environ,{'GITHUB_ACTIONS':'true'}),patch.object(health.collect,'sb',side_effect=db),patch.object(health.collect,'write_state',side_effect=save),patch.object(health.time,'sleep'):
+            with self.assertRaisesRegex(RuntimeError,'bounded retries'):health.main()
+            health.main()
+            self.assertEqual(previous['events'],100)
+            self.assertEqual(previous['last_successful_health_at'],'saved')
+            self.assertEqual(previous['healthy_checks'],0)
+            self.assertEqual(previous['status'],'error')
+
+    def test_permission_error_is_not_retried(self):
+        with patch.object(health.collect,'sb',side_effect=urllib.error.HTTPError('x',403,'denied',{},None)) as db,patch.object(health.time,'sleep') as sleep:
+            with self.assertRaises(urllib.error.HTTPError):health.read_health('rpc/tix_catalog_health',{})
+            self.assertEqual(db.call_count,1);sleep.assert_not_called()
+
+class PerEventProgressTests(unittest.TestCase):
+    def test_rotating_overdue_events_do_not_confirm_a_single_stall(self):
+        now=datetime.now(timezone.utc);previous={}
+        for minute,key in ((0,'a'),(15,'b'),(30,'a'),(45,'b')):
+            current={**CoverageHealthTests().base(),'last_collector_at':now.isoformat(),'overdue_alert_events':1,'overdue_alert_progress':{key:None}}
+            previous=health.assess(current,now+timedelta(minutes=minute),previous)
+            self.assertFalse(previous['critical'])
+
+    def test_progress_resets_only_the_event_that_advanced(self):
+        now=datetime.now(timezone.utc)
+        current={**CoverageHealthTests().base(),'overdue_alert_events':2,'overdue_alert_progress':{'a':None,'b':None}}
+        first=health.assess(current,now)
+        moved={**current,'overdue_alert_progress':{'a':now.isoformat(),'b':None}}
+        next_check=health.assess(moved,now+timedelta(minutes=15),first)
+        self.assertTrue(next_check['critical'],'b stayed stalled')
+        self.assertEqual(next_check['overdue_progress']['a']['since'],(now+timedelta(minutes=15)).isoformat())
+        self.assertEqual(next_check['overdue_progress']['b']['since'],now.isoformat())
+        recovered=health.assess({**moved,'overdue_alert_events':1,'overdue_alert_progress':{'a':now.isoformat()}},now+timedelta(minutes=16),next_check)
+        self.assertFalse(recovered['critical'])

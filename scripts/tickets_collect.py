@@ -315,6 +315,16 @@ def check_interval_minutes(days_out, price_cents=None, threshold_cents=None):
     """
     return 15
 
+def scan_due(last, watch, days_out, now):
+    """Allow two minutes of runner jitter without skipping a whole sweep."""
+    if not last or os.environ.get('TIX_FORCE_WATCHED') == 'true': return True
+    checked=datetime.fromisoformat(last['checked_at'].replace('Z','+00:00'))
+    criteria=datetime.fromisoformat((watch.get('criteria_updated_at') or watch['created_at']).replace('Z','+00:00'))
+    return (last.get('criteria_version',1) != watch.get('criteria_version',1)
+            or checked < criteria
+            or now-checked >= timedelta(minutes=max(1,check_interval_minutes(days_out)-2)))
+
+
 def inventory_envelope(parent, key):
     container=parent.get(key)
     if container is None: return 'metadata_only',[]
@@ -949,11 +959,7 @@ def main():
                 oldest = datetime.min.replace(tzinfo=timezone.utc); needs_check = True; continue
             ts = datetime.fromisoformat(last["checked_at"].replace("Z", "+00:00"))
             oldest = min(oldest, ts)
-            criteria_ts = datetime.fromisoformat((w.get("criteria_updated_at") or w["created_at"]).replace("Z", "+00:00"))
-            interval = check_interval_minutes(days_out)
-            if (last.get('criteria_version',1) != w.get('criteria_version',1) or ts < criteria_ts
-                or (NOW - ts) >= timedelta(minutes=interval)
-                or (last["outcome"] in ("failed","parser_failure","http_failure") and (NOW-ts) >= timedelta(minutes=15))):
+            if scan_due(last,w,days_out,NOW):
                 needs_check = True
         if needs_check: due.append((oldest, cat))
     # Oldest checked first: a busy team/date watch cannot starve other events.
