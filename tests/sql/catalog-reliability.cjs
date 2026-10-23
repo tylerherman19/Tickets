@@ -9,6 +9,7 @@ const fs=require('fs'),assert=require('node:assert/strict');
  await db.exec(fs.readFileSync('scripts/tickets_schema.sql','utf8'));
  for(const file of ['20260910_alert_reliability.sql','20260910_per_alert_destinations.sql','20260927_criteria_lifecycle.sql','20260927_ticket_intelligence.sql','20260928_public_discovery.sql','20260928_discovery_interest.sql','20260928_email_delivery.sql','20260928_provider_metadata.sql','20260928_signed_in_catalog.sql','20261007_hardening.sql','20261011_listing_fields.sql','20261012_guarded_history.sql','20261016_fast_search.sql','20261017_moved_events.sql','20261017_catalog_reliability.sql','20261017_catalog_reliability.sql','20261017_coverage_query.sql','20261017_coverage_query.sql'])
   await db.exec(fs.readFileSync('scripts/'+file,'utf8').replace(/^.*(?:create extension.*pg_trgm|create index.*gin_trgm_ops).*$/gm,''));
+ await db.exec(fs.readFileSync('scripts/20261023_coverage_monitor.sql','utf8').split('create or replace function public.tix_runtime_health()')[0]+'commit;');
  const rpc=async(name,args=[]) => (await db.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) as result`,args)).rows[0].result;
  const rows=async(name,args=[]) => (await db.query(`select * from public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')})`,args)).rows;
  const one=async(sql,args=[]) => (await db.query(sql,args)).rows[0];

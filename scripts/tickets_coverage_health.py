@@ -7,6 +7,7 @@ Missing additive RPCs are reported as not deployed rather than bad coverage.
 """
 import json
 import os
+import time
 import urllib.error
 from datetime import datetime, timezone, timedelta
 import tickets_collect as collect
@@ -38,14 +39,22 @@ def assess(health,now=None,previous=None):
     now=now or datetime.now(timezone.utc)
     critical=[];warnings=[]
     overdue_since=None
+    pending={}
+    progress=health.get('overdue_alert_progress')
     if health.get('overdue_alert_events',0):
-        # The monitor and collector start together. A 30-minute-old sample can
-        # be replaced by an already-running collector a minute later. Persist
-        # the first observation and confirm on a later poll, never by retry count.
-        try:
-            since=datetime.fromisoformat(str((previous or {}).get('overdue_since')).replace('Z','+00:00'))
-            if since.tzinfo is None or since>now:since=now
-        except (ValueError,TypeError):since=now
+        # Follow the same event AND last-success timestamp. A count alone can
+        # stay nonzero while different events recover on successive sweeps.
+        old=(previous or {}).get('overdue_progress') or {}
+        if isinstance(progress,dict):
+            for key,success in progress.items():
+                prior=old.get(key) or {}
+                since=prior.get('since') if prior.get('success')==success else None
+                pending[key]={'success':success,'since':valid_since(since,now).isoformat()}
+            starts=[datetime.fromisoformat(v['since']) for v in pending.values()]
+            since=min(starts) if starts else now
+        else:
+            # Compatibility before the additive runtime migration is deployed.
+            since=valid_since((previous or {}).get('overdue_since'),now)
         overdue_since=since.isoformat()
         if now-since>=timedelta(minutes=ALERT_DELAY_CONFIRM_MINUTES):
             critical.append('Some active alert events remain overdue across coverage checks.')
@@ -66,40 +75,66 @@ def assess(health,now=None,previous=None):
     if health.get('unresolved_alerts',0): warnings.append('Some active alerts have no resolved upcoming events after 30 minutes.')
     if health.get('delivery_uncertain',0): critical.append('A delivery needs review before it can safely be retried.')
     if health.get('failed_checks',0): warnings.append('Some event checks failed; saved samples remain available.')
-    return {'status':'error' if critical else 'warning' if warnings else 'ok','critical':critical,'warnings':warnings,'overdue_since':overdue_since}
+    return {'status':'error' if critical else 'warning' if warnings else 'ok','critical':critical,'warnings':warnings,'overdue_since':overdue_since,'overdue_progress':pending}
+
+
+def valid_since(value,now):
+    try:
+        since=datetime.fromisoformat(str(value).replace('Z','+00:00'))
+        return since if since.tzinfo is not None and since<=now else now
+    except (ValueError,TypeError): return now
+
+
+def read_health(path,body):
+    """Retry only read-only RPCs, never provider requests or uncertain writes."""
+    for attempt in range(3):
+        try: return collect.sb('POST',path,body)
+        except (urllib.error.URLError,TimeoutError) as error:
+            transient=not isinstance(error,urllib.error.HTTPError) or error.code in (502,503,504) or (error.code==500 and getattr(error,'postgres_code',None)=='57014')
+            if not transient or attempt==2: raise
+            print('Health read temporarily unavailable; retrying read-only RPC.')
+            time.sleep(2*(attempt+1))
 
 
 def main():
     if os.environ.get('GITHUB_ACTIONS')!='true': raise RuntimeError('Coverage monitoring is hosted-only')
-    try: health=collect.sb('POST','rpc/tix_catalog_health',{'p_category':None})
-    except urllib.error.HTTPError as error:
-        if error.code==404:
-            print('Catalog reliability schema is not deployed; coverage monitoring is pending deployment.')
-            return
-        raise
-    try:
-        runtime=collect.sb('POST','rpc/tix_runtime_health',{})
-        if isinstance(runtime,dict):
-            health.update({k:runtime.get(k,0) for k in ('overdue_alert_events','unresolved_alerts','delivery_uncertain')})
-    except urllib.error.HTTPError as error:
-        if error.code!=404:raise
     previous_rows=collect.sb('GET','tix_state?k=eq.catalog_coverage_health&select=v&limit=1')
     previous=previous_rows[0].get('v') if previous_rows else {}
     if isinstance(previous,str):
         try: previous=json.loads(previous)
         except ValueError: previous={}
     previous=previous if isinstance(previous,dict) else {}
-    assessment=assess(health,previous=previous)
+    try:
+        health=read_health('rpc/tix_catalog_health',{'p_category':None})
+        try:
+            runtime=read_health('rpc/tix_runtime_health',{})
+            if isinstance(runtime,dict):
+                health.update({k:runtime.get(k,0) for k in ('overdue_alert_events','unresolved_alerts','delivery_uncertain')})
+                if 'overdue_alert_progress' in runtime:health['overdue_alert_progress']=runtime['overdue_alert_progress']
+        except urllib.error.HTTPError as error:
+            if error.code!=404:raise
+        assessment=assess(health,previous=previous)
+        health.pop('overdue_alert_progress',None)
+        health['last_successful_health_at']=datetime.now(timezone.utc).isoformat()
+    except (urllib.error.URLError,TimeoutError) as error:
+        if isinstance(error,urllib.error.HTTPError) and error.code==404:
+            print('Catalog reliability schema is not deployed; coverage monitoring is pending deployment.')
+            return
+        # Preserve the last sample, explicitly marked unavailable, and never
+        # count an unreadable poll as recovery or lose the incident history.
+        health={k:v for k,v in previous.items() if k not in ('critical','warnings','status')}
+        assessment={'status':'error','critical':['Coverage health could not be read after bounded retries.'],
+                    'warnings':['Saved coverage is the last known sample; current health is unavailable.'],
+                    'overdue_since':previous.get('overdue_since'),'overdue_progress':previous.get('overdue_progress',{})}
+        health['health_read_error']=getattr(error,'postgres_code',None) or type(error).__name__
     incident,new_reasons=incident_state(previous,assessment)
     recovered=bool(previous.get('incident_reasons')) and not incident['incident_reasons']
     result={**health,**assessment,**incident,'recovered_at':datetime.now(timezone.utc).isoformat() if recovered else previous.get('recovered_at')}
     if recovered:print('Coverage incident recovered after three consecutive healthy checks.')
     collect.write_state('catalog_coverage_health',result)
-    print(json.dumps(result,indent=2,sort_keys=True))
-    # Keep reporting the current outage, without a second email every time
-    # one good collector run briefly interrupts the same ongoing failure.
+    # Progress keys are private operational correlation data, never job logs.
+    print(json.dumps({k:v for k,v in result.items() if k!='overdue_progress'},indent=2,sort_keys=True))
     if new_reasons:
         raise RuntimeError('Catalog coverage alert: '+' '.join(new_reasons))
 
 if __name__=='__main__': main()
-

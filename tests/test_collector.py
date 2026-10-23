@@ -460,3 +460,15 @@ class CollectorTests(unittest.TestCase):
             c.main();send.assert_not_called();self.assertEqual(scan.call_args[0][2],'unavailable')
 
 if __name__=='__main__':unittest.main()
+
+class ScanCadenceRegressionTests(unittest.TestCase):
+    def test_next_sweep_does_not_skip_because_previous_fetch_finished_seconds_later(self):
+        from datetime import datetime, timezone, timedelta
+        now=datetime.now(timezone.utc)
+        watch={'created_at':(now-timedelta(days=1)).isoformat(),'criteria_version':1}
+        for outcome in ('ok','provider_incomplete','failed'):
+            scan={'checked_at':(now-timedelta(minutes=14,seconds=20)).isoformat(),'outcome':outcome,'criteria_version':1}
+            self.assertTrue(c.scan_due(scan,watch,30,now))
+            scan['checked_at']=(now-timedelta(minutes=5)).isoformat()
+            with patch.dict(os.environ,{'TIX_FORCE_WATCHED':'false'}):self.assertFalse(c.scan_due(scan,watch,30,now))
+        self.assertTrue(c.scan_due(None,watch,30,now))
