@@ -33,6 +33,7 @@ def main():
         try:explain('20261017_coverage_query.sql')
         except Exception as error:print('Baseline coverage query unavailable:',type(error).__name__)
         sql((ROOT/'scripts/20261023_coverage_monitor.sql').read_text())
+        sql((ROOT/'scripts/20261023_collector_cadence.sql').read_text())
         explain('20261023_coverage_monitor.sql')
         for _ in range(3):
             started=time.monotonic()
@@ -42,7 +43,7 @@ def main():
             print('Live coverage query verified:',sample['events'],'events;',round(time.monotonic()-started,3),'seconds including transport')
         runtime=sql('select public.tix_runtime_health() health')[0]['health']
         if not isinstance(runtime.get('overdue_alert_progress'),dict):raise RuntimeError('Per-event progress migration is unavailable')
-        print('Verified coverage schema 20261027; overdue alert count:',runtime['overdue_alert_events'])
+        print('Verified coverage schema 20261028; overdue alert count:',runtime['overdue_alert_events'])
         return
     existing=sql('select version from public.tix_schema_versions')
     versions={row['version'] for row in existing}
@@ -61,7 +62,7 @@ def main():
             print('Verified alert controls schema 20261026')
         print('Verified capture-write repair 20261025; quote service unchanged')
         return
-    for version,name in [(20261020,'20261020_runtime_reliability.sql'),(20261021,'20261020_delivery_health.sql'),(20261022,'20261020_quote_priority.sql'),(20261023,'20261020_quick_latency.sql'),(20261024,'20261020_storage_policy.sql'),(20261025,'20261021_capture_write_performance.sql'),(20261026,'20261021_alert_streamlining.sql'),(20261027,'20261023_coverage_monitor.sql')]:
+    for version,name in [(20261020,'20261020_runtime_reliability.sql'),(20261021,'20261020_delivery_health.sql'),(20261022,'20261020_quote_priority.sql'),(20261023,'20261020_quick_latency.sql'),(20261024,'20261020_storage_policy.sql'),(20261025,'20261021_capture_write_performance.sql'),(20261026,'20261021_alert_streamlining.sql'),(20261027,'20261023_coverage_monitor.sql'),(20261028,'20261023_collector_cadence.sql')]:
         if version not in versions:
             sql((ROOT/'scripts'/name).read_text());print('Applied reviewed schema',version)
     boundary='ticketline-'+uuid.uuid4().hex
@@ -70,7 +71,7 @@ def main():
     result=api('/functions/deploy?slug=ticketline-prices',body,'multipart/form-data; boundary='+boundary)
     if result.get('status')!='ACTIVE':raise RuntimeError('Function did not report ACTIVE')
     print('Published quote function version',result.get('version'))
-    if sql('select max(version) version from public.tix_schema_versions')[0]['version']<20261027:raise RuntimeError('Schema verification failed')
+    if sql('select max(version) version from public.tix_schema_versions')[0]['version']<20261028:raise RuntimeError('Schema verification failed')
 
 if __name__=='__main__':main()
 

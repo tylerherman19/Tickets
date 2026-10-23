@@ -7,6 +7,7 @@ on:
       - scripts/20261021_capture_write_performance.sql
       - scripts/20261021_alert_streamlining.sql
       - scripts/20261023_coverage_monitor.sql
+      - scripts/20261023_collector_cadence.sql
       - scripts/ticketline_backend_release.py
 permissions:
   contents: read
