@@ -32,6 +32,14 @@ def main():
             raise RuntimeError(f'Supabase release request failed (HTTP {error.code}): {message}') from None
     def sql(query):return api('/database/query',json.dumps({'query':query}).encode())
     if '--coverage-fix' in sys.argv:
+        database=sql("select current_setting('default_transaction_read_only') read_only,pg_database_size(current_database()) database_bytes")[0]
+        print('Database capacity:',json.dumps(database),flush=True)
+        if database['read_only']=='on':
+            sizes=sql("select schemaname,relname,pg_total_relation_size(relid) total_bytes,n_live_tup,n_dead_tup from pg_stat_user_tables order by pg_total_relation_size(relid) desc limit 15")
+            print('Largest database relations:',json.dumps(sizes),flush=True)
+            try:print('Database WAL:',json.dumps(sql('select sum(size) wal_bytes from pg_ls_waldir()')),flush=True)
+            except RuntimeError as error:print('WAL size unavailable:',str(error),flush=True)
+            raise RuntimeError('Database is in read-only mode; reclaim existing free space before applying migrations. No stored history was deleted.')
         # Explain the repaired query, never re-run the baseline that exhausted
         # temporary disk. Report plan shape/timing, never private row values.
         def explain(file):
