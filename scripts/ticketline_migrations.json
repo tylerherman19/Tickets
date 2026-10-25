@@ -28,5 +28,6 @@
   "20261021_alert_streamlining.sql",
   "20261023_coverage_monitor.sql",
   "20261023_collector_cadence.sql",
-  "20261025_bounded_catalog_queries.sql"
+  "20261025_bounded_catalog_queries.sql",
+  "20261025_listing_retention_batches.sql"
 ]
