@@ -10,7 +10,10 @@ concurrency:
   cancel-in-progress: false
 jobs:
   backup:
-    if: ${{ vars.TIX_ENCRYPTED_BACKUP_ENABLED == 'true' }}
+    # Free-plan storage outage: automatic database jobs are paused.
+    # Manual recovery remains available; restore automatic runs only after
+    # PostgreSQL is healthy, approved retention finishes, and disk has headroom.
+    if: ${{ github.event_name == 'workflow_dispatch' && (vars.TIX_ENCRYPTED_BACKUP_ENABLED == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
