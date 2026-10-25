@@ -105,5 +105,35 @@ const fs=require('fs'),assert=require('node:assert/strict');
  assert.equal((await rpc('tix_catalog_health',['college-basketball'])).events,5);
  assert.equal((await rpc('tix_catalog_health',['nfl-football'])).events,1);
  await db.exec('reset role');
+ // The bounded queries preserve complete health output and city rotation,
+ // including case folding, null/empty states, recent prices and exclusions.
+ await db.exec(`insert into tix_catalog(event_id,event_date,url,category,name,city,state,discovery_attempt_at,price_checked_at) values
+ ('${id(201)}',current_date+2,'https://gametime.co/events/${id(201)}','concert','Fixture','CITY',null,null,null),
+ ('${id(202)}',current_date+3,'https://gametime.co/events/${id(202)}','concert','Fixture','city',null,null,null),
+ ('${id(203)}',current_date+2,'https://gametime.co/events/${id(203)}','concert','Fixture','city','',null,null),
+ ('${id(204)}',current_date+2,'https://gametime.co/events/${id(204)}','concert','Fixture','Elsewhere','WI',now()-interval '4 days',null),
+ ('${id(205)}',current_date+10,'https://gametime.co/events/${id(205)}','concert','Fixture','Elsewhere','WI',null,null),
+ ('${id(206)}',current_date+2,'https://gametime.co/events/${id(206)}','concert','Fixture','Elsewhere','WI',null,now());`);
+ const withoutTime=health=>{const {as_of,...rest}=health;return rest;};
+ const baselineHealth=await Promise.all([null,'concert','nfl-football','missing'].map(async category=>withoutTime(await rpc('tix_catalog_health',[category]))));
+ const batches=[[0,7,40],[8,30,4],[0,7,3],[0,7,0]];
+ const baselineDiscovery=await Promise.all(batches.map(async batch=>(await rows('tix_discovery_due',batch)).map(row=>row.event_id)));
+ // This focused catalog chain omits the unrelated quote/runtime migration.
+ await db.exec('create table public.tix_schema_versions(version integer primary key)');
+ for(let n=0;n<2;n++)await db.exec(fs.readFileSync('scripts/20261025_bounded_catalog_queries.sql','utf8'));
+ for(const [i,category] of [null,'concert','nfl-football','missing'].entries())assert.deepEqual(withoutTime(await rpc('tix_catalog_health',[category])),baselineHealth[i]);
+ for(const [i,batch] of batches.entries())assert.deepEqual((await rows('tix_discovery_due',batch)).map(row=>row.event_id),baselineDiscovery[i]);
+ for(const role of ['anon','authenticated']){
+  await db.exec('set role '+role);
+  assert.deepEqual(withoutTime(await rpc('tix_catalog_health',[null])),baselineHealth[0]);
+  await assert.rejects(rows('tix_discovery_due',[0,7,40]));await db.exec('reset role');
+ }
+ // A broad catalog stays bounded even when event metadata is wide.
+ await db.exec(`insert into tix_catalog(event_id,event_date,url,category,name,city,state)
+ select lpad(to_hex(g),24,'0'),current_date+g%31,'https://gametime.co/'||repeat('fixture-',50)||'/events/'||lpad(to_hex(g),24,'0'),
+ 'concert',repeat('Fixture ',80),'Market '||(g%100),'WI' from generate_series(10000,19999) g;analyze tix_catalog;`);
+ assert.equal((await rows('tix_discovery_due',[0,30,1000])).length,40);
+ const expected=(await one('select count(*)::int n from tix_events_v where event_date between current_date and current_date+365')).n;
+ assert.equal((await rpc('tix_catalog_health',[null])).events,expected);
  await db.close();console.log('Catalog identities, demand, coverage, exact quantities and comparable history tests passed.');
 })().catch(e=>{console.error(e);process.exit(1)});

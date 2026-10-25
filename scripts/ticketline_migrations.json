@@ -25,5 +25,8 @@
   "20261020_quick_latency.sql",
   "20261020_storage_policy.sql",
   "20261021_capture_write_performance.sql",
-  "20261021_alert_streamlining.sql"
+  "20261021_alert_streamlining.sql",
+  "20261023_coverage_monitor.sql",
+  "20261023_collector_cadence.sql",
+  "20261025_bounded_catalog_queries.sql"
 ]

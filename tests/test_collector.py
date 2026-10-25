@@ -215,6 +215,51 @@ class CollectorTests(unittest.TestCase):
         self.assertIsNone(c.cheapest_any([listing(lots=[1,3,4])],2))
         self.assertIsNone(c.cheapest_for([listing(lots=[1,3,4])],'Club',2))
         self.assertEqual(c.cheapest_any([listing()],2)[0],15000)
+
+    def test_discovery_disk_exhaustion_keeps_successful_batches(self):
+        import urllib.error
+        error=urllib.error.HTTPError('https://example.test',503,'disk full',{},None)
+        error.postgres_code='53100'
+        def db(method,path,body=None):
+            if path=='rpc/tix_discovery_due':raise error
+            if path=='rpc/tix_capture_due':return [{'event_id':'tracked'}]
+            if 'city=eq.Minneapolis' in path:return [{'event_id':'local'}]
+            return []
+        health={'status':'ok'}
+        with patch.object(c,'sb',side_effect=db):
+            queued=c.discovery_due(health)
+        self.assertEqual([row['event_id'] for row in queued],['tracked','local'])
+        self.assertTrue(queued[0]['_history_requested'])
+        self.assertEqual(health['status'],'degraded')
+        self.assertEqual(health['discovery_selection_failures'],2)
+
+    def test_discovery_permission_failure_still_raises(self):
+        import urllib.error
+        with patch.object(c,'sb',side_effect=urllib.error.HTTPError('https://example.test',403,'denied',{},None)):
+            with self.assertRaises(urllib.error.HTTPError):c.discovery_due({'status':'ok'})
+
+    def test_watch_progress_is_saved_when_background_selection_times_out(self):
+        import urllib.error
+        watch={'id':'w','kind':'event','match':{'event_ids':['e']},'clubs':[],'qty':2,
+               'threshold_cents':500,'alert_style':'first','active':True,'created_at':c.NOW.isoformat(),'criteria_version':1}
+        event={'event_id':'e','event_date':c.NOW.date().isoformat(),'url':'https://gametime.co/events/e'}
+        error=urllib.error.HTTPError('https://example.test',500,'timeout',{},None)
+        error.postgres_code='57014'
+        def db(method,path,body=None,prefer=None):
+            if path.startswith('tix_watches?'):return [watch]
+            if path=='rpc/tix_discovery_due':raise error
+            if path=='rpc/tix_runtime_health':return {'overdue_alert_events':0}
+            return []
+        with patch.object(c,'sb',side_effect=db),patch.object(c,'catalog_stale',return_value=False), \
+             patch.object(c,'send_pending_confirmations',return_value=0),patch.object(c,'resolve_events',return_value=[event]), \
+             patch.object(c,'fetch_provider_page',return_value=('ok',{'event_id':'e'},[listing()])), \
+             patch.object(c,'scan_result') as scan,patch.object(c,'write_state') as saved,patch.object(c.time,'sleep'):
+            c.main()
+        scan.assert_called_once()
+        self.assertEqual(scan.call_args.args[2],'ok')
+        self.assertEqual(saved.call_args.args[0],'collector_health')
+        self.assertEqual(saved.call_args.args[1]['checked_events'],1)
+        self.assertEqual(saved.call_args.args[1]['status'],'degraded')
     def test_missing_lots_is_not_proof_of_purchase_quantity(self):
         l=listing(); del l['availableLots']
         self.assertFalse(c.allows_quantity(l,2))

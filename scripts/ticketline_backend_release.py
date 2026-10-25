@@ -22,28 +22,36 @@ def main():
         with urllib.request.urlopen(request,timeout=90) as response:return json.load(response)
     def sql(query):return api('/database/query',json.dumps({'query':query}).encode())
     if '--coverage-fix' in sys.argv:
-        # Explain the actual query, not just the PL/pgSQL wrapper. Report plan
-        # shape/timing only; no watch, owner, event or destination values.
+        # Explain the repaired query, never re-run the baseline that exhausted
+        # temporary disk. Report plan shape/timing, never private row values.
         def explain(file):
             query=(ROOT/'scripts'/file).read_text().split('$health$')[1].strip().replace('$1','null::text')
-            plan=sql('explain (analyze, buffers, format json) '+query)[0]['QUERY PLAN'][0]
+            rows=sql("set local statement_timeout='8s'; explain (analyze, buffers, format json) "+query)
+            plan=next(row['QUERY PLAN'][0] for row in rows if 'QUERY PLAN' in row)
             def nodes(node):
-                return [{'node':node['Node Type'],'relation':node.get('Relation Name'),'rows':node.get('Actual Rows'),'loops':node.get('Actual Loops')}]+[row for child in node.get('Plans',[]) for row in nodes(child)]
+                return [{'node':node['Node Type'],'relation':node.get('Relation Name'),'rows':node.get('Actual Rows'),'loops':node.get('Actual Loops'),'temp_written':node.get('Temp Written Blocks',0)}]+[row for child in node.get('Plans',[]) for row in nodes(child)]
             print(json.dumps({'query':file,'execution_ms':plan['Execution Time'],'plan':nodes(plan['Plan'])}))
-        try:explain('20261017_coverage_query.sql')
-        except Exception as error:print('Baseline coverage query unavailable:',type(error).__name__)
         sql((ROOT/'scripts/20261023_coverage_monitor.sql').read_text())
         sql((ROOT/'scripts/20261023_collector_cadence.sql').read_text())
-        explain('20261023_coverage_monitor.sql')
+        sql((ROOT/'scripts/20261025_bounded_catalog_queries.sql').read_text())
+        explain('20261025_bounded_catalog_queries.sql')
         for _ in range(3):
             started=time.monotonic()
             rows=sql("set local statement_timeout='8s'; select public.tix_catalog_health(null) health")
             sample=next(row['health'] for row in rows if 'health' in row)
             if not sample.get('events'):raise RuntimeError('Coverage verification returned no catalog events')
             print('Live coverage query verified:',sample['events'],'events;',round(time.monotonic()-started,3),'seconds including transport')
+        for start,end in ((0,7),(8,30)):
+            started=time.monotonic()
+            rows=sql("set local statement_timeout='8s'; select count(*) selected from public.tix_discovery_due("+str(start)+','+str(end)+',40)')
+            selected=next(row['selected'] for row in rows if 'selected' in row)
+            if not 0<=selected<=40:raise RuntimeError('Discovery selection exceeded its batch limit')
+            print('Live discovery query verified:',start,end,'days;',selected,'events;',round(time.monotonic()-started,3),'seconds including transport')
         runtime=sql('select public.tix_runtime_health() health')[0]['health']
         if not isinstance(runtime.get('overdue_alert_progress'),dict):raise RuntimeError('Per-event progress migration is unavailable')
-        print('Verified coverage schema 20261028; overdue alert count:',runtime['overdue_alert_events'])
+        if not sql('select version from public.tix_schema_versions where version=20261029'):
+            raise RuntimeError('Bounded catalog query migration is unavailable')
+        print('Verified catalog query schema 20261029; overdue alert count:',runtime['overdue_alert_events'])
         return
     existing=sql('select version from public.tix_schema_versions')
     versions={row['version'] for row in existing}
@@ -62,7 +70,7 @@ def main():
             print('Verified alert controls schema 20261026')
         print('Verified capture-write repair 20261025; quote service unchanged')
         return
-    for version,name in [(20261020,'20261020_runtime_reliability.sql'),(20261021,'20261020_delivery_health.sql'),(20261022,'20261020_quote_priority.sql'),(20261023,'20261020_quick_latency.sql'),(20261024,'20261020_storage_policy.sql'),(20261025,'20261021_capture_write_performance.sql'),(20261026,'20261021_alert_streamlining.sql'),(20261027,'20261023_coverage_monitor.sql'),(20261028,'20261023_collector_cadence.sql')]:
+    for version,name in [(20261020,'20261020_runtime_reliability.sql'),(20261021,'20261020_delivery_health.sql'),(20261022,'20261020_quote_priority.sql'),(20261023,'20261020_quick_latency.sql'),(20261024,'20261020_storage_policy.sql'),(20261025,'20261021_capture_write_performance.sql'),(20261026,'20261021_alert_streamlining.sql'),(20261027,'20261023_coverage_monitor.sql'),(20261028,'20261023_collector_cadence.sql'),(20261029,'20261025_bounded_catalog_queries.sql')]:
         if version not in versions:
             sql((ROOT/'scripts'/name).read_text());print('Applied reviewed schema',version)
     boundary='ticketline-'+uuid.uuid4().hex
@@ -71,7 +79,7 @@ def main():
     result=api('/functions/deploy?slug=ticketline-prices',body,'multipart/form-data; boundary='+boundary)
     if result.get('status')!='ACTIVE':raise RuntimeError('Function did not report ACTIVE')
     print('Published quote function version',result.get('version'))
-    if sql('select max(version) version from public.tix_schema_versions')[0]['version']<20261028:raise RuntimeError('Schema verification failed')
+    if sql('select max(version) version from public.tix_schema_versions')[0]['version']<20261029:raise RuntimeError('Schema verification failed')
 
 if __name__=='__main__':main()
 
