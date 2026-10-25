@@ -872,24 +872,41 @@ def note_deferral(health, error):
         health['provider_paused'] = error.reason
         if error.reason != 'rollout_disabled': health['status'] = 'error'
 
-def discovery_due():
+def discovery_due(health=None):
+    def read(method,path,body=None):
+        try:
+            return sb(method,path,body) if body is not None else sb(method,path)
+        except (urllib.error.URLError,TimeoutError) as error:
+            # Discovery is optional browsing/history work after watch checks.
+            # Preserve other selected batches and the watch heartbeat when a
+            # read runs out of database resources. Permission/schema errors
+            # still fail visibly; never retry provider requests or writes.
+            transient = not isinstance(error,urllib.error.HTTPError) or error.code in (502,503,504) or (
+                error.code==500 and getattr(error,'postgres_code',None) in ('53100','53200','53300','53400','57014'))
+            if not transient: raise
+            reason=getattr(error,'postgres_code',None) or type(error).__name__
+            print(f'Discovery selection unavailable ({reason}); retaining other batches and completed watch checks.',file=sys.stderr)
+            if health is not None:
+                health['discovery_selection_failures']=health.get('discovery_selection_failures',0)+1
+                if health['status']=='ok': health['status']='degraded'
+            return []
     out = []
-    tracked=sb('POST','rpc/tix_capture_due',{'p_limit':TRACKED_FETCHES})
+    tracked=read('POST','rpc/tix_capture_due',{'p_limit':TRACKED_FETCHES})
     for row in tracked: row['_history_requested']=True
     out.extend(tracked)
     today = NOW.date().isoformat()
     end = (NOW.date()+timedelta(days=7)).isoformat()
     for city,state in DISCOVERY_SEED_CITIES:
-        out.extend(sb('GET',f'tix_events_v?city=eq.{urllib.parse.quote(city)}&state=eq.{state}'
+        out.extend(read('GET',f'tix_events_v?city=eq.{urllib.parse.quote(city)}&state=eq.{state}'
                       f'&event_date=gte.{today}&event_date=lte.{end}'
                       '&discovery_attempt_at=is.null&order=event_date,event_id&select=*&limit=4'))
     for category in DISCOVERY_SEED_CATEGORIES:
-        out.extend(sb('GET',f'tix_events_v?category=eq.{category}'
+        out.extend(read('GET',f'tix_events_v?category=eq.{category}'
                       f'&event_date=gte.{today}&event_date=lte.{end}'
                       '&name=not.ilike.*tbd*&discovery_attempt_at=is.null'
                       '&order=event_date,event_id&select=*&limit=2'))
     for start,end,limit in [(0,7,DISCOVERY_NEAR_FETCHES),(8,30,DISCOVERY_LATER_FETCHES)]:
-        out.extend(sb('POST','rpc/tix_discovery_due',
+        out.extend(read('POST','rpc/tix_discovery_due',
                       {'p_from_days':start,'p_to_days':end,'p_limit':limit}))
     unique={}
     for row in out:
@@ -1092,7 +1109,7 @@ def main():
         time.sleep(1)
     # Discovery serves anonymous browsing. These capped scans are independent
     # of alert watches; a failed page is recorded and rotated behind other cities.
-    discovery = discovery_due()
+    discovery = discovery_due(health)
     health['discovery_queued'] = len(discovery)
     health['discovery_checked'] = 0
     health['discovery_failed'] = 0
