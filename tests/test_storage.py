@@ -69,6 +69,18 @@ class StorageRecoveryTests(unittest.TestCase):
         self.assertFalse(any(query.startswith('vacuum') for query,_ in calls))
         self.assertFalse(any('alter database' in query for query,_ in calls))
 
+    def test_connection_reset_resumes_only_the_idempotent_cleanup(self):
+        database,calls=self.database();failed=False
+        def sql(query,read_only=None):
+            nonlocal failed
+            if ' cleanup;' in query and not failed:
+                failed=True
+                raise RuntimeError('Connection terminated unexpectedly')
+            return database(query,read_only=read_only)
+        with patch.object(release.time,'sleep') as sleep,contextlib.redirect_stdout(io.StringIO()):release.recover_storage(sql)
+        sleep.assert_called_once_with(2)
+        self.assertEqual(sum(' cleanup;' in query for query,_ in calls),2)
+
     def test_history_loss_never_resumes_database_writes(self):
         sql,calls=self.database(history_after=99)
         with contextlib.redirect_stdout(io.StringIO()),self.assertRaisesRegex(RuntimeError,'Price-history verification failed'):

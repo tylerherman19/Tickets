@@ -22,7 +22,7 @@ begin
   cross join lateral(select 1 from public.tix_listing_observations l
    where l.observation_id=o.id limit 1) present
   where o.checked_at<now()-interval '1 day'
-  order by o.checked_at,o.id limit 32
+  order by o.checked_at,o.id limit 128
  ), candidates as materialized (
   -- LIMIT inside the lateral lookup prevents a cached generic plan from
   -- hash-joining the entire 1GB+ raw table. Lock only the bounded candidates.
@@ -31,7 +31,9 @@ begin
     l.price_cents,l.basis,l.section,l.section_group
    from public.tix_listing_observations l where l.observation_id=o.id
    order by l.ordinal limit 5000 for update of l skip locked
-  ) l order by o.checked_at,l.observation_id,l.ordinal
+  -- Stream the bounded lateral lookups: sorting here would lock/read every
+  -- listing in all 128 observations before applying the candidate limit.
+  ) l
   limit least(greatest(p_limit,256),5000)
  ), due as materialized (
   select l.tid from candidates l

@@ -29,20 +29,35 @@ def recover_storage(sql):
     migration=(ROOT/'scripts/20261025_listing_retention_batches.sql').read_text().replace('begin;','begin;set transaction read write;',1)
     sql(migration,read_only=False)
     before=sql('select count(*) history_rows from public.tix_listing_price_rollup')[0]['history_rows']
+    permissions=sql("select rolsuper or pg_has_role(current_user,'pg_checkpoint','USAGE') can_checkpoint from pg_roles where rolname=current_user")
+    can_checkpoint=bool(permissions and permissions[0].get('can_checkpoint'))
+    if can_checkpoint:sql('checkpoint',read_only=False)
     deleted=0;deadline=time.monotonic()+360
     for batch in range(1000):
         if time.monotonic()>deadline:raise RuntimeError('Storage cleanup reached its bounded run time; rerun to continue from the saved progress')
-        rows=sql("begin;set transaction read write;set local statement_timeout='20s';select public.tix_prune_listing_copies(true,2000) cleanup;commit;",read_only=False)
+        for attempt in range(3):
+            try:
+                rows=sql("begin;set transaction read write;set local statement_timeout='20s';select public.tix_prune_listing_copies(true,2000) cleanup;commit;",read_only=False)
+                break
+            except RuntimeError as error:
+                # This operation is resumable even if the prior batch committed:
+                # every attempt selects only remaining, already-approved rows.
+                if 'connection terminated unexpectedly' not in str(error).lower() or attempt==2:raise
+                print('Database connection reset; resuming the bounded retention batch.',flush=True)
+                time.sleep(2*(attempt+1))
         result=next(row['cleanup'] for row in rows if 'cleanup' in row)
         if result.get('busy'):time.sleep(1);continue
         n=result.get('deleted',0);deleted+=n
-        if batch%20==0:print('Approved raw-listing cleanup progress:',deleted,'rows;',batch+1,'batches',flush=True)
+        if batch%20==0:
+            print('Approved raw-listing cleanup progress:',deleted,'rows;',batch+1,'batches',flush=True)
+            if can_checkpoint:sql('checkpoint',read_only=False)
         if not n:break
     else:raise RuntimeError('Storage cleanup reached its batch limit; rerun to continue')
     remaining=sql('select public.tix_prune_listing_copies(false,2000) retention')[0]['retention']['eligible_rows']
     if remaining:raise RuntimeError('Some old raw listings lack verified rollups; retained them instead of deleting their evidence')
     # Ordinary VACUUM cannot release a large empty prefix before recent rows.
     # Compact this one table after cleanup; the surviving raw rows are retained.
+    if can_checkpoint:sql('checkpoint',read_only=False)
     sql('vacuum (full,analyze) public.tix_listing_observations',read_only=False)
     after=sql('select pg_database_size(current_database()) database_bytes,(select count(*) from public.tix_listing_price_rollup) history_rows')[0]
     if after['history_rows']<before:raise RuntimeError('Price-history verification failed; captures remain paused')
