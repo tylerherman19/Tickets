@@ -37,6 +37,10 @@ def main():
         if database['read_only']=='on':
             sizes=sql("select schemaname,relname,pg_total_relation_size(relid) total_bytes,n_live_tup,n_dead_tup from pg_stat_user_tables order by pg_total_relation_size(relid) desc limit 15")
             print('Largest database relations:',json.dumps(sizes),flush=True)
+            retention=sql('select public.tix_prune_listing_copies(false,5000) retention')
+            print('Existing listing retention policy:',json.dumps(retention),flush=True)
+            indexes=sql("select indexrelname,pg_relation_size(indexrelid) index_bytes,idx_scan from pg_stat_user_indexes where schemaname='public' and relname like 'tix_%' order by pg_relation_size(indexrelid) desc limit 10")
+            print('Largest Ticketline indexes:',json.dumps(indexes),flush=True)
             try:print('Database WAL:',json.dumps(sql('select sum(size) wal_bytes from pg_ls_waldir()')),flush=True)
             except RuntimeError as error:print('WAL size unavailable:',str(error),flush=True)
             raise RuntimeError('Database is in read-only mode; reclaim existing free space before applying migrations. No stored history was deleted.')
