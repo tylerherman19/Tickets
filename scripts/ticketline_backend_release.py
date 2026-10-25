@@ -2,7 +2,7 @@
 """Apply reviewed additive migrations and publish the exact bundled quote source.
 Requires an owner-supplied Supabase Management API token; never reads browser login.
 """
-import json,os,sys,time,urllib.request,uuid
+import json,os,sys,time,urllib.request,urllib.error,uuid
 from pathlib import Path
 PROJECT='aahqagqztanltejsqjom'
 ROOT=Path(__file__).resolve().parents[1]
@@ -19,7 +19,17 @@ def main():
     if not token:raise RuntimeError('Add SUPABASE_ACCESS_TOKEN to repository Actions secrets to enable backend releases')
     def api(path,body,content_type='application/json'):
         request=urllib.request.Request('https://api.supabase.com/v1/projects/'+PROJECT+path,data=body,method='POST',headers={'Authorization':'Bearer '+token,'Content-Type':content_type})
-        with urllib.request.urlopen(request,timeout=90) as response:return json.load(response)
+        try:
+            with urllib.request.urlopen(request,timeout=90) as response:return json.load(response)
+        except urllib.error.HTTPError as error:
+            # Surface the SQL/permission diagnosis, never request headers,
+            # credentials, or a response containing private row values.
+            try:
+                detail=json.load(error)
+                message=str(detail.get('message') or detail.get('error') or detail.get('code') or 'No diagnostic message')
+            except (ValueError,AttributeError):message='No JSON diagnostic message'
+            message=message.replace(token,'[redacted]')[:600]
+            raise RuntimeError(f'Supabase release request failed (HTTP {error.code}): {message}') from None
     def sql(query):return api('/database/query',json.dumps({'query':query}).encode())
     if '--coverage-fix' in sys.argv:
         # Explain the repaired query, never re-run the baseline that exhausted
