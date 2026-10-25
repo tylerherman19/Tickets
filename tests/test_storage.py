@@ -78,8 +78,18 @@ class StorageRecoveryTests(unittest.TestCase):
                 raise RuntimeError('Connection terminated unexpectedly')
             return database(query,read_only=read_only)
         with patch.object(release.time,'sleep') as sleep,contextlib.redirect_stdout(io.StringIO()):release.recover_storage(sql)
-        sleep.assert_called_once_with(2)
+        sleep.assert_called_once_with(5)
         self.assertEqual(sum(' cleanup;' in query for query,_ in calls),2)
+
+    def test_one_connection_handles_several_committed_batches(self):
+        database,calls=self.database()
+        def sql(query,read_only=None):
+            if ' cleanup;' in query:
+                self.assertEqual(query.count('select public.tix_prune_listing_copies'),8)
+                self.assertEqual(query.count('commit;'),8)
+                return [{'cleanup':{'deleted':2000}},{'cleanup':{'deleted':0}}]
+            return database(query,read_only=read_only)
+        with contextlib.redirect_stdout(io.StringIO()):release.recover_storage(sql)
 
     def test_history_loss_never_resumes_database_writes(self):
         sql,calls=self.database(history_after=99)
