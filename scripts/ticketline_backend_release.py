@@ -36,7 +36,7 @@ def recover_storage(sql):
         result=next(row['cleanup'] for row in rows if 'cleanup' in row)
         if result.get('busy'):time.sleep(1);continue
         n=result.get('deleted',0);deleted+=n
-        if batch%20==0:print('Approved raw-listing cleanup progress:',deleted,flush=True)
+        if batch%20==0:print('Approved raw-listing cleanup progress:',deleted,'rows;',batch+1,'batches',flush=True)
         if not n:break
     else:raise RuntimeError('Storage cleanup reached its batch limit; rerun to continue')
     remaining=sql('select public.tix_prune_listing_copies(false,2000) retention')[0]['retention']['eligible_rows']
