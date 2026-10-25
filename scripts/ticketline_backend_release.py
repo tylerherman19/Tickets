@@ -94,10 +94,12 @@ def main():
             def nodes(node):
                 return [{'node':node['Node Type'],'relation':node.get('Relation Name'),'rows':node.get('Actual Rows'),'loops':node.get('Actual Loops'),'temp_written':node.get('Temp Written Blocks',0)}]+[row for child in node.get('Plans',[]) for row in nodes(child)]
             print(json.dumps({'query':file,'execution_ms':plan['Execution Time'],'plan':nodes(plan['Plan'])}))
-        sql((ROOT/'scripts/20261023_coverage_monitor.sql').read_text())
-        sql((ROOT/'scripts/20261023_collector_cadence.sql').read_text())
-        sql((ROOT/'scripts/20261025_bounded_catalog_queries.sql').read_text())
-        sql((ROOT/'scripts/20261025_listing_retention_batches.sql').read_text())
+        for name in ('20261023_coverage_monitor.sql','20261023_collector_cadence.sql',
+                     '20261025_bounded_catalog_queries.sql','20261025_listing_retention_batches.sql'):
+            # Existing pooled connections may retain the former default even
+            # after compaction and ALTER DATABASE restore normal access.
+            query=(ROOT/'scripts'/name).read_text().replace('begin;','begin;set transaction read write;',1)
+            sql(query,read_only=False)
         explain('20261025_bounded_catalog_queries.sql')
         for _ in range(3):
             started=time.monotonic()
@@ -116,12 +118,12 @@ def main():
         if not sql('select version from public.tix_schema_versions where version=20261029'):
             raise RuntimeError('Bounded catalog query migration is unavailable')
         print('Verified catalog query schema 20261029; overdue alert count:',runtime['overdue_alert_events'])
-        sql("""begin;
+        sql("""begin;set transaction read write;
           update public.tix_provider_guard set enabled=true where id and exists(
             select 1 from public.tix_state where k='storage_recovery' and v->>'status'='paused' and (v->>'provider_was_enabled')::boolean);
           update public.tix_state set v=v||jsonb_build_object('status','recovered','recovered_at',now()),updated_at=now()
             where k='storage_recovery' and v->>'status'='paused';
-          commit;""")
+          commit;""",read_only=False)
         return
     existing=sql('select version from public.tix_schema_versions')
     versions={row['version'] for row in existing}
