@@ -26,6 +26,9 @@ permissions:
   contents: read
 jobs:
   sweep:
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -35,21 +38,21 @@ jobs:
           python-version: '3.12'
       - name: Select the collector compatible with the deployed schema
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_release_gate.py
       - name: Import requested college basketball catalog
         if: inputs.catalog_category == 'college-basketball'
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
           TIX_BASKETBALL_BOOTSTRAP: ${{ inputs.bootstrap }}
           TIX_BASKETBALL_TEAM: ${{ inputs.college_team }}
         run: python scripts/tickets_basketball_catalog.py
       - name: Save prices for the requested events
         if: inputs.event_ids != ''
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
           TIX_SWEEP_EVENT_IDS: ${{ inputs.event_ids }}
         run: python scripts/tickets_sweep.py

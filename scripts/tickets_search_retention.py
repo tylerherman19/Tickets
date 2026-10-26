@@ -1,4 +1,5 @@
 """Scheduled search-log retention only; never contacts ticket providers."""
+from ticketline_backend import service_key
 import json
 import os
 import urllib.request
@@ -6,7 +7,7 @@ import urllib.request
 
 def main():
     url = os.environ['SUPABASE_URL'].rstrip('/')
-    key = os.environ['SUPABASE_SERVICE_KEY']
+    key = service_key()
     request = urllib.request.Request(
         url + '/rest/v1/rpc/tix_prune_search_activity',
         data=b'{}', method='POST',

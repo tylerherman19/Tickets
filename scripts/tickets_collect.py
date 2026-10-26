@@ -10,6 +10,7 @@ Env: SUPABASE_URL, SUPABASE_SERVICE_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, SMS_
 Runs in GitHub Actions. Anonymous page access does not establish collection permission.
 Use --fixture PATH for offline parsing/selection without database writes or alerts.
 """
+from ticketline_backend import service_key
 import html as html_lib, json, os, re, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone, timedelta
 from ticket_emails import confirmation_email, price_alert_email, clean_text, valid_address, EmailContent
@@ -48,7 +49,8 @@ PROVIDER_GATEWAYS = {
 # ---------- supabase rest ----------
 def sb(method, path, body=None, prefer=None):
     url = f"{SB_URL}/rest/v1/{path}"
-    h = {"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}", "Content-Type": "application/json"}
+    key = service_key()
+    h = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     if prefer: h["Prefer"] = prefer
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers=h, method=method)
@@ -624,7 +626,7 @@ def _resolve_events(w):
             home = cslug.endswith(f"-at-{slug}") or f"-at-{slug}-" in cslug
             away = cslug.startswith(f"{slug}-at-")
             if ha == "home" and not home: continue
-            if ha == "away" and not away: continue
+       if ha == "away" and not away: continue
             if ha == "any" and not (home or away): continue
             out.append(c)
         return out

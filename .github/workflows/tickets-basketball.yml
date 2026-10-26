@@ -1,7 +1,7 @@
 name: college basketball catalog
 on:
   schedule:
-    - cron: '40 * * * *'
+    - cron: '45 * * * *'
   workflow_dispatch:
     inputs:
       bootstrap:
@@ -15,6 +15,9 @@ permissions:
   contents: read
 jobs:
   import:
+    permissions:
+      contents: read
+      id-token: write
     # Free-plan storage outage: automatic database jobs are paused.
     # Manual recovery remains available; restore automatic runs only after
     # PostgreSQL is healthy, approved retention finishes, and disk has headroom.
@@ -28,12 +31,12 @@ jobs:
           python-version: '3.12'
       - name: Select deployed collector
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_release_gate.py
       - name: Pull college basketball schedules from Gametime
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
           TIX_BASKETBALL_BOOTSTRAP: ${{ inputs.bootstrap }}
         run: python scripts/tickets_basketball_catalog.py

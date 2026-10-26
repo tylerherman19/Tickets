@@ -13,6 +13,7 @@ jobs:
   capture:
     permissions:
       contents: read
+      id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -22,13 +23,13 @@ jobs:
           python-version: '3.12'
       - name: Verify the deployed database version
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_release_gate.py
       - run: python -m pip install playwright==1.60.0
       - name: Save event prices and seats without notifications
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
           TIX_DETAIL_EVENT_ID: ${{ inputs.event_id }}
         run: python scripts/ticket_details.py
