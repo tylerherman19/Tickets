@@ -23,6 +23,8 @@ test('Neon bootstrap preserves owner RLS and does not add privileged recovery ex
   const service=createService(null,{pool:{query:(...args)=>db.query(...args)}});
   const result=await service.request(new URL('https://api.example/rest/v1/tix_state?on_conflict=k'),{method:'POST',headers:{prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify([{k:'neon-fixture',v:{valid:true}}])});
   assert.equal(result.status,201);assert.deepEqual((await result.json())[0].v,{valid:true});
+  const prefix=await service.request(new URL('https://api.example/rest/v1/tix_state?k=ilike.NEON-*&select=k'),{method:'GET'});assert.deepEqual(await prefix.json(),[{k:'neon-fixture'}]);
+  const excluded=await service.request(new URL('https://api.example/rest/v1/tix_state?k=not.ilike.*fixture*&select=k'),{method:'GET'});assert.equal((await excluded.json()).some(x=>x.k==='neon-fixture'),false);
   const health=await service.request(new URL('https://api.example/rest/v1/rpc/tix_runtime_health'),{method:'POST',body:'{}'});assert.equal(health.status,200);assert.equal((await health.json()).schema,20261030);
  }finally{await db.close();}
 });
