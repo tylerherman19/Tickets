@@ -24,8 +24,8 @@ export function createService(connectionString,{pool:providedPool}={}){
    const value=(key,v)=>{values.push(['json','jsonb'].includes(columns.get(key))&&v!==null?JSON.stringify(v):v);return '$'+values.length;};
    for(const [key,expr]of url.searchParams){
     if(['select','order','limit','offset','on_conflict'].includes(key))continue;
-    const c=col(key);let match=expr.match(/^(eq|neq|gt|gte|lt|lte|like|ilike)\.(.*)$/s);
-    if(match){const operators={eq:'=',neq:'<>',gt:'>',gte:'>=',lt:'<',lte:'<=',like:'like',ilike:'ilike'};filters.push(`${c} ${operators[match[1]]} ${value(key,match[2])}`);continue;}
+    const c=col(key);let match=expr.match(/^(not\.)?(eq|neq|gt|gte|lt|lte|like|ilike)\.(.*)$/s);
+    if(match){const operators={eq:'=',neq:'<>',gt:'>',gte:'>=',lt:'<',lte:'<=',like:'like',ilike:'ilike'},pattern=['like','ilike'].includes(match[2])?match[3].replaceAll('*','%'):match[3];filters.push(`${match[1]?'not (':''}${c} ${operators[match[2]]} ${value(key,pattern)}${match[1]?')':''}`);continue;}
     if(expr==='is.null'||expr==='not.is.null'){filters.push(`${c} is ${expr.startsWith('not')?'not ':''}null`);continue;}
     match=expr.match(/^(not\.)?in\.\((.*)\)$/s);if(match){const list=match[2].split(',').map(x=>x.replace(/^"|"$/g,''));if(!list.length)throw new Error('empty_filter');filters.push(`${c} ${match[1]?'not ':''}in (${list.map(x=>value(key,x)).join(',')})`);continue;}
     if(expr==='is.true'||expr==='is.false'){filters.push(`${c} is ${expr.slice(3)}`);continue;}

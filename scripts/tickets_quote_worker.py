@@ -36,6 +36,7 @@ def main():
     while time.monotonic()<deadline:
         if deadline-time.monotonic()<80:break # Give an admitted browser capture time to finish.
         jobs=collect.sb('POST','rpc/tix_quick_due',{'p_limit':1})
+        if not jobs and os.environ.get('TIX_QUOTE_EXIT_WHEN_IDLE')=='true':break
         for job in jobs:
             try:capture(job);checked+=1
             except CaptureDeferred as error:

@@ -4,7 +4,7 @@
   "scripts": {
     "test": "npm run typecheck && node --test tests/test_frontend.cjs tests/test_auth.cjs tests/test_watch_cards.cjs tests/test_quick_watch.cjs tests/test_provider.mjs tests/test_edge.mjs tests/test_event_dom.cjs tests/test_admin.cjs tests/test_search_activity.cjs tests/test_backup.mjs && node tests/sql/guarded-history.cjs && node tests/sql/fast-search.cjs && node tests/sql/moved-events.cjs && node tests/sql/catalog-reliability.cjs && node tests/sql/admin.cjs && node tests/sql/general-search.cjs && node tests/sql/search-activity.cjs && node tests/sql/runtime-reliability.cjs && node tests/sql/delivery-health.cjs && node tests/sql/storage-policy.cjs",
     "typecheck": "tsc --allowJs --noEmit --module esnext --target es2022 --moduleResolution bundler --lib es2022,dom --skipLibCheck tests/types/edge-env.d.ts supabase/functions/ticketline-prices/index.ts",
-    "test:neon": "node --test tests/test_neon_backend.mjs tests/test_neon_schema.mjs",
+    "test:neon": "node --test tests/test_neon_backend.mjs tests/test_neon_schema.mjs tests/test_neon_client.mjs",
     "build:neon": "node scripts/neon/build.mjs"
   },
   "devDependencies": {

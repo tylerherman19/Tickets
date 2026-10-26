@@ -4,12 +4,13 @@ const fs=require('node:fs');
 const {JSDOM,VirtualConsole}=require('jsdom');
 const source=fs.readFileSync('auth.js','utf8');
 const pendingKey='ticketline.pending-sign-in.v1';
-function setup({url='https://ticketline.example/watches.html',pending=null,callbackPage=false,fetchResponse=null,storageDenied=false}={}){
+function setup({url='https://ticketline.example/watches.html',pending=null,callbackPage=false,fetchResponse=null,storageDenied=false,neon=null}={}){
  let reloads=0;const virtualConsole=new VirtualConsole();
  virtualConsole.on('jsdomError',error=>{if(error.message==='Not implemented: navigation (except hash changes)') reloads++;else throw error;});
  const dom=new JSDOM('<body data-page="watches"><main id="main"></main>',{url,runScripts:'outside-only',virtualConsole});
  const w=dom.window,calls=[];
  w.SB_URL='https://auth.example';w.SB_KEY='public';w.esc=s=>String(s).replaceAll('<','&lt;');
+ if(neon){w.TicketlineNeonAuth=neon;w.Response=Response;}
  w.AbortSignal=AbortSignal;w.setInterval=()=>1;
  if(storageDenied){const original=w.Storage.prototype.setItem;w.Storage.prototype.setItem=function(key,value){if(key==='ticketline.session.v1')throw new Error('Storage blocked');return original.call(this,key,value);};}
  if(pending)w.localStorage.setItem(pendingKey,JSON.stringify(pending));
@@ -17,6 +18,28 @@ function setup({url='https://ticketline.example/watches.html',pending=null,callb
  w.eval(source+(callbackPage?'\n'+fs.readFileSync('auth-callback.js','utf8'):''));return {w,calls,reloads:()=>reloads,close:()=>w.close()};
 }
 const field=(w,id)=>w.document.querySelector('#'+id);
+test('Neon code sign-in uses the SDK and preserves its empty refresh-token session',async()=>{
+ const calls=[];const neon={signInWithOtp:async value=>{calls.push(['send',value]);return {data:{},error:null};},verifyOtp:async value=>{calls.push(['verify',value]);return {data:{session:{access_token:'neon-jwt',refresh_token:'',expires_in:300}},error:null};}};
+ const {w,calls:network,close}=setup({neon});try{
+  await w.requireSession();assert.match(field(w,'sign-in-form').textContent,/Email me a code/);
+  await request(w);await verify(w,'123456');
+  assert.deepEqual(calls.map(x=>JSON.parse(JSON.stringify(x))),[['send',{email:'owner@example.test'}],['verify',{email:'owner@example.test',token:'123456',type:'email'}]]);
+  assert.equal(network.length,0);assert.equal(JSON.parse(w.localStorage.getItem('ticketline.session.neon.v1')).access_token,'neon-jwt');
+ }finally{close();}
+});
+test('Neon refresh without a managed session expires the local session',async()=>{
+ const {w,close}=setup({neon:{refreshSession:async()=>({data:{session:null},error:null})}});try{
+  w.eval("session={access_token:'expired',refresh_token:'',expires_at:0}");
+  assert.equal(await w.accessToken(),null);assert.equal(w.localStorage.getItem('ticketline.session.neon.v1'),null);
+ }finally{close();}
+});
+test('Neon local sessions refresh before their JWT expires even when the managed session lasts longer',async()=>{
+ const expiry=Math.floor(Date.now()/1000)+300,token='header.'+Buffer.from(JSON.stringify({exp:expiry})).toString('base64url')+'.signature';
+ const {w,close}=setup({neon:{refreshSession:async()=>({data:{session:{access_token:token,refresh_token:'',expires_in:86400}},error:null})}});try{
+  const response=await w.authRequest('https://auth.example/auth/v1/token?grant_type=refresh_token',{body:'{}'}),next=await response.json();
+  assert.ok(next.expires_in>0&&next.expires_in<=300);
+ }finally{close();}
+});
 async function request(w,email='owner@example.test'){
  field(w,'sign-in-email').value=email;
  await field(w,'sign-in-form').onsubmit({preventDefault(){}});

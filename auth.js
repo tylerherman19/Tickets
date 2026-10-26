@@ -1,6 +1,21 @@
-/* Small passwordless Supabase Auth client for the static GitHub Pages site. */
+/* Passwordless sign-in for the static GitHub Pages site. */
 const IS_DEV = ['localhost','127.0.0.1'].includes(location.hostname);
-const SESSION_KEY = 'ticketline.session.v1';
+const NEON_AUTH=globalThis.TicketlineNeonAuth;
+const SESSION_KEY = NEON_AUTH?'ticketline.session.neon.v1':'ticketline.session.v1';
+async function authRequest(url,options){
+  if(!NEON_AUTH)return fetch(url,options);
+  const body=JSON.parse(options.body||'{}');let result;
+  if(url.includes('/token?'))result=await NEON_AUTH.refreshSession();
+  else if(url.includes('/verify'))result=await NEON_AUTH.verifyOtp({email:body.email,token:body.token,type:'email'});
+  else if(url.includes('/otp?'))result=await NEON_AUTH.signInWithOtp({email:body.email});
+  else if(url.includes('/logout'))result=await NEON_AUTH.signOut();
+  else throw new Error('Unsupported sign-in action');
+  if(result.error)return Response.json({error:result.error.message},{status:(result.error.status||result.error.statusCode)===429?429:400});
+  if((url.includes('/token?')||url.includes('/verify'))&&!result.data?.session)return Response.json({error:'Sign in again to continue.'},{status:401});
+  const next=result.data?.session;
+  if(next){try{const part=next.access_token.split('.')[1];const claims=JSON.parse(atob(part.replaceAll('-','+').replaceAll('_','/')));if(Number.isFinite(claims.exp))return Response.json({...next,expires_in:Math.max(0,Math.min(next.expires_in||3600,claims.exp-Date.now()/1000))});}catch{}}
+  return Response.json(next||{});
+}
 const PENDING_SIGN_IN_KEY = 'ticketline.pending-sign-in.v1';
 const validSignInEmail = email => typeof email==='string'&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 function pendingSignIn(){
@@ -36,7 +51,7 @@ async function accessToken(){
   refreshing ||= (async()=>{
     let r;
     try {
-      r=await fetch(SB_URL+'/auth/v1/token?grant_type=refresh_token',{
+      r=await authRequest(SB_URL+'/auth/v1/token?grant_type=refresh_token',{
         method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},
         body:JSON.stringify({refresh_token:session.refresh_token}),signal:AbortSignal.timeout(15000)});
     } catch { throw new Error('Could not reach the sign-in service. Check your connection and try again.'); }
@@ -67,6 +82,7 @@ async function requireSession(){
   const notice=sessionStorage.getItem('ticketline.auth-error');sessionStorage.removeItem('ticketline.auth-error');
   const main=document.querySelector('#main');
   main.innerHTML=`<div class="container page auth-page"><h1>Sign in to your alerts.</h1>${notice?`<p class="notice subtle" role="status">${esc(notice)}</p>`:''}<p>Enter your email for a secure sign-in link and a 6-digit code. You can browse ticket prices without signing in.</p><p>Price alerts are emailed to this address by default. You can add carrier email-to-text when creating an alert.</p><form id="sign-in-form" novalidate><label class="field-label" for="sign-in-email">Email</label><input id="sign-in-email" type="email" autocomplete="email" maxlength="254" required aria-describedby="sign-in-status"><button class="button primary" type="submit">Email me a sign-in link</button></form><p id="sign-in-status" role="status" aria-live="polite"></p><p id="sign-in-recipient" class="field-help" hidden></p><button id="use-existing-code" class="text-button" type="button">I already have a code</button><form id="verify-code-form" hidden novalidate><label class="field-label" for="sign-in-code">6-digit code</label><input id="sign-in-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required aria-describedby="verify-code-status"><button class="button primary" type="submit">Verify code</button><p id="verify-code-status" role="status" aria-live="polite"></p><button id="resend-sign-in-code" class="text-button" type="button">Send a new code</button><button id="change-sign-in-email" class="text-button" type="button">Use a different email</button></form><p class="field-help">By signing in you agree to the <a class="text-link" href="./privacy.html">privacy policy</a>.</p></div>`;
+  if(NEON_AUTH){main.innerHTML=main.innerHTML.replace('Enter your email for a secure sign-in link and a 6-digit code.','Enter your email for a secure 6-digit sign-in code.').replace('Email me a sign-in link','Email me a code');}
   const form=document.querySelector('#sign-in-form'),status=document.querySelector('#sign-in-status'),button=form.querySelector('button');
   const codeForm=document.querySelector('#verify-code-form'),codeInput=document.querySelector('#sign-in-code'),codeStatus=document.querySelector('#verify-code-status'),verifyButton=codeForm.querySelector('button');
   const emailInput=document.querySelector('#sign-in-email'),recipient=document.querySelector('#sign-in-recipient'),existingCode=document.querySelector('#use-existing-code');
@@ -74,7 +90,7 @@ async function requireSession(){
   let pendingEmail=pending?.email||null;
   function showCode(email){
     pendingEmail=email;emailInput.value=email;form.hidden=true;codeForm.hidden=false;existingCode.hidden=true;
-    recipient.hidden=false;recipient.textContent='Enter the code sent to '+email+'. You can also click the sign-in link in that email. Both expire after 5 minutes.';
+    recipient.hidden=false;recipient.textContent=NEON_AUTH?'Enter the 6-digit code sent to '+email+'. Use the newest email.':'Enter the code sent to '+email+'. You can also click the sign-in link in that email. Both expire after 5 minutes.';
     codeInput.value='';codeStatus.textContent='';codeInput.focus();
   }
   const resend=document.querySelector('#resend-sign-in-code');
@@ -84,7 +100,7 @@ async function requireSession(){
     const tick=()=>{
       const wait=Math.max(0,Math.ceil((requestedAt+60000-Date.now())/1000));
       button.disabled=resend.disabled=wait>0;
-      button.textContent=wait?`Resend in ${wait}s`:'Email me a sign-in link';
+      button.textContent=wait?`Resend in ${wait}s`:NEON_AUTH?'Email me a code':'Email me a sign-in link';
       resend.textContent=wait?`Send a new code in ${wait}s`:'Send a new code';
       if(!wait&&cooldownTimer){clearInterval(cooldownTimer);cooldownTimer=null;}
     };
@@ -110,7 +126,7 @@ async function requireSession(){
     if(!/^[0-9]{6}$/.test(token)){codeStatus.textContent='Enter the 6-digit code from your email.';codeInput.focus();return;}
     verifyButton.disabled=true;verifyButton.textContent='Verifying…';codeStatus.textContent='';
     try {
-      const r=await fetch(SB_URL+'/auth/v1/verify',{
+      const r=await authRequest(SB_URL+'/auth/v1/verify',{
         method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},
         body:JSON.stringify({type:'email',email,token}),signal:AbortSignal.timeout(15000)});
       const next=await r.json();
@@ -139,17 +155,17 @@ async function requireSession(){
       const destination=location.pathname+location.search;
       const redirect=new URL('./auth-callback.html',location.href);
       redirect.searchParams.set('next',destination);
-      const r=await fetch(SB_URL+'/auth/v1/otp?redirect_to='+encodeURIComponent(redirect.href),{
+      const r=await authRequest(SB_URL+'/auth/v1/otp?redirect_to='+encodeURIComponent(redirect.href),{
         method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},
         body:JSON.stringify({email,create_user:true}),signal:AbortSignal.timeout(15000)});
       if(r.status===429) throw new Error('Too many sign-in requests. Wait a minute, then try again.');
       if(!r.ok) throw new Error('Could not send the sign-in link. Please try again.');
       // Same message whether or not the address already has an account.
-      status.textContent='Check your email. Click the sign-in link or enter the 6-digit code below. The link and code expire after 5 minutes.';
+      status.textContent=NEON_AUTH?'Check your email and enter the 6-digit code below.':'Check your email. Click the sign-in link or enter the 6-digit code below. The link and code expire after 5 minutes.';
       const requestedAt=Date.now();rememberSignIn({email,requested_at:requestedAt});showCode(email);cooldown(requestedAt);
     } catch(e){
       status.textContent=e.name==='TimeoutError'||e.name==='TypeError'?'Could not reach the sign-in service. Check your connection and try again.':e.message;
-      button.disabled=resend.disabled=false;button.textContent='Email me a sign-in link';resend.textContent='Send a new code';
+      button.disabled=resend.disabled=false;button.textContent=NEON_AUTH?'Email me a code':'Email me a sign-in link';resend.textContent='Send a new code';
     }
   };
   return false;
@@ -158,7 +174,7 @@ async function signOut(){
   const token=session?.access_token;
   session=null;storeSession(null);rememberSignIn(null);
   // Revoke the refresh token server-side; local sign-out still completes if this fails.
-  if(token&&!IS_DEV){ try { await fetch(SB_URL+'/auth/v1/logout',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+token},signal:AbortSignal.timeout(5000)}); } catch {} }
+  if(token&&!IS_DEV){ try { await authRequest(SB_URL+'/auth/v1/logout',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+token},signal:AbortSignal.timeout(5000)}); } catch {} }
   location.replace('./index.html');
 }
 // Sign-out in another tab, or Back into a page restored from the bfcache after sign-out,

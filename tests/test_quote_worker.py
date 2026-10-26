@@ -9,6 +9,10 @@ os.environ.setdefault('SUPABASE_SERVICE_KEY','test')
 import tickets_quote_worker as worker
 
 class QuoteWorkerTests(unittest.TestCase):
+    def test_free_worker_exits_when_no_quotes_are_due(self):
+        with patch.dict(os.environ,{'GITHUB_ACTIONS':'true','TIX_QUOTE_EXIT_WHEN_IDLE':'true'}),patch.object(worker.collect,'sb',return_value=[]) as request,patch.object(worker.time,'sleep',side_effect=AssertionError('idle workers should sleep at the database level')):
+            worker.main()
+            request.assert_called_once_with('POST','rpc/tix_quick_due',{'p_limit':1})
     def test_requested_seat_count_is_captured_without_notifications(self):
         job={'event_id':'fixture','url':'https://gametime.co/events/fixture','requested_quantities':[4],'detail_requested':True}
         guard=MagicMock();guard.capture.return_value=contextlib.nullcontext()

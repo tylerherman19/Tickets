@@ -1,6 +1,7 @@
 /* shared chrome + data for the ticket watch pages */
-const SB_URL = "https://aahqagqztanltejsqjom.supabase.co";
-const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFhaHFhZ3F6dGFubHRlanNxam9tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4OTU3MjIsImV4cCI6MjEwNDQ3MTcyMn0.GWQZZ0Sp45Q6mW8Fz3DYF2Gj-LEURBMa7HoWvBgXmaE";
+const SB_URL = "https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech";
+const SB_KEY = "public";
+const NEON_AUTH_URL = "https://ep-aged-math-b5ykle5e.neonauth.c-7.us-east-2.aws.neon.tech/ticketline/auth";
 const H = {apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": "application/json"};
 
 const $ = (s, root=document) => root.querySelector(s);
