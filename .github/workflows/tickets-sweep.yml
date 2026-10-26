@@ -25,10 +25,17 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  backend:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/backend-health.yml
   sweep:
     permissions:
       contents: read
       id-token: write
+    needs: backend
+    if: needs.backend.outputs.ready == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
