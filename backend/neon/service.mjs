@@ -3,6 +3,7 @@ import {attachDatabasePool} from '@neon/functions';
 const ident=x=>{if(!/^[a-z_][a-z0-9_]*$/.test(x))throw new Error('invalid_identifier');return '"'+x+'"';};
 const response=(data,status=200)=>Response.json(data,{status,headers:{'cache-control':'no-store'}});
 export function createService(connectionString,{pool:providedPool}={}){
+ if(!providedPool){if(!connectionString||!new URL(connectionString).password)throw new Error('A managed Neon database credential is required');const settings=new URL(connectionString);settings.searchParams.set('sslmode','verify-full');connectionString=settings.href;}
  const pool=providedPool||new Pool({connectionString,max:3,connectionTimeoutMillis:15000,idleTimeoutMillis:10000});if(!providedPool)attachDatabasePool(pool);
  const functions=new Map(),tables=new Map();
  async function rpc(name,body){
@@ -56,6 +57,6 @@ export function createService(connectionString,{pool:providedPool}={}){
    if(method==='PATCH'){const keys=Object.keys(body||{});if(!keys.length)throw new Error('empty_update');const set=keys.map(k=>`${col(k)}=${value(k,body[k])}`).join(',');const r=await pool.query(`update ${relation} set ${set}${where} returning ${projection}`,values);return prefer.includes('return=representation')?response(r.rows):new Response(null,{status:204});}
    if(method==='DELETE'){await pool.query(`delete from ${relation}${where}`,values);return new Response(null,{status:204});}
    return response({error:'unsupported_method'},405);
-  }catch(error){return response({code:error.code||'invalid_request',message:String(error.message).slice(0,300)},400);}}
+  }catch(error){console.error('ticketline_service_error',error.code||String(error.message).slice(0,60));return response({code:error.code||'invalid_request',message:String(error.message).slice(0,300)},400);}}
  };
 }

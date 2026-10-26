@@ -5,10 +5,11 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from ticketline_backend import service_key
 base=os.environ['SUPABASE_URL'].rstrip('/')
 def api(path,body=None,authenticated=True):
- headers={'Content-Type':'application/json'}
+ headers={'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=representation'}
  if authenticated:headers['Authorization']='Bearer '+service_key()
  request=urllib.request.Request(base+'/rest/v1/'+path,data=json.dumps(body).encode() if body is not None else None,headers=headers)
- with urllib.request.urlopen(request,timeout=60) as response:return json.load(response)
+ with urllib.request.urlopen(request,timeout=60) as response:
+  data=response.read();return json.loads(data) if data else None
 health=api('rpc/tix_runtime_health',{})
 if health.get('schema',0)<20261030:raise RuntimeError('Incomplete schema')
 public=api('tix_events_v?select=event_id&limit=1',authenticated=False)
