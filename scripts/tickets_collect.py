@@ -626,7 +626,7 @@ def _resolve_events(w):
             home = cslug.endswith(f"-at-{slug}") or f"-at-{slug}-" in cslug
             away = cslug.startswith(f"{slug}-at-")
             if ha == "home" and not home: continue
-       if ha == "away" and not away: continue
+            if ha == "away" and not away: continue
             if ha == "any" and not (home or away): continue
             out.append(c)
         return out
