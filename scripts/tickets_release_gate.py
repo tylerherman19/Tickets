@@ -5,6 +5,7 @@ Missing or older schema stops the job before provider and email work.
 Authentication, transient network errors and unexpected payloads fail closed.
 This preflight never contacts Gametime or enables the guarded feature.
 """
+from ticketline_backend import service_key
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ REQUIRED_SCHEMA = 20261026
 
 def schema_ready():
     base=os.environ['SUPABASE_URL'].rstrip('/')
-    key=os.environ['SUPABASE_SERVICE_KEY']
+    key=service_key()
     req=urllib.request.Request(base+'/rest/v1/rpc/tix_runtime_health',
         data=b'{}',method='POST',
         headers={'apikey':key,'Authorization':'Bearer '+key,'Content-Type':'application/json'})

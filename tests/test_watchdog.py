@@ -10,7 +10,7 @@ import tickets_watchdog as watchdog
 class WatchdogTests(unittest.TestCase):
     def test_backup_schedule_uses_freshness_gate_and_shared_concurrency(self):
         workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/tickets.yml').read_text()
-        self.assertIn("cron: '8,23,38,53 * * * *'", workflow)
+        self.assertIn("cron: '*/15 * * * *'", workflow)
         self.assertIn("github.event_name == 'schedule'", workflow)
         self.assertIn('group: tickets-collector', workflow)
         self.assertIn('cancel-in-progress: false', workflow)

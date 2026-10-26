@@ -1,7 +1,7 @@
 name: retain Ticketline listing history
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
 permissions:
   contents: read
@@ -10,6 +10,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   retain:
+    permissions:
+      contents: read
+      id-token: write
     # Free-plan storage outage: automatic database jobs are paused.
     # Manual recovery remains available; restore automatic runs only after
     # PostgreSQL is healthy, approved retention finishes, and disk has headroom.
@@ -23,6 +26,6 @@ jobs:
           python-version: '3.12'
       - name: Remove only day-old individual listing copies after preserving history
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_storage.py

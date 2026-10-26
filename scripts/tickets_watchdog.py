@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run a recovery collector check only when the last completed check is late."""
+from ticketline_backend import service_key
 import json
 import os
 import subprocess
@@ -25,7 +26,7 @@ def needs_recovery(health, now=None):
 
 def latest_health():
     base = os.environ['SUPABASE_URL'].rstrip('/')
-    key = os.environ['SUPABASE_SERVICE_KEY']
+    key = service_key()
     req = urllib.request.Request(base + '/rest/v1/tix_state?k=eq.collector_health&select=v&limit=1',
         headers={'apikey': key, 'Authorization': 'Bearer ' + key})
     with urllib.request.urlopen(req, timeout=10) as response:

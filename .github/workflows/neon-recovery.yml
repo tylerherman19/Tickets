@@ -1,0 +1,50 @@
+name: verify free Ticketline backend
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [backend/neon/**, scripts/neon/smoke.py, scripts/ticketline_backend.py, .github/workflows/neon-recovery.yml]
+permissions:
+  contents: read
+concurrency:
+  group: ticketline-neon-recovery
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+      SUPABASE_SERVICE_KEY: github-oidc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify identity, privacy, schema and persistence
+        id: smoke
+        continue-on-error: true
+        run: python scripts/neon/smoke.py
+      - name: Seed public catalog and check the collector
+        id: collect
+        if: steps.smoke.outcome == 'success'
+        continue-on-error: true
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SMS_GATEWAY: ${{ secrets.SMS_GATEWAY }}
+        run: |
+          python -m pip install playwright==1.60.0
+          python scripts/tickets_collect.py
+      - name: Report the actual recovery result
+        if: always()
+        env:
+          SMOKE_RESULT: ${{ steps.smoke.outcome }}
+          COLLECT_RESULT: ${{ steps.collect.outcome }}
+        run: |
+          echo "Backend integration: $SMOKE_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Live collector: $COLLECT_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Automatic workers remain paused until both checks succeed." >> "$GITHUB_STEP_SUMMARY"

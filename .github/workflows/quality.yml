@@ -20,4 +20,5 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: node --check tickets.js && node --check app.js && npm test
+      - run: npm run build:neon && npm run test:neon
       - run: python scripts/check_no_emoji.py

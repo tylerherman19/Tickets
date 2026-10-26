@@ -1,0 +1,35 @@
+name: Ticketline backend availability
+on:
+  workflow_call:
+    inputs:
+      maintenance:
+        type: boolean
+        default: false
+    outputs:
+      ready:
+        value: ${{ jobs.probe.outputs.ready }}
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      ready: ${{ steps.backend.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: backend
+        env:
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
+          MAINTENANCE: ${{ inputs.maintenance }}
+        run: |
+          if [ "$MAINTENANCE" = "true" ]; then
+            python scripts/neon/health.py --maintenance
+          else
+            python scripts/neon/health.py
+          fi

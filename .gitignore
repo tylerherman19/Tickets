@@ -3,6 +3,8 @@ __pycache__/
 .DS_Store
 node_modules/
 .env*
+.neon
+.neon-build/
 
 # Only encrypted backup artifacts leave the hosted job. Recovery keys stay local.
 backups/

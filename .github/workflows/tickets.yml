@@ -18,7 +18,7 @@ on:
   # The existing external dispatcher sends tickets-ping every 15 minutes.
   # This GitHub schedule is a backup health check, never an unconditional scan.
   schedule:
-    - cron: '8,23,38,53 * * * *'
+    - cron: '*/15 * * * *'
   repository_dispatch:
     types: [tickets-ping, tickets-watchdog]
 
@@ -34,6 +34,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     permissions:
       contents: read
+      id-token: write
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     steps:
@@ -47,19 +48,19 @@ jobs:
           command -v google-chrome
       - name: Preserve existing collection until the guarded schema is deployed
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_release_gate.py
       - name: Expire private search activity after 90 days
         continue-on-error: true # Retention outages must not stop ticket checks.
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_search_retention.py
       - name: check watched events or recover stale collector
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           SMS_GATEWAY: ${{ secrets.SMS_GATEWAY }}

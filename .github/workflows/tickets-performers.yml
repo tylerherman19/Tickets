@@ -1,7 +1,7 @@
 name: team and artist prices
 on:
   schedule:
-    - cron: '25 * * * *'
+    - cron: '15 * * * *'
   workflow_dispatch:
     inputs:
       limit:
@@ -18,6 +18,9 @@ permissions:
   contents: read
 jobs:
   sweep:
+    permissions:
+      contents: read
+      id-token: write
     # Free-plan storage outage: automatic database jobs are paused.
     # Manual recovery remains available; restore automatic runs only after
     # PostgreSQL is healthy, approved retention finishes, and disk has headroom.
@@ -31,12 +34,12 @@ jobs:
           python-version: '3.12'
       - name: Select the collector compatible with the deployed schema
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_release_gate.py
       - name: Save get-in prices from team, artist and show pages
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
           TIX_PERFORMER_LIMIT: ${{ inputs.limit }}
         run: python scripts/tickets_performers.py

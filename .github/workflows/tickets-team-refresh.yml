@@ -4,7 +4,7 @@ on:
     branches: [main]
     paths: [scripts/tickets_coverage_health.py]
   schedule:
-    - cron: '7,17,27,37,47,57 * * * *'
+    - cron: '*/15 * * * *'
   repository_dispatch:
     types: [tickets-ping, tickets-watchdog]
   workflow_dispatch:
@@ -20,6 +20,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   refresh:
+    permissions:
+      contents: read
+      id-token: write
     # Free-plan storage outage: automatic database jobs are paused.
     # Manual recovery remains available; restore automatic runs only after
     # PostgreSQL is healthy, approved retention finishes, and disk has headroom.
@@ -33,19 +36,19 @@ jobs:
           python-version: '3.12'
       - name: Select the collector compatible with the deployed schema
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_release_gate.py
       - name: Refresh requested teams within the existing provider budget
         env:
           TIX_TEAM_REGISTRY_BOOTSTRAP: ${{ inputs.bootstrap }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_team_refresh.py
       - name: Check aggregate coverage and flag actionable outages
         if: always()
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: https://br-round-pine-b5ahrts5-ticketline.compute.c-7.us-east-2.aws.neon.tech
+          SUPABASE_SERVICE_KEY: github-oidc
         run: python scripts/tickets_coverage_health.py
 
